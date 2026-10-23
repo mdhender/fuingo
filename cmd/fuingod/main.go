@@ -3,7 +3,7 @@
 
 // Command fuingod is the turn-file upload server.
 //
-//	fuingod [--env ENV] [--addr HOST:PORT] --db PATH
+//	fuingod [--env ENV] [--addr HOST:PORT] [--trusted-proxies LIST] --db PATH
 //
 // Every flag can also be set with a FUINGO_ environment variable. Explicit
 // flags override the environment, which overrides the defaults:
@@ -11,13 +11,17 @@
 //	--env   FUINGO_ENV   development, test, production, or agent (required)
 //	--addr  FUINGO_ADDR  backend listen address (default 127.0.0.1:18443)
 //	--db    FUINGO_DB    existing database file; :memory: in development and agent only
+//	--trusted-proxies  FUINGO_TRUSTED_PROXIES  comma-separated proxy addresses and
+//	        CIDR prefixes whose X-Forwarded-For is trusted (default loopback)
 //
 // FUINGO_PEPPER keys the upload credential hashes. It has no flag: set it in
 // the process environment or an ignored .local environment file.
 //
 // fuingod serves plain HTTP behind a TLS-terminating reverse proxy. It opens an
 // existing database and never creates or migrates one; use fuingodb for that.
-// Uploaded files are stored in the database.
+// Uploaded files are stored in the database. Failed upload authorizations
+// are limited per client address, which comes from X-Forwarded-For when the
+// connection is from a trusted proxy.
 // With --db :memory:, it runs against a fresh private in-memory database seeded
 // with the default accounts, discarded when the server stops.
 package main
@@ -30,6 +34,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/signal"
 	"strconv"
@@ -39,6 +44,7 @@ import (
 	"github.com/mdhender/fuingo"
 	"github.com/mdhender/fuingo/internal/cerrs"
 	"github.com/mdhender/fuingo/internal/cli"
+	"github.com/mdhender/fuingo/internal/clientip"
 	"github.com/mdhender/fuingo/internal/devdata"
 	"github.com/mdhender/fuingo/internal/server"
 	"github.com/mdhender/fuingo/internal/store"
@@ -52,7 +58,11 @@ const (
 	ErrMissingDatabase = cerrs.Error("--db (FUINGO_DB) is required")
 )
 
-const defaultAddr = "127.0.0.1:18443"
+const (
+	defaultAddr = "127.0.0.1:18443"
+	// defaultTrustedProxies is loopback, where the development proxy runs.
+	defaultTrustedProxies = "127.0.0.0/8,::1"
+)
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -70,6 +80,9 @@ type config struct {
 	addr   string
 	db     string
 	pepper string
+
+	trustedProxies string
+	proxies        []netip.Prefix
 }
 
 // loadConfig resolves and validates the configuration.
@@ -79,9 +92,10 @@ func loadConfig(args []string, stderr io.Writer) (config, error) {
 	fs.StringVar(&cfg.env, 0, "env", "", "environment: development, test, production, or agent (FUINGO_ENV)")
 	fs.StringVar(&cfg.addr, 0, "addr", defaultAddr, "backend listen address, host:port (FUINGO_ADDR)")
 	fs.StringVar(&cfg.db, 0, "db", "", "existing database file, or :memory: in development and agent (FUINGO_DB)")
+	fs.StringVar(&cfg.trustedProxies, 0, "trusted-proxies", defaultTrustedProxies, "comma-separated proxy addresses and CIDR prefixes whose X-Forwarded-For is trusted; empty trusts none (FUINGO_TRUSTED_PROXIES)")
 	cmd := &ff.Command{
 		Name:     "fuingod",
-		Usage:    "fuingod [--env ENV] [--addr HOST:PORT] --db PATH",
+		Usage:    "fuingod [--env ENV] [--addr HOST:PORT] [--trusted-proxies LIST] --db PATH",
 		LongHelp: "fuingod " + fuingo.Version().String() + "\n\nFUINGO_PEPPER must be set in the environment.",
 		Flags:    fs,
 	}
@@ -98,6 +112,10 @@ func loadConfig(args []string, stderr io.Writer) (config, error) {
 	if err := checkAddress(cfg.addr); err != nil {
 		return cfg, err
 	}
+	var err error
+	if cfg.proxies, err = clientip.ParsePrefixes(cfg.trustedProxies); err != nil {
+		return cfg, err
+	}
 	switch cfg.db {
 	case "":
 		return cfg, ErrMissingDatabase
@@ -106,7 +124,6 @@ func loadConfig(args []string, stderr io.Writer) (config, error) {
 			return cfg, ErrMemoryDatabase
 		}
 	}
-	var err error
 	if cfg.pepper, err = cli.Pepper(); err != nil {
 		return cfg, err
 	}
@@ -144,6 +161,8 @@ func run(ctx context.Context, args []string, stderr io.Writer, ready func(net.Ad
 		Store:  s,
 		Pepper: cfg.pepper,
 		Logger: logger,
+
+		TrustedProxies: cfg.proxies,
 	})
 	if err != nil {
 		return err
@@ -161,7 +180,7 @@ func run(ctx context.Context, args []string, stderr io.Writer, ready func(net.Ad
 		IdleTimeout:       2 * time.Minute,
 		ErrorLog:          slog.NewLogLogger(logger.Handler(), slog.LevelWarn),
 	}
-	logger.Info("fuingod listening", "version", fuingo.Version().String(), "env", cfg.env, "addr", ln.Addr().String(), "db", cfg.db)
+	logger.Info("fuingod listening", "version", fuingo.Version().String(), "env", cfg.env, "addr", ln.Addr().String(), "db", cfg.db, "trusted_proxies", cfg.proxies)
 	if prefix := server.HelperPrefix(cfg.env); prefix != "" {
 		logger.Info("account helpers enabled", "prefix", prefix)
 	}

@@ -13,9 +13,12 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/netip"
 
+	"github.com/mdhender/fuingo/internal/clientip"
 	"github.com/mdhender/fuingo/internal/credential"
 	"github.com/mdhender/fuingo/internal/devdata"
+	"github.com/mdhender/fuingo/internal/ratelimit"
 	"github.com/mdhender/fuingo/internal/store"
 	"github.com/mdhender/fuingo/internal/upload"
 )
@@ -28,6 +31,12 @@ type Config struct {
 	Store  *store.Store
 	Pepper string
 	Logger *slog.Logger
+	// TrustedProxies are the reverse proxies whose X-Forwarded-For header
+	// names the client.
+	TrustedProxies []netip.Prefix
+	// UploadFailures limits failed upload authorizations per client. If nil,
+	// the upload package's default limit applies.
+	UploadFailures *ratelimit.Limiter
 }
 
 // HelperPrefix returns the path prefix of the account helpers in env, or ""
@@ -44,7 +53,13 @@ func HelperPrefix(env string) string {
 
 // New returns the handler for every browser-facing route.
 func New(cfg Config) (http.Handler, error) {
-	uploads, err := upload.New(cfg.Store, cfg.Pepper, cfg.Logger)
+	uploads, err := upload.New(upload.Config{
+		Store:    cfg.Store,
+		Pepper:   cfg.Pepper,
+		Logger:   cfg.Logger,
+		Clients:  clientip.New(cfg.TrustedProxies),
+		Failures: cfg.UploadFailures,
+	})
 	if err != nil {
 		return nil, err
 	}

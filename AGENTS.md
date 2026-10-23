@@ -38,7 +38,8 @@ upload files over HTTPS instead of mailing them.
   holds the default games and upload accounts; `internal/cli` holds the flag
   and environment-file parsing shared by the commands.
 - `internal/upload` is the upload handler, implementing the requirements
-  below.
+  below. `internal/clientip` finds the client's address behind trusted
+  proxies; `internal/ratelimit` limits failed authorizations per client.
 - `internal/server` assembles the browser-facing routes (the page at `/`,
   the vendored HTMX under `/static/`, `POST /upload`, and the
   development/agent helper) behind `http.NewCrossOriginProtection`. HTMX
@@ -152,6 +153,20 @@ The server handles each upload in this order:
    hash, with ID `0`, and fails like a wrong token. Both the matching uploader
    and its game must be active; an inactive one fails like a missing row. There
    are no salts. Compare hashes in constant time.
+
+   Failed authorizations are limited per client address, never per email or
+   game, so guessing cannot lock a valid uploader out. Each client may fail 5
+   times, then once more per minute. A client over its limit gets `429 Too
+   Many Requests` with `Retry-After` instead of an authorization check, even
+   with valid credentials. Successful uploads, and the size, sanity, header,
+   and empty-body failures before this step, do not count. Reserve a failure
+   before the credential lookup and return it on success or server error, so
+   concurrent guesses cannot exceed the limit. The client address is the
+   connection's peer, unless the peer is a trusted proxy: then it is the
+   rightmost `X-Forwarded-For` address that is not a trusted proxy. Trust only
+   the proxies configured in `FUINGO_TRUSTED_PROXIES`. Group IPv6 clients by
+   their /64 prefix. The limits are kept in memory and reset when the server
+   restarts.
 5. **Storage.** Store only the body: the BOM and header line, and so the token,
    never reach the database. Key the body by its lowercase hex SHA-256 in
    `upload_blobs`. If a blob with that hash exists, keep it and do not rewrite
@@ -232,5 +247,11 @@ Do not implement these until the user starts the phase.
 - For duplicate content, cover uploaders in the same game and in different
   games with identical bodies, concurrent uploads, and that the existing blob
   is not rewritten.
+- Cover failure limiting: the limit and `Retry-After`, recovery over time,
+  that successes and format errors do not count, that valid credentials are
+  refused while limited, that other clients (including the same email from
+  another address) are unaffected, concurrent failures from one client,
+  IPv6 /64 grouping, that `X-Forwarded-For` is ignored from untrusted peers,
+  and that the rightmost untrusted address is used behind trusted proxies.
 - Run the checks required by [WORKFLOW.md](WORKFLOW.md) and identify any checks
   that could not be run.

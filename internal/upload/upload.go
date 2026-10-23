@@ -13,6 +13,9 @@
 // The handler responds with a server-rendered HTML fragment. Every
 // authorization failure gets the same response, so it never reveals whether an
 // email or game exists or which credential was wrong.
+//
+// Failed authorizations are limited per client address, so repeated guesses
+// slow down without locking a valid uploader out from other addresses.
 package upload
 
 import (
@@ -24,12 +27,16 @@ import (
 	"html/template"
 	"io"
 	"log/slog"
+	"math"
 	"mime/multipart"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/mdhender/fuingo/internal/cerrs"
+	"github.com/mdhender/fuingo/internal/clientip"
 	"github.com/mdhender/fuingo/internal/credential"
+	"github.com/mdhender/fuingo/internal/ratelimit"
 	"github.com/mdhender/fuingo/internal/store"
 )
 
@@ -49,6 +56,14 @@ const (
 	maxTurnSize = 32
 )
 
+const (
+	// FailureBurst is how many failed authorizations a client may make
+	// before it is limited.
+	FailureBurst = 5
+	// FailureInterval is how often a limited client regains one attempt.
+	FailureInterval = time.Minute
+)
+
 // FieldFile is the form field holding the turn file.
 const FieldFile = "file"
 
@@ -64,23 +79,44 @@ const (
 	msgNoFile        = "Choose a file to upload."
 	msgServerError   = "The upload could not be saved. Please try again later."
 	msgTooLarge      = "The file is larger than 64 KiB (65,536 bytes)."
+	msgTooManyFailed = "Too many failed uploads from your address. Try again in %d seconds."
 	msgTurnTooLong   = "The turn number on the first line is longer than 32 characters."
 )
 
-// Handler accepts turn-file uploads.
-type Handler struct {
-	db     *store.Store
-	pepper string
-	logger *slog.Logger
+// Config configures a Handler.
+type Config struct {
+	// Store holds the credentials and receives the uploads.
+	Store *store.Store
+	// Pepper keys the credential hashes. It is required.
+	Pepper string
+	Logger *slog.Logger
+	// Clients finds the client's address behind trusted proxies. The zero
+	// Resolver uses the connection's peer.
+	Clients clientip.Resolver
+	// Failures limits failed authorizations per client. If nil, each client
+	// may fail FailureBurst times, then once per FailureInterval.
+	Failures *ratelimit.Limiter
 }
 
-// New returns a handler that authorizes uploads against s using pepper and
-// stores their contents in s.
-func New(s *store.Store, pepper string, logger *slog.Logger) (*Handler, error) {
-	if pepper == "" {
+// Handler accepts turn-file uploads.
+type Handler struct {
+	db       *store.Store
+	pepper   string
+	logger   *slog.Logger
+	clients  clientip.Resolver
+	failures *ratelimit.Limiter
+}
+
+// New returns a handler that authorizes uploads against cfg.Store using
+// cfg.Pepper and stores their contents in cfg.Store.
+func New(cfg Config) (*Handler, error) {
+	if cfg.Pepper == "" {
 		return nil, ErrMissingPepper
 	}
-	return &Handler{db: s, pepper: pepper, logger: logger}, nil
+	if cfg.Failures == nil {
+		cfg.Failures = ratelimit.New(FailureBurst, FailureInterval, nil)
+	}
+	return &Handler{db: cfg.Store, pepper: cfg.Pepper, logger: cfg.Logger, clients: cfg.Clients, failures: cfg.Failures}, nil
 }
 
 // form is the parsed request.
@@ -127,16 +163,29 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 4. Authorization.
+	// 4. Authorization. A failure is reserved before the lookup, so
+	// concurrent guesses cannot exceed the client's limit, and given back
+	// unless the credentials are wrong.
+	client := h.clients.Addr(r)
+	if ok, wait := h.failures.Take(client); !ok {
+		h.logger.Warn("upload: too many failures", "client", client)
+		seconds := int(math.Ceil(wait.Seconds()))
+		w.Header().Set("Retry-After", strconv.Itoa(seconds))
+		respond(w, http.StatusTooManyRequests, false, fmt.Sprintf(msgTooManyFailed, seconds))
+		return
+	}
 	uploader, ok, err := h.authorize(r, hdr)
 	if err != nil {
-		h.logger.Error("upload: authorize", "err", err)
+		h.failures.Return(client)
+		h.logger.Error("upload: authorize", "client", client, "err", err)
 		respond(w, http.StatusInternalServerError, false, msgServerError)
 		return
 	} else if !ok {
+		h.logger.Info("upload: authorization failed", "client", client)
 		respond(w, http.StatusForbidden, false, msgAuthorization)
 		return
 	}
+	h.failures.Return(client)
 
 	// 5 and 6. Storage of the body and the record, in one transaction: the body
 	// is kept under its SHA-256 unless already stored, and every upload gets a
@@ -148,7 +197,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		respond(w, http.StatusInternalServerError, false, msgServerError)
 		return
 	}
-	h.logger.Info("upload", "game_id", uploader.GameID, "email", uploader.Email, "turn", hdr.turn, "content_hash", contentHash, "bytes", len(body))
+	h.logger.Info("upload", "client", client, "game_id", uploader.GameID, "email", uploader.Email, "turn", hdr.turn, "content_hash", contentHash, "bytes", len(body))
 
 	// 7. Response.
 	respond(w, http.StatusOK, true, fmt.Sprintf("Received turn %s for %s from %s: %d bytes, SHA-256 %s.",

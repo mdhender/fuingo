@@ -16,9 +16,11 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mdhender/fuingo/internal/credential"
 	"github.com/mdhender/fuingo/internal/devdata"
+	"github.com/mdhender/fuingo/internal/ratelimit"
 	"github.com/mdhender/fuingo/internal/store"
 	"github.com/mdhender/fuingo/internal/upload"
 )
@@ -58,7 +60,9 @@ func newFixture(t *testing.T) *fixture {
 	if err := devdata.Seed(t.Context(), s, "development", pepper); err != nil {
 		t.Fatal(err)
 	}
-	h, err := upload.New(s, pepper, slog.New(slog.DiscardHandler))
+	// Most tests fail authorization many times from one address; the limit
+	// has its own tests.
+	h, err := upload.New(upload.Config{Store: s, Pepper: pepper, Logger: slog.New(slog.DiscardHandler), Failures: ratelimit.New(1000, time.Minute, nil)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -489,7 +493,7 @@ func TestSameEmailAndTokenInTwoGames(t *testing.T) {
 func TestDifferentPepperRejectsDefaultTokens(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
-	h, err := upload.New(f.store, "another-pepper", slog.New(slog.DiscardHandler))
+	h, err := upload.New(upload.Config{Store: f.store, Pepper: "another-pepper", Logger: slog.New(slog.DiscardHandler)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -504,7 +508,7 @@ func TestNewRequiresPepper(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	if _, err := upload.New(s, "", slog.New(slog.DiscardHandler)); !errors.Is(err, upload.ErrMissingPepper) {
+	if _, err := upload.New(upload.Config{Store: s, Logger: slog.New(slog.DiscardHandler)}); !errors.Is(err, upload.ErrMissingPepper) {
 		t.Errorf("New without pepper = %v, want ErrMissingPepper", err)
 	}
 }

@@ -12,13 +12,16 @@ import (
 	"mime/multipart"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/mdhender/fuingo/internal/cli"
+	"github.com/mdhender/fuingo/internal/clientip"
 	"github.com/mdhender/fuingo/internal/devdata"
 	"github.com/mdhender/fuingo/internal/store"
 )
@@ -27,7 +30,7 @@ const pepper = "test-pepper"
 
 func clearEnv(t *testing.T) {
 	t.Helper()
-	for _, key := range []string{"FUINGO_ENV", "FUINGO_ADDR", "FUINGO_DB", "FUINGO_PEPPER"} {
+	for _, key := range []string{"FUINGO_ENV", "FUINGO_ADDR", "FUINGO_DB", "FUINGO_PEPPER", "FUINGO_TRUSTED_PROXIES"} {
 		t.Setenv(key, "")
 		os.Unsetenv(key)
 	}
@@ -43,6 +46,21 @@ func TestConfigDefaultsAndPrecedence(t *testing.T) {
 	if cfg.addr != "127.0.0.1:18443" {
 		t.Errorf("default addr = %q, want 127.0.0.1:18443", cfg.addr)
 	}
+	if want := []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8"), netip.MustParsePrefix("::1/128")}; !slices.Equal(cfg.proxies, want) {
+		t.Errorf("default trusted proxies = %v, want %v", cfg.proxies, want)
+	}
+	t.Setenv("FUINGO_TRUSTED_PROXIES", "10.0.0.0/8")
+	if cfg, err = loadConfig([]string{"--env", "development", "--db", ":memory:"}, io.Discard); err != nil {
+		t.Fatal(err)
+	} else if want := []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8")}; !slices.Equal(cfg.proxies, want) {
+		t.Errorf("FUINGO_TRUSTED_PROXIES: %v, want %v", cfg.proxies, want)
+	}
+	if cfg, err = loadConfig([]string{"--env", "development", "--db", ":memory:", "--trusted-proxies", ""}, io.Discard); err != nil {
+		t.Fatal(err)
+	} else if len(cfg.proxies) != 0 {
+		t.Errorf("--trusted-proxies \"\" = %v, want none", cfg.proxies)
+	}
+	os.Unsetenv("FUINGO_TRUSTED_PROXIES")
 
 	t.Setenv("FUINGO_ENV", "development")
 	t.Setenv("FUINGO_ADDR", "127.0.0.1:28443")
@@ -73,6 +91,7 @@ func TestConfigRefusals(t *testing.T) {
 		{"memory in production", pepper, []string{"--env", "production", "--db", ":memory:"}, ErrMemoryDatabase},
 		{"bad addr", pepper, []string{"--env", "development", "--addr", "18443", "--db", ":memory:"}, ErrInvalidAddress},
 		{"bad port", pepper, []string{"--env", "development", "--addr", "127.0.0.1:99999", "--db", ":memory:"}, ErrInvalidAddress},
+		{"bad trusted proxy", pepper, []string{"--env", "development", "--trusted-proxies", "caddy", "--db", ":memory:"}, clientip.ErrInvalidProxy},
 	}
 	for _, c := range cases {
 		os.Unsetenv("FUINGO_PEPPER")
@@ -143,7 +162,7 @@ func startServer(t *testing.T, args ...string) string {
 	return ""
 }
 
-func post(t *testing.T, url, contentType string, body io.Reader) (int, string) {
+func post(t *testing.T, url, contentType string, body io.Reader, headers ...string) (int, string) {
 	t.Helper()
 	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, url, body)
 	if err != nil {
@@ -153,6 +172,9 @@ func post(t *testing.T, url, contentType string, body io.Reader) (int, string) {
 		req.Header.Set("Content-Type", contentType)
 	}
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	for i := 0; i+1 < len(headers); i += 2 {
+		req.Header.Add(headers[i], headers[i+1])
+	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -162,14 +184,14 @@ func post(t *testing.T, url, contentType string, body io.Reader) (int, string) {
 	return resp.StatusCode, string(data)
 }
 
-func postUpload(t *testing.T, base, email, game, token, file string) (int, string) {
+func postUpload(t *testing.T, base, email, game, token, file string, headers ...string) (int, string) {
 	t.Helper()
 	var body bytes.Buffer
 	mw := multipart.NewWriter(&body)
 	fw, _ := mw.CreateFormFile("file", "turn.txt")
 	io.WriteString(fw, game+" 1 "+email+" "+token+"\n"+file)
 	mw.Close()
-	return post(t, base+"/upload", mw.FormDataContentType(), &body)
+	return post(t, base+"/upload", mw.FormDataContentType(), &body, headers...)
 }
 
 func TestServeMemoryDatabase(t *testing.T) {
@@ -229,5 +251,25 @@ func TestServeDatabaseFile(t *testing.T) {
 		if code, _ := post(t, base+prefix+"/create-account/game01/a%40example.com/t", "", nil); code != http.StatusNotFound {
 			t.Errorf("%s in test: %d, want 404", prefix, code)
 		}
+	}
+}
+
+// The test client connects over loopback, which fuingod trusts by default, so
+// X-Forwarded-For names the client, as it does behind Caddy.
+func TestServeLimitsFailuresPerForwardedClient(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("FUINGO_PEPPER", pepper)
+	base := startServer(t, "--env", "development", "--db", ":memory:")
+	u := devdata.Uploaders[0]
+	for i := range 5 {
+		if code, body := postUpload(t, base, u.Email, u.Game, "wrong", "turn\n", "X-Forwarded-For", "203.0.113.1"); code != http.StatusForbidden {
+			t.Fatalf("failure %d: %d %s", i+1, code, body)
+		}
+	}
+	if code, body := postUpload(t, base, u.Email, u.Game, u.Token, "turn\n", "X-Forwarded-For", "203.0.113.1"); code != http.StatusTooManyRequests {
+		t.Errorf("limited client: %d %s, want 429", code, body)
+	}
+	if code, body := postUpload(t, base, u.Email, u.Game, u.Token, "turn\n", "X-Forwarded-For", "203.0.113.2"); code != http.StatusOK {
+		t.Errorf("another client: %d %s, want 200", code, body)
 	}
 }

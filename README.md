@@ -26,6 +26,7 @@ override environment variables, which override the defaults.
 | `--env` | `FUINGO_ENV` | both | `development`, `test`, `production`, or `agent`. Required. |
 | `--db` | `FUINGO_DB` | both | Database file. Required. `fuingod` accepts `:memory:` in `development` and `agent` only; `fuingodb` never does. |
 | `--addr` | `FUINGO_ADDR` | `fuingod` | Backend listen address, `host:port`. Default `127.0.0.1:18443`. |
+| `--trusted-proxies` | `FUINGO_TRUSTED_PROXIES` | `fuingod` | Comma-separated addresses and CIDR prefixes of the reverse proxies whose `X-Forwarded-For` header is trusted. Default `127.0.0.0/8,::1` (loopback); empty trusts none. |
 | (none) | `FUINGO_PEPPER` | `fuingod`, `fuingodb create` | Key for the upload credential hashes. Required. |
 
 - The environment is read from `--env` or the process's `FUINGO_ENV`. The
@@ -49,3 +50,33 @@ override environment variables, which override the defaults.
 preserves `Host`, `Origin`, and `Sec-Fetch-Site`. In development, Caddy serves
 `https://htmx-app.localhost:8443` and forwards to `127.0.0.1:18443`. See
 [PROXIES.md](PROXIES.md).
+
+### Client addresses and failed uploads
+
+Failed upload authorizations are limited per client address: each address
+may fail 5 times, then once more per minute, and gets `429 Too Many Requests`
+while over the limit. IPv6 clients are grouped by /64. The limit applies to
+the address, not the email or game, so guesses from one address never lock an
+uploader out elsewhere. Limits are kept in memory and reset on restart.
+
+Behind a proxy, every connection comes from the proxy, so `fuingod` must learn
+the real client address from the proxy's `X-Forwarded-For` header. Set this up
+for each deployment:
+
+- **Tell `fuingod` which proxies to trust.** Set `FUINGO_TRUSTED_PROXIES` to
+  the addresses the proxy connects from. The default, loopback, is right when
+  Caddy runs on the same host. If Caddy runs elsewhere, list its address (for
+  example `FUINGO_TRUSTED_PROXIES=10.0.0.5`); otherwise every upload appears
+  to come from Caddy, and one guesser's failures limit everyone.
+- **Make sure the proxy sends `X-Forwarded-For`.** Caddy's `reverse_proxy`
+  does this by default, replacing any value sent by an untrusted client, so
+  no Caddyfile change is needed. Do not configure Caddy to pass through a
+  client's own `X-Forwarded-For` unless the hop in front of it is also trusted
+  (Caddy's `trusted_proxies` option).
+- **If another proxy or load balancer sits in front of Caddy**, add its
+  addresses to both Caddy's `trusted_proxies` and `FUINGO_TRUSTED_PROXIES`.
+  `fuingod` reads the header from the right and uses the first address that is
+  not a trusted proxy; addresses to its left were supplied by the client and
+  are ignored.
+- **Keep the backend unreachable except through the proxy.** Anyone who can
+  connect from a trusted address can claim any client address.

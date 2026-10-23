@@ -38,14 +38,19 @@ upload files over HTTPS instead of mailing them.
   and environment-file parsing shared by the commands.
 - `internal/upload` is the upload handler, implementing the requirements
   below.
-- `cmd/fuingodb` exists. The server does not yet. Do not document the planned
-  commands, routes, or packages below as implemented until they are.
+- `internal/server` assembles the browser-facing routes (`POST /upload` and
+  the development/agent helper) behind `http.NewCrossOriginProtection`.
+- `cmd/fuingod` and `cmd/fuingodb` exist; [README.md](README.md) documents
+  their flags and environment variables. Keep it current when adding either.
+  `cmd/fuingo` and the `/api/` routes do not exist yet; do not document them
+  as implemented until they are.
 
-## Planned commands
+## Commands
 
 Use `github.com/peterbourgon/ff/v4` for flags and `internal/dotenv` for
-environment files. Explicit flags override environment values, which override
-defaults.
+environment files, through `internal/cli`. Explicit flags override environment
+values, which override defaults. Every flag `--name` has an environment
+variable `FUINGO_NAME`; secrets such as `FUINGO_PEPPER` have no flag.
 
 | Command | Purpose |
 | --- | --- |

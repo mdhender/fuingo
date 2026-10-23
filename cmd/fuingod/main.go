@@ -1,0 +1,216 @@
+// Copyright (c) 2026 Michael D Henderson.
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+// Command fuingod is the turn-file upload server.
+//
+//	fuingod [--env ENV] [--addr HOST:PORT] --db PATH --upload-dir DIR
+//
+// Every flag can also be set with a FUINGO_ environment variable. Explicit
+// flags override the environment, which overrides the defaults:
+//
+//	--env         FUINGO_ENV         development, test, production, or agent (required)
+//	--addr        FUINGO_ADDR        backend listen address (default 127.0.0.1:18443)
+//	--db          FUINGO_DB          existing database file; :memory: in development and agent only
+//	--upload-dir  FUINGO_UPLOAD_DIR  existing directory for uploaded files
+//
+// FUINGO_PEPPER keys the upload credential hashes. It has no flag: set it in
+// the process environment or an ignored .local environment file.
+//
+// fuingod serves plain HTTP behind a TLS-terminating reverse proxy. It opens an
+// existing database and never creates or migrates one; use fuingodb for that.
+// With --db :memory:, it runs against a fresh private in-memory database seeded
+// with the default accounts, discarded when the server stops.
+package main
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"net"
+	"net/http"
+	"os"
+	"os/signal"
+	"strconv"
+	"syscall"
+	"time"
+
+	"github.com/mdhender/fuingo"
+	"github.com/mdhender/fuingo/internal/cerrs"
+	"github.com/mdhender/fuingo/internal/cli"
+	"github.com/mdhender/fuingo/internal/devdata"
+	"github.com/mdhender/fuingo/internal/server"
+	"github.com/mdhender/fuingo/internal/store"
+	"github.com/peterbourgon/ff/v4"
+	"github.com/peterbourgon/ff/v4/ffhelp"
+)
+
+const (
+	ErrInvalidAddress  = cerrs.Error("invalid listen address")
+	ErrMemoryDatabase  = cerrs.Error(":memory: is allowed only in development and agent")
+	ErrMissingDatabase = cerrs.Error("--db (FUINGO_DB) is required")
+	ErrMissingUploads  = cerrs.Error("--upload-dir (FUINGO_UPLOAD_DIR) is required")
+	ErrNotDirectory    = cerrs.Error("upload directory is not a directory")
+)
+
+const defaultAddr = "127.0.0.1:18443"
+
+func main() {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := run(ctx, os.Args[1:], os.Stderr, nil); err != nil {
+		if !errors.Is(err, ff.ErrHelp) {
+			fmt.Fprintf(os.Stderr, "fuingod: %v\n", err)
+		}
+		os.Exit(1)
+	}
+}
+
+type config struct {
+	env       string
+	addr      string
+	db        string
+	uploadDir string
+	pepper    string
+}
+
+// loadConfig resolves and validates the configuration.
+func loadConfig(args []string, stderr io.Writer) (config, error) {
+	var cfg config
+	fs := ff.NewFlagSet("fuingod")
+	fs.StringVar(&cfg.env, 0, "env", "", "environment: development, test, production, or agent (FUINGO_ENV)")
+	fs.StringVar(&cfg.addr, 0, "addr", defaultAddr, "backend listen address, host:port (FUINGO_ADDR)")
+	fs.StringVar(&cfg.db, 0, "db", "", "existing database file, or :memory: in development and agent (FUINGO_DB)")
+	fs.StringVar(&cfg.uploadDir, 0, "upload-dir", "", "existing directory for uploaded files (FUINGO_UPLOAD_DIR)")
+	cmd := &ff.Command{
+		Name:     "fuingod",
+		Usage:    "fuingod [--env ENV] [--addr HOST:PORT] --db PATH --upload-dir DIR",
+		LongHelp: "fuingod " + fuingo.Version().String() + "\n\nFUINGO_PEPPER must be set in the environment.",
+		Flags:    fs,
+	}
+	if err := cli.Parse(cmd, args, &cfg.env); err != nil {
+		if errors.Is(err, ff.ErrHelp) {
+			fmt.Fprint(stderr, ffhelp.Command(cmd))
+		}
+		return cfg, err
+	}
+	if len(fs.GetArgs()) != 0 {
+		return cfg, fmt.Errorf("unexpected arguments %q", fs.GetArgs())
+	}
+
+	if err := checkAddress(cfg.addr); err != nil {
+		return cfg, err
+	}
+	switch cfg.db {
+	case "":
+		return cfg, ErrMissingDatabase
+	case ":memory:":
+		if !devdata.Allowed(cfg.env) {
+			return cfg, ErrMemoryDatabase
+		}
+	}
+	if cfg.uploadDir == "" {
+		return cfg, ErrMissingUploads
+	}
+	if sb, err := os.Stat(cfg.uploadDir); err != nil {
+		return cfg, fmt.Errorf("upload directory: %w", err)
+	} else if !sb.IsDir() {
+		return cfg, fmt.Errorf("%s: %w", cfg.uploadDir, ErrNotDirectory)
+	}
+	var err error
+	if cfg.pepper, err = cli.Pepper(); err != nil {
+		return cfg, err
+	}
+	return cfg, nil
+}
+
+func checkAddress(addr string) error {
+	_, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return fmt.Errorf("%w %q: %v", ErrInvalidAddress, addr, err)
+	}
+	if n, err := strconv.ParseUint(port, 10, 16); err != nil || (n == 0 && port != "0") {
+		return fmt.Errorf("%w %q: bad port", ErrInvalidAddress, addr)
+	}
+	return nil
+}
+
+// run starts the server and blocks until ctx is canceled. If ready is not
+// nil, it is called with the bound address once the server is listening.
+func run(ctx context.Context, args []string, stderr io.Writer, ready func(net.Addr)) error {
+	cfg, err := loadConfig(args, stderr)
+	if err != nil {
+		return err
+	}
+	logger := slog.New(slog.NewTextHandler(stderr, nil))
+
+	s, err := openStore(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+
+	handler, err := server.New(server.Config{
+		Env:       cfg.env,
+		Store:     s,
+		Pepper:    cfg.pepper,
+		UploadDir: cfg.uploadDir,
+		Logger:    logger,
+	})
+	if err != nil {
+		return err
+	}
+
+	ln, err := net.Listen("tcp", cfg.addr)
+	if err != nil {
+		return fmt.Errorf("listen on %s: %w", cfg.addr, err)
+	}
+	srv := &http.Server{
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       time.Minute,
+		WriteTimeout:      time.Minute,
+		IdleTimeout:       2 * time.Minute,
+		ErrorLog:          slog.NewLogLogger(logger.Handler(), slog.LevelWarn),
+	}
+	logger.Info("fuingod listening", "version", fuingo.Version().String(), "env", cfg.env, "addr", ln.Addr().String(), "db", cfg.db, "upload_dir", cfg.uploadDir)
+	if prefix := server.HelperPrefix(cfg.env); prefix != "" {
+		logger.Info("account helpers enabled", "prefix", prefix)
+	}
+	if ready != nil {
+		ready(ln.Addr())
+	}
+
+	errc := make(chan error, 1)
+	go func() { errc <- srv.Serve(ln) }()
+	select {
+	case err := <-errc:
+		return err
+	case <-ctx.Done():
+	}
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		return err
+	}
+	logger.Info("fuingod stopped")
+	return nil
+}
+
+// openStore opens the configured database. It never creates or migrates a
+// file; :memory: is a fresh private database with the default accounts.
+func openStore(ctx context.Context, cfg config) (*store.Store, error) {
+	if cfg.db != ":memory:" {
+		return store.Open(ctx, cfg.db)
+	}
+	s, err := store.OpenPrivateMemory(ctx, "fuingod")
+	if err != nil {
+		return nil, err
+	}
+	if err := devdata.Seed(ctx, s, cfg.env, cfg.pepper); err != nil {
+		s.Close()
+		return nil, err
+	}
+	return s, nil
+}

@@ -111,14 +111,15 @@ POST /__development/create-account/<game>/<email>/<token>
 POST /__agent/create-account/<game>/<email>/<token>
 ```
 
-- `<game>` is a game code. Encode the game, email, and token as URL path
-  segments.
+- `<game>` is a game code, lowercased like the email. Encode the game, email,
+  and token as URL path segments.
 - Require an existing game; return an error rather than creating one.
 - Insert an active row in `game_uploaders` for that game, with the lowercased
   email and the `credential_hash` described in [AGENTS.md](AGENTS.md). Never log
   the token.
 - Return an error if the game and email already have a row, or if the
-  `credential_hash` is already in use.
+  `credential_hash` is already in use. Because the hash includes the game's ID,
+  the same email and token may be created in another game.
   Never modify an existing row, including when creation requests race.
 
 ### Create an API account (future `/api/` phase)

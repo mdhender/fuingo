@@ -6,6 +6,7 @@ package store
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -18,9 +19,9 @@ import (
 func seedUploaders(t *testing.T, s *Store) (game1, game2 int64) {
 	t.Helper()
 	err := s.CreateGamesAndUploaders(t.Context(), []string{"game01", "game02"}, []NewUploader{
-		{GameCode: "game01", Email: "a@example.com", CredentialHash: []byte{1}},
-		{GameCode: "game01", Email: "b@example.com", CredentialHash: []byte{2}},
-		{GameCode: "game02", Email: "c@example.com", CredentialHash: []byte{3}},
+		{GameCode: "game01", Email: "a@example.com", CredentialHash: fixedHash(1)},
+		{GameCode: "game01", Email: "b@example.com", CredentialHash: fixedHash(2)},
+		{GameCode: "game02", Email: "c@example.com", CredentialHash: fixedHash(3)},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -157,4 +158,24 @@ func TestBlobsAreProtectedByForeignKeys(t *testing.T) {
 // SQLITE_CONSTRAINT), so match the message.
 func isForeignKeyError(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "FOREIGN KEY constraint failed")
+}
+
+// fixedHash returns a credential hash function that ignores the game.
+func fixedHash(b byte) func(int64) []byte {
+	return func(int64) []byte { return []byte{b} }
+}
+
+func TestGameCodesMustBeLowercase(t *testing.T) {
+	t.Parallel()
+	s, err := OpenPrivateMemory(t.Context(), t.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.CreateGamesAndUploaders(t.Context(), []string{"game01", "Game02"}, nil); !errors.Is(err, ErrGameCodeCase) {
+		t.Errorf("CreateGamesAndUploaders with an uppercase code = %v, want ErrGameCodeCase", err)
+	}
+	if games, _ := s.Games(t.Context()); len(games) != 0 {
+		t.Errorf("games = %v, want none", games)
+	}
 }

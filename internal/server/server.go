@@ -68,12 +68,16 @@ type helpers struct {
 
 // createAccount inserts an active upload account for an existing game.
 // It never modifies an existing row. The token is never logged.
+// The game, email, and token are path segments; the credential hash uses the
+// game's ID.
 func (h *helpers) createAccount(w http.ResponseWriter, r *http.Request) {
-	game, email, token := r.PathValue("game"), credential.NormalizeEmail(r.PathValue("email")), r.PathValue("token")
+	game, email, token := credential.NormalizeGameCode(r.PathValue("game")), credential.NormalizeEmail(r.PathValue("email")), r.PathValue("token")
 	err := h.store.CreateUploader(r.Context(), store.NewUploader{
-		GameCode:       game,
-		Email:          email,
-		CredentialHash: credential.Hash(h.pepper, email, token),
+		GameCode: game,
+		Email:    email,
+		CredentialHash: func(gameID int64) []byte {
+			return credential.Hash(h.pepper, email, gameID, token)
+		},
 	})
 	switch {
 	case errors.Is(err, store.ErrUnknownGame):

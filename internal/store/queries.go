@@ -6,6 +6,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/mdhender/fuingo/internal/cerrs"
@@ -15,6 +16,7 @@ import (
 
 const (
 	ErrGameExists      = cerrs.Error("game already exists")
+	ErrGameCodeCase    = cerrs.Error("game code must be lowercase")
 	ErrUnknownGame     = cerrs.Error("unknown game")
 	ErrUnknownUploader = cerrs.Error("unknown uploader")
 	ErrUploaderExists  = cerrs.Error("uploader already exists or credential is in use")
@@ -23,12 +25,14 @@ const (
 // timeLayout stores UTC timestamps at a fixed width so they sort as text.
 const timeLayout = "2006-01-02T15:04:05.000000000Z"
 
-// NewUploader is an upload account to insert. Email must already be
-// lowercased, and CredentialHash computed with package credential.
+// NewUploader is an upload account to insert. GameCode and Email must
+// already be lowercased. CredentialHash computes the credential hash (with package
+// credential) from the game's ID, which is looked up in the same transaction
+// as the insert.
 type NewUploader struct {
 	GameCode       string
 	Email          string
-	CredentialHash []byte
+	CredentialHash func(gameID int64) []byte
 }
 
 // Uploader is an active upload account in an active game.
@@ -83,6 +87,9 @@ func (s *Store) CreateUploader(ctx context.Context, u NewUploader) error {
 }
 
 func createGame(conn *sqlite.Conn, code string) error {
+	if code != strings.ToLower(code) {
+		return fmt.Errorf("%s: %w", code, ErrGameCodeCase)
+	}
 	err := sqlitex.Execute(conn, "INSERT INTO games (code, is_active) VALUES (?, 1);", &sqlitex.ExecOptions{
 		Args: []any{code},
 	})
@@ -92,23 +99,45 @@ func createGame(conn *sqlite.Conn, code string) error {
 	return err
 }
 
-func createUploader(conn *sqlite.Conn, u NewUploader) error {
-	err := sqlitex.Execute(conn, `
-INSERT INTO game_uploaders (game_id, email, credential_hash, is_active)
-SELECT id, ?, ?, 1 FROM games WHERE code = ?;`, &sqlitex.ExecOptions{
-		Args: []any{u.Email, u.CredentialHash, u.GameCode},
-	})
-	switch sqlite.ErrCode(err) {
-	case sqlite.ResultOK:
-	case sqlite.ResultConstraintPrimaryKey, sqlite.ResultConstraintUnique:
-		return ErrUploaderExists
-	default:
+func createUploader(conn *sqlite.Conn, u NewUploader) (err error) {
+	defer sqlitex.Save(conn)(&err)
+	gameID, ok, err := gameID(conn, u.GameCode)
+	if err != nil {
 		return err
-	}
-	if conn.Changes() == 0 {
+	} else if !ok {
 		return fmt.Errorf("%s: %w", u.GameCode, ErrUnknownGame)
 	}
-	return nil
+	err = sqlitex.Execute(conn, "INSERT INTO game_uploaders (game_id, email, credential_hash, is_active) VALUES (?, ?, ?, 1);", &sqlitex.ExecOptions{
+		Args: []any{gameID, u.Email, u.CredentialHash(gameID)},
+	})
+	switch sqlite.ErrCode(err) {
+	case sqlite.ResultConstraintPrimaryKey, sqlite.ResultConstraintUnique:
+		return ErrUploaderExists
+	}
+	return err
+}
+
+// GameID returns the ID of the game with the given code, active or not.
+func (s *Store) GameID(ctx context.Context, code string) (int64, bool, error) {
+	conn, err := s.take(ctx)
+	if err != nil {
+		return 0, false, err
+	}
+	defer s.pool.Put(conn)
+	return gameID(conn, code)
+}
+
+func gameID(conn *sqlite.Conn, code string) (int64, bool, error) {
+	var id int64
+	var found bool
+	err := sqlitex.Execute(conn, "SELECT id FROM games WHERE code = ?;", &sqlitex.ExecOptions{
+		Args: []any{code},
+		ResultFunc: func(stmt *sqlite.Stmt) error {
+			id, found = stmt.ColumnInt64(0), true
+			return nil
+		},
+	})
+	return id, found, err
 }
 
 // FindUploader returns the upload account with the given credential hash.

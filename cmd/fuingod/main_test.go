@@ -162,11 +162,12 @@ func post(t *testing.T, url, contentType string, body io.Reader) (int, string) {
 	return resp.StatusCode, string(data)
 }
 
-func postUpload(t *testing.T, base, email, token, file string) (int, string) {
+func postUpload(t *testing.T, base, email, game, token, file string) (int, string) {
 	t.Helper()
 	var body bytes.Buffer
 	mw := multipart.NewWriter(&body)
 	mw.WriteField("email", email)
+	mw.WriteField("game", game)
 	mw.WriteField("token", token)
 	fw, _ := mw.CreateFormFile("file", "turn.txt")
 	io.WriteString(fw, file)
@@ -180,13 +181,13 @@ func TestServeMemoryDatabase(t *testing.T) {
 	base := startServer(t, "--env", "development", "--db", ":memory:")
 
 	u := devdata.Uploaders[0]
-	if code, body := postUpload(t, base, u.Email, u.Token, "turn\n"); code != http.StatusOK {
+	if code, body := postUpload(t, base, u.Email, u.Game, u.Token, "turn\n"); code != http.StatusOK {
 		t.Errorf("default account upload: %d %s", code, body)
 	}
 	if code, body := post(t, base+"/__development/create-account/game01/heron%40example.com/heron-token", "", nil); code != http.StatusCreated {
 		t.Errorf("create-account: %d %s", code, body)
 	}
-	if code, body := postUpload(t, base, "heron@example.com", "heron-token", "turn 2\n"); code != http.StatusOK {
+	if code, body := postUpload(t, base, "heron@example.com", "game01", "heron-token", "turn 2\n"); code != http.StatusOK {
 		t.Errorf("helper account upload: %d %s", code, body)
 	}
 	if code, _ := post(t, base+"/__agent/create-account/game01/a%40example.com/t", "", nil); code != http.StatusNotFound {
@@ -211,7 +212,7 @@ func TestServeDatabaseFile(t *testing.T) {
 	// In test, the defaults in the file still work but the helpers do not exist.
 	base := startServer(t, "--env", "test", "--db", path)
 	u := devdata.Uploaders[2]
-	if code, body := postUpload(t, base, u.Email, u.Token, "turn\n"); code != http.StatusOK {
+	if code, body := postUpload(t, base, u.Email, u.Game, u.Token, "turn\n"); code != http.StatusOK {
 		t.Errorf("upload: %d %s", code, body)
 	}
 	// The contents are in the database file, not on the filesystem.

@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mdhender/fuingo/internal/credential"
 	"github.com/mdhender/fuingo/internal/devdata"
 	"github.com/mdhender/fuingo/internal/store"
 	"github.com/mdhender/fuingo/internal/upload"
@@ -55,11 +56,12 @@ func newFixture(t *testing.T) *fixture {
 }
 
 // request builds a multipart upload like the web form's.
-func request(t *testing.T, email, token string, file []byte) *http.Request {
+func request(t *testing.T, email, game, token string, file []byte) *http.Request {
 	t.Helper()
 	var body bytes.Buffer
 	mw := multipart.NewWriter(&body)
 	mw.WriteField(upload.FieldEmail, email)
+	mw.WriteField(upload.FieldGame, game)
 	mw.WriteField(upload.FieldToken, token)
 	fw, err := mw.CreateFormFile(upload.FieldFile, "turn.txt")
 	if err != nil {
@@ -85,9 +87,9 @@ func (f *fixture) do(r *http.Request) response {
 	return response{status: w.Code, body: w.Body.String(), header: w.Header()}
 }
 
-func (f *fixture) upload(email, token string, file []byte) response {
+func (f *fixture) upload(email, game, token string, file []byte) response {
 	f.t.Helper()
-	return f.do(request(f.t, email, token, file))
+	return f.do(request(f.t, email, game, token, file))
 }
 
 // blobs lists the stored contents.
@@ -159,7 +161,7 @@ func TestSuccessfulUpload(t *testing.T) {
 	f := newFixture(t)
 	file := []byte("turn 1\r\n\tmove north\n")
 	before := time.Now().UTC()
-	r := f.upload(catbird.Email, catbird.Token, file)
+	r := f.upload(catbird.Email, catbird.Game, catbird.Token, file)
 	f.expectAccepted("upload", r, file)
 	if !strings.Contains(r.body, hash(file)) {
 		t.Errorf("response does not report the content hash: %s", r.body)
@@ -189,23 +191,23 @@ func TestSizeLimit(t *testing.T) {
 		t.Parallel()
 		f := newFixture(t)
 		file := text(65536)
-		f.expectAccepted("65536 bytes", f.upload(catbird.Email, catbird.Token, file), file)
+		f.expectAccepted("65536 bytes", f.upload(catbird.Email, catbird.Game, catbird.Token, file), file)
 	})
 	t.Run("65537 rejected", func(t *testing.T) {
 		t.Parallel()
 		f := newFixture(t)
-		f.expectRejected("65537 bytes", f.upload(catbird.Email, catbird.Token, text(65537)), http.StatusRequestEntityTooLarge, "larger than 64 KiB")
+		f.expectRejected("65537 bytes", f.upload(catbird.Email, catbird.Game, catbird.Token, text(65537)), http.StatusRequestEntityTooLarge, "larger than 64 KiB")
 	})
 	t.Run("huge body rejected", func(t *testing.T) {
 		t.Parallel()
 		f := newFixture(t)
-		f.expectRejected("1 MiB", f.upload(catbird.Email, catbird.Token, text(1<<20)), http.StatusRequestEntityTooLarge, "larger than 64 KiB")
+		f.expectRejected("1 MiB", f.upload(catbird.Email, catbird.Game, catbird.Token, text(1<<20)), http.StatusRequestEntityTooLarge, "larger than 64 KiB")
 	})
 	t.Run("size is checked before the sanity check and authorization", func(t *testing.T) {
 		t.Parallel()
 		f := newFixture(t)
 		file := append([]byte{0}, text(65536)...)
-		f.expectRejected("bad everything", f.upload("nobody@example.com", "wrong", file), http.StatusRequestEntityTooLarge, "larger than 64 KiB")
+		f.expectRejected("bad everything", f.upload("nobody@example.com", "game99", "wrong", file), http.StatusRequestEntityTooLarge, "larger than 64 KiB")
 	})
 }
 
@@ -215,7 +217,7 @@ func TestEmptyFiles(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			f := newFixture(t)
-			f.expectRejected(name, f.upload(catbird.Email, catbird.Token, []byte(file)), http.StatusBadRequest, "The file is empty.")
+			f.expectRejected(name, f.upload(catbird.Email, catbird.Game, catbird.Token, []byte(file)), http.StatusBadRequest, "The file is empty.")
 		})
 	}
 }
@@ -258,10 +260,10 @@ func TestBOMFollowedByText(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
 	file := []byte(bom + "turn 1\n")
-	f.expectAccepted("BOM + text", f.upload(catbird.Email, catbird.Token, file), file)
+	f.expectAccepted("BOM + text", f.upload(catbird.Email, catbird.Game, catbird.Token, file), file)
 	// Only one BOM is skipped; a second one is not text.
 	f2 := newFixture(t)
-	f2.expectRejected("two BOMs", f2.upload(catbird.Email, catbird.Token, []byte(bom+bom+"turn")), http.StatusBadRequest, "byte 0xEF at offset 3")
+	f2.expectRejected("two BOMs", f2.upload(catbird.Email, catbird.Game, catbird.Token, []byte(bom+bom+"turn")), http.StatusBadRequest, "byte 0xEF at offset 3")
 }
 
 func TestEverySanityByte(t *testing.T) {
@@ -271,7 +273,7 @@ func TestEverySanityByte(t *testing.T) {
 		for _, prefix := range []string{"", bom} {
 			f := newFixture(t)
 			file := []byte(prefix + string([]byte{byte(b)}) + "turn")
-			r := f.upload(catbird.Email, catbird.Token, file)
+			r := f.upload(catbird.Email, catbird.Game, catbird.Token, file)
 			name := hex.EncodeToString([]byte{byte(b)})
 			if prefix != "" {
 				name = "BOM+" + name
@@ -293,10 +295,10 @@ func TestSampleBoundary(t *testing.T) {
 			for _, n := range []int{1, 2, 127} {
 				f := newFixture(t)
 				file := append([]byte(prefix), text(n)...)
-				f.expectAccepted("short", f.upload(catbird.Email, catbird.Token, file), file)
+				f.expectAccepted("short", f.upload(catbird.Email, catbird.Game, catbird.Token, file), file)
 			}
 			f := newFixture(t)
-			f.expectRejected("short with bad last byte", f.upload(catbird.Email, catbird.Token, append([]byte(prefix), 'a', 'b', 0x7F)), http.StatusBadRequest, "not plain text")
+			f.expectRejected("short with bad last byte", f.upload(catbird.Email, catbird.Game, catbird.Token, append([]byte(prefix), 'a', 'b', 0x7F)), http.StatusBadRequest, "not plain text")
 		})
 		t.Run("last sampled byte "+hex.EncodeToString([]byte(prefix)), func(t *testing.T) {
 			t.Parallel()
@@ -304,14 +306,14 @@ func TestSampleBoundary(t *testing.T) {
 			file := append([]byte(prefix), text(127)...)
 			file = append(file, 0x00)
 			file = append(file, text(10)...)
-			f.expectRejected("byte 128", f.upload(catbird.Email, catbird.Token, file), http.StatusBadRequest, "not plain text")
+			f.expectRejected("byte 128", f.upload(catbird.Email, catbird.Game, catbird.Token, file), http.StatusBadRequest, "not plain text")
 		})
 		t.Run("first byte after the sample "+hex.EncodeToString([]byte(prefix)), func(t *testing.T) {
 			t.Parallel()
 			f := newFixture(t)
 			file := append([]byte(prefix), text(128)...)
 			file = append(file, 0x00, 0xFF)
-			f.expectAccepted("byte 129", f.upload(catbird.Email, catbird.Token, file), file)
+			f.expectAccepted("byte 129", f.upload(catbird.Email, catbird.Game, catbird.Token, file), file)
 		})
 	}
 }
@@ -319,17 +321,27 @@ func TestSampleBoundary(t *testing.T) {
 func TestSanityIsCheckedBeforeAuthorization(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
-	f.expectRejected("binary with bad token", f.upload(catbird.Email, "wrong", []byte{0x00}), http.StatusBadRequest, "not plain text")
-	f.expectRejected("empty with bad token", f.upload(catbird.Email, "wrong", nil), http.StatusBadRequest, "The file is empty.")
+	f.expectRejected("binary with bad token", f.upload(catbird.Email, catbird.Game, "wrong", []byte{0x00}), http.StatusBadRequest, "not plain text")
+	f.expectRejected("empty with bad token", f.upload(catbird.Email, catbird.Game, "wrong", nil), http.StatusBadRequest, "The file is empty.")
 }
 
 func TestEmailCaseFolding(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
 	file := []byte("turn\n")
-	f.expectAccepted("mixed case", f.upload("CatBird@EXAMPLE.com", catbird.Token, file), file)
+	f.expectAccepted("mixed case", f.upload("CatBird@EXAMPLE.com", catbird.Game, catbird.Token, file), file)
 	if uploads := f.uploads(); len(uploads) != 1 || uploads[0].Email != catbird.Email {
 		t.Errorf("uploads = %+v, want one under %s", uploads, catbird.Email)
+	}
+}
+
+func TestGameCodeCaseFolding(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	file := []byte("turn\n")
+	f.expectAccepted("mixed case", f.upload(catbird.Email, "GaMe01", catbird.Token, file), file)
+	if uploads := f.uploads(); len(uploads) != 1 || uploads[0].GameCode != catbird.Game {
+		t.Errorf("uploads = %+v, want one in %s", uploads, catbird.Game)
 	}
 }
 
@@ -337,20 +349,27 @@ func TestAuthorizationFailures(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
 	file := []byte("turn\n")
-	cases := map[string][2]string{
-		"unknown email":           {"nobody@example.com", catbird.Token},
-		"wrong email":             {caracara.Email, catbird.Token},
-		"wrong token":             {catbird.Email, "8eb87beb-0869-4815-8ce8-afeef14da57f"},
-		"token of another player": {catbird.Email, caracara.Token},
-		"empty email":             {"", catbird.Token},
-		"empty token":             {catbird.Email, ""},
-		"email with whitespace":   {" " + catbird.Email, catbird.Token},
-		"oversized email":         {strings.Repeat("a", 2000) + "@example.com", catbird.Token},
+	spoonbill := devdata.Uploaders[1]
+	cases := map[string][3]string{
+		"unknown email":               {"nobody@example.com", catbird.Game, catbird.Token},
+		"wrong email":                 {spoonbill.Email, catbird.Game, catbird.Token},
+		"wrong token":                 {catbird.Email, catbird.Game, "8eb87beb-0869-4815-8ce8-afeef14da57f"},
+		"token of another player":     {catbird.Email, catbird.Game, spoonbill.Token},
+		"unknown game":                {catbird.Email, "game99", catbird.Token},
+		"game the uploader is not in": {catbird.Email, caracara.Game, catbird.Token},
+		"game of another player":      {caracara.Email, catbird.Game, caracara.Token},
+		"game code with whitespace":   {catbird.Email, catbird.Game + " ", catbird.Token},
+		"empty email":                 {"", catbird.Game, catbird.Token},
+		"empty game":                  {catbird.Email, "", catbird.Token},
+		"empty token":                 {catbird.Email, catbird.Game, ""},
+		"email with whitespace":       {" " + catbird.Email, catbird.Game, catbird.Token},
+		"oversized email":             {strings.Repeat("a", 2000) + "@example.com", catbird.Game, catbird.Token},
+		"oversized game":              {catbird.Email, strings.Repeat("g", 2000), catbird.Token},
 	}
 	var first *response
 	for name, c := range cases {
-		r := f.upload(c[0], c[1], file)
-		f.expectRejected(name, r, http.StatusForbidden, "The email address or upload token is not valid.")
+		r := f.upload(c[0], c[1], c[2], file)
+		f.expectRejected(name, r, http.StatusForbidden, "The email address, game code, or upload token is not valid.")
 		if first == nil {
 			first = &r
 		} else if r.status != first.status || r.body != first.body || !equalHeaders(r.header, first.header) {
@@ -359,15 +378,46 @@ func TestAuthorizationFailures(t *testing.T) {
 	}
 }
 
-func TestUnknownEmailAndWrongTokenAreIdentical(t *testing.T) {
+func TestUnknownEmailGameAndWrongTokenAreIdentical(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
 	file := []byte("turn\n")
-	unknown := f.upload("nobody@example.com", catbird.Token, file)
-	wrong := f.upload(catbird.Email, "wrong-token", file)
-	if unknown.status != wrong.status || unknown.body != wrong.body || !equalHeaders(unknown.header, wrong.header) {
-		t.Errorf("responses differ:\nunknown email: %d %v %q\nwrong token:   %d %v %q",
-			unknown.status, unknown.header, unknown.body, wrong.status, wrong.header, wrong.body)
+	responses := map[string]response{
+		"unknown email": f.upload("nobody@example.com", catbird.Game, catbird.Token, file),
+		"unknown game":  f.upload(catbird.Email, "game99", catbird.Token, file),
+		"wrong game":    f.upload(catbird.Email, caracara.Game, catbird.Token, file),
+		"wrong token":   f.upload(catbird.Email, catbird.Game, "wrong-token", file),
+	}
+	want := responses["wrong token"]
+	for name, r := range responses {
+		if r.status != want.status || r.body != want.body || !equalHeaders(r.header, want.header) {
+			t.Errorf("%s: %d %v %q differs from wrong token: %d %v %q",
+				name, r.status, r.header, r.body, want.status, want.header, want.body)
+		}
+	}
+}
+
+// TestSameEmailAndTokenInTwoGames checks that the game code chooses the
+// credential: one email may hold the same token in two games, and each upload
+// is filed under the game named in the form.
+func TestSameEmailAndTokenInTwoGames(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	err := f.store.CreateUploader(t.Context(), store.NewUploader{
+		GameCode: caracara.Game,
+		Email:    catbird.Email,
+		CredentialHash: func(gameID int64) []byte {
+			return credential.Hash(pepper, catbird.Email, gameID, catbird.Token)
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateUploader in a second game: %v", err)
+	}
+	f.expectAccepted("game01", f.upload(catbird.Email, catbird.Game, catbird.Token, []byte("game01 orders\n")), []byte("game01 orders\n"))
+	f.expectAccepted("game02", f.upload(catbird.Email, caracara.Game, catbird.Token, []byte("game02 orders\n")), []byte("game02 orders\n"))
+	uploads := f.uploads()
+	if len(uploads) != 2 || uploads[0].GameCode != catbird.Game || uploads[1].GameCode != caracara.Game {
+		t.Errorf("uploads = %+v, want one in each game", uploads)
 	}
 }
 
@@ -380,10 +430,10 @@ func TestInactiveUploaderAndGame(t *testing.T) {
 		if err := f.store.SetUploaderActive(t.Context(), catbird.Game, catbird.Email, false); err != nil {
 			t.Fatal(err)
 		}
-		f.expectRejected("inactive uploader", f.upload(catbird.Email, catbird.Token, file), http.StatusForbidden, "not valid")
+		f.expectRejected("inactive uploader", f.upload(catbird.Email, catbird.Game, catbird.Token, file), http.StatusForbidden, "not valid")
 		// Other uploaders in the game are unaffected.
 		spoonbill := devdata.Uploaders[1]
-		f.expectAccepted("active uploader", f.upload(spoonbill.Email, spoonbill.Token, file), file)
+		f.expectAccepted("active uploader", f.upload(spoonbill.Email, spoonbill.Game, spoonbill.Token, file), file)
 	})
 	t.Run("game", func(t *testing.T) {
 		t.Parallel()
@@ -391,8 +441,8 @@ func TestInactiveUploaderAndGame(t *testing.T) {
 		if err := f.store.SetGameActive(t.Context(), catbird.Game, false); err != nil {
 			t.Fatal(err)
 		}
-		f.expectRejected("inactive game", f.upload(catbird.Email, catbird.Token, file), http.StatusForbidden, "not valid")
-		f.expectAccepted("active game", f.upload(caracara.Email, caracara.Token, file), file)
+		f.expectRejected("inactive game", f.upload(catbird.Email, catbird.Game, catbird.Token, file), http.StatusForbidden, "not valid")
+		f.expectAccepted("active game", f.upload(caracara.Email, caracara.Game, caracara.Token, file), file)
 	})
 }
 
@@ -404,7 +454,7 @@ func TestDifferentPepperRejectsDefaultTokens(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.handler = h
-	f.expectRejected("other pepper", f.upload(catbird.Email, catbird.Token, []byte("turn\n")), http.StatusForbidden, "not valid")
+	f.expectRejected("other pepper", f.upload(catbird.Email, catbird.Game, catbird.Token, []byte("turn\n")), http.StatusForbidden, "not valid")
 }
 
 func TestNewRequiresPepper(t *testing.T) {
@@ -423,15 +473,15 @@ func TestDuplicateContent(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
 	file := []byte("setup orders\n")
-	f.expectAccepted("first", f.upload(catbird.Email, catbird.Token, file), file)
+	f.expectAccepted("first", f.upload(catbird.Email, catbird.Game, catbird.Token, file), file)
 	first := f.blobs()[0]
 
 	// Another uploader in the same game, the same uploader again, and an
 	// uploader in another game all send identical bytes.
 	spoonbill := devdata.Uploaders[1]
-	f.expectAccepted("another uploader", f.upload(spoonbill.Email, spoonbill.Token, file), file)
-	f.expectAccepted("same uploader again", f.upload(catbird.Email, catbird.Token, file), file)
-	f.expectAccepted("another game", f.upload(caracara.Email, caracara.Token, file), file)
+	f.expectAccepted("another uploader", f.upload(spoonbill.Email, spoonbill.Game, spoonbill.Token, file), file)
+	f.expectAccepted("same uploader again", f.upload(catbird.Email, catbird.Game, catbird.Token, file), file)
+	f.expectAccepted("another game", f.upload(caracara.Email, caracara.Game, caracara.Token, file), file)
 
 	// One blob, unchanged since the first upload.
 	if blobs := f.blobs(); len(blobs) != 1 || !blobs[0].CreatedAt.Equal(first.CreatedAt) || !bytes.Equal(blobs[0].Contents, first.Contents) {
@@ -449,8 +499,8 @@ func TestDuplicateContent(t *testing.T) {
 		}
 	}
 	// The response does not reveal that the content was already stored.
-	r1 := f.upload(spoonbill.Email, spoonbill.Token, []byte("new orders\n"))
-	r2 := f.upload(spoonbill.Email, spoonbill.Token, []byte("new orders\n"))
+	r1 := f.upload(spoonbill.Email, spoonbill.Game, spoonbill.Token, []byte("new orders\n"))
+	r2 := f.upload(spoonbill.Email, spoonbill.Game, spoonbill.Token, []byte("new orders\n"))
 	if r1.status != r2.status || r1.body != r2.body {
 		t.Errorf("first and repeated uploads differ:\n%q\n%q", r1.body, r2.body)
 	}
@@ -464,7 +514,7 @@ func TestConcurrentDuplicateUploads(t *testing.T) {
 	for range 8 {
 		go func() {
 			w := httptest.NewRecorder()
-			f.handler.ServeHTTP(w, request(t, catbird.Email, catbird.Token, file))
+			f.handler.ServeHTTP(w, request(t, catbird.Email, catbird.Game, catbird.Token, file))
 			results <- w.Code
 		}()
 	}

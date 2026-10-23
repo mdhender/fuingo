@@ -58,11 +58,12 @@ func serve(h http.Handler, r *http.Request) *httptest.ResponseRecorder {
 
 // uploadRequest builds a same-origin upload through the public origin, with
 // the headers a browser sends.
-func uploadRequest(t *testing.T, email, token, file string) *http.Request {
+func uploadRequest(t *testing.T, email, game, token, file string) *http.Request {
 	t.Helper()
 	var body bytes.Buffer
 	mw := multipart.NewWriter(&body)
 	mw.WriteField("email", email)
+	mw.WriteField("game", game)
 	mw.WriteField("token", token)
 	fw, _ := mw.CreateFormFile("file", "turn.txt")
 	io.WriteString(fw, file)
@@ -87,12 +88,12 @@ func TestSameOriginUploads(t *testing.T) {
 	t.Parallel()
 	h, _ := newServer(t, "production")
 	// HTMX request with Fetch Metadata.
-	if w := serve(h, uploadRequest(t, catbird.Email, catbird.Token, "turn\n")); w.Code != http.StatusOK {
+	if w := serve(h, uploadRequest(t, catbird.Email, catbird.Game, catbird.Token, "turn\n")); w.Code != http.StatusOK {
 		t.Errorf("same-origin HTMX upload: %d %s", w.Code, w.Body)
 	}
 	// A browser without Fetch Metadata: Origin is compared with Host,
 	// including the port.
-	r := uploadRequest(t, catbird.Email, catbird.Token, "turn 2\n")
+	r := uploadRequest(t, catbird.Email, catbird.Game, catbird.Token, "turn 2\n")
 	r.Header.Del("Sec-Fetch-Site")
 	r.Header.Del("HX-Request")
 	if w := serve(h, r); w.Code != http.StatusOK {
@@ -128,7 +129,7 @@ func TestCrossOriginUploadsAreRejected(t *testing.T) {
 		},
 	}
 	for name, modify := range cases {
-		r := uploadRequest(t, catbird.Email, catbird.Token, "turn\n")
+		r := uploadRequest(t, catbird.Email, catbird.Game, catbird.Token, "turn\n")
 		modify(r)
 		if w := serve(h, r); w.Code != http.StatusForbidden {
 			t.Errorf("%s: status %d, want 403", name, w.Code)
@@ -178,13 +179,27 @@ func TestHelperCreatesAccountThatCanUpload(t *testing.T) {
 		if w.Code != http.StatusCreated {
 			t.Fatalf("%s: create-account: %d %s", env, w.Code, w.Body)
 		}
-		if w := serve(h, uploadRequest(t, "heron+test@example.com", "tok/en?#%", "turn\n")); w.Code != http.StatusOK {
+		if w := serve(h, uploadRequest(t, "heron+test@example.com", "game02", "tok/en?#%", "turn\n")); w.Code != http.StatusOK {
 			t.Errorf("%s: upload with helper account: %d %s", env, w.Code, w.Body)
 		}
 		uploads, _ := s.Uploads(t.Context())
 		if len(uploads) != 1 || uploads[0].GameCode != "game02" || uploads[0].Email != "heron+test@example.com" {
 			t.Errorf("%s: uploads = %+v", env, uploads)
 		}
+	}
+}
+
+func TestHelperLowercasesGameCode(t *testing.T) {
+	t.Parallel()
+	h, s := newServer(t, "development")
+	if w := serve(h, helperRequest(http.MethodPost, "/__development", "GAME02", "heron@example.com", "heron-token")); w.Code != http.StatusCreated {
+		t.Fatalf("create-account with GAME02: %d %s", w.Code, w.Body)
+	}
+	if w := serve(h, uploadRequest(t, "heron@example.com", "game02", "heron-token", "turn\n")); w.Code != http.StatusOK {
+		t.Errorf("upload: %d %s", w.Code, w.Body)
+	}
+	if games, _ := s.Games(t.Context()); len(games) != len(devdata.Games) {
+		t.Errorf("games = %v; a game was created", games)
 	}
 }
 
@@ -208,7 +223,7 @@ func TestHelperRequiresPost(t *testing.T) {
 		}
 	}
 	// None of them created the account.
-	if w := serve(h, uploadRequest(t, "x@example.com", "t", "turn\n")); w.Code != http.StatusForbidden {
+	if w := serve(h, uploadRequest(t, "x@example.com", "game01", "t", "turn\n")); w.Code != http.StatusForbidden {
 		t.Errorf("upload after non-POST helpers: %d, want 403", w.Code)
 	}
 }
@@ -220,15 +235,19 @@ func TestHelperDuplicatesDoNotModify(t *testing.T) {
 	if w := serve(h, helperRequest(http.MethodPost, "/__development", catbird.Game, "CATBIRD@example.com", "new-token")); w.Code != http.StatusConflict {
 		t.Errorf("duplicate email: status %d, want 409", w.Code)
 	}
-	// The same email and token in another game have the same credential hash.
-	if w := serve(h, helperRequest(http.MethodPost, "/__development", "game02", catbird.Email, catbird.Token)); w.Code != http.StatusConflict {
-		t.Errorf("credential hash in use: status %d, want 409", w.Code)
-	}
-	if w := serve(h, uploadRequest(t, catbird.Email, catbird.Token, "turn\n")); w.Code != http.StatusOK {
+	if w := serve(h, uploadRequest(t, catbird.Email, catbird.Game, catbird.Token, "turn\n")); w.Code != http.StatusOK {
 		t.Errorf("original token: %d, want 200", w.Code)
 	}
-	if w := serve(h, uploadRequest(t, catbird.Email, "new-token", "turn\n")); w.Code != http.StatusForbidden {
+	if w := serve(h, uploadRequest(t, catbird.Email, catbird.Game, "new-token", "turn\n")); w.Code != http.StatusForbidden {
 		t.Errorf("rejected token: %d, want 403", w.Code)
+	}
+	// The same email and token in another game are a different credential,
+	// because the hash includes the game's ID.
+	if w := serve(h, helperRequest(http.MethodPost, "/__development", "game02", catbird.Email, catbird.Token)); w.Code != http.StatusCreated {
+		t.Errorf("same email and token in another game: status %d, want 201", w.Code)
+	}
+	if w := serve(h, uploadRequest(t, catbird.Email, "game02", catbird.Token, "turn\n")); w.Code != http.StatusOK {
+		t.Errorf("upload to the second game: %d, want 200", w.Code)
 	}
 }
 
@@ -271,7 +290,7 @@ func TestHelperCrossOriginIsRejected(t *testing.T) {
 	if w := serve(h, r); w.Code != http.StatusForbidden {
 		t.Errorf("mismatched origin: status %d, want 403", w.Code)
 	}
-	if w := serve(h, uploadRequest(t, "x@example.com", "t", "turn\n")); w.Code != http.StatusForbidden {
+	if w := serve(h, uploadRequest(t, "x@example.com", "game01", "t", "turn\n")); w.Code != http.StatusForbidden {
 		t.Errorf("a cross-origin helper request created the account")
 	}
 }

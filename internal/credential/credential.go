@@ -7,6 +7,7 @@ package credential
 import (
 	"crypto/hmac"
 	"crypto/sha256"
+	"strconv"
 	"strings"
 )
 
@@ -16,11 +17,21 @@ func NormalizeEmail(email string) string {
 	return strings.ToLower(email)
 }
 
-// Hash returns HMAC-SHA256(pepper, lowercased-email + "\x00" + token).
-// It lowercases the email itself, so callers may pass it as entered.
-func Hash(pepper, email, token string) []byte {
+// NormalizeGameCode lowercases a game code. No other normalization is
+// applied.
+func NormalizeGameCode(code string) string {
+	return strings.ToLower(code)
+}
+
+// Hash returns HMAC-SHA256(pepper, lowercased-email + "\x00" + game-id +
+// "\x00" + token), where game-id is the game's integer ID in decimal. The ID,
+// not the game code, keeps credentials valid when a game's code changes.
+// Hash lowercases the email itself, so callers may pass it as entered.
+func Hash(pepper, email string, gameID int64, token string) []byte {
 	mac := hmac.New(sha256.New, []byte(pepper))
 	mac.Write([]byte(NormalizeEmail(email)))
+	mac.Write([]byte{0})
+	mac.Write([]byte(strconv.FormatInt(gameID, 10)))
 	mac.Write([]byte{0})
 	mac.Write([]byte(token))
 	return mac.Sum(nil)

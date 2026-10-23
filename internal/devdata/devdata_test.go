@@ -34,10 +34,10 @@ func TestSeed(t *testing.T) {
 			t.Errorf("%s: games = %v, want %v", env, games, devdata.Games)
 		}
 		for _, u := range devdata.Uploaders {
-			if _, ok, err := s.FindUploader(t.Context(), credential.Hash(pepper, u.Email, u.Token)); err != nil || !ok {
+			if _, ok, err := s.FindUploader(t.Context(), credential.Hash(pepper, u.Email, gameIDOf(t, s, u.Game), u.Token)); err != nil || !ok {
 				t.Errorf("%s: %s not found: %v", env, u.Email, err)
 			}
-			if _, ok, _ := s.FindUploader(t.Context(), credential.Hash("other", u.Email, u.Token)); ok {
+			if _, ok, _ := s.FindUploader(t.Context(), credential.Hash("other", u.Email, gameIDOf(t, s, u.Game), u.Token)); ok {
 				t.Errorf("%s: %s found under another pepper", env, u.Email)
 			}
 		}
@@ -75,4 +75,14 @@ func TestSeedRequiresPepper(t *testing.T) {
 	if err := devdata.Seed(t.Context(), s, "development", ""); !errors.Is(err, devdata.ErrMissingPepper) {
 		t.Errorf("Seed = %v, want ErrMissingPepper", err)
 	}
+}
+
+// gameIDOf returns the ID of the game with the given code.
+func gameIDOf(t *testing.T, s *store.Store, code string) int64 {
+	t.Helper()
+	id, ok, err := s.GameID(t.Context(), code)
+	if err != nil || !ok {
+		t.Fatalf("game %s: %v", code, err)
+	}
+	return id
 }

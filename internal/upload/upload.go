@@ -47,6 +47,7 @@ const (
 // Form field names.
 const (
 	FieldEmail = "email"
+	FieldGame  = "game"
 	FieldToken = "token"
 	FieldFile  = "file"
 )
@@ -55,7 +56,7 @@ var utf8BOM = []byte{0xEF, 0xBB, 0xBF}
 
 // Messages shown to the client.
 const (
-	msgAuthorization = "The email address or upload token is not valid."
+	msgAuthorization = "The email address, game code, or upload token is not valid."
 	msgBadRequest    = "The upload could not be read. Fill in every field, choose one file, and try again."
 	msgEmpty         = "The file is empty."
 	msgNoFile        = "Choose a file to upload."
@@ -79,12 +80,12 @@ func New(s *store.Store, pepper string, logger *slog.Logger) (*Handler, error) {
 	return &Handler{db: s, pepper: pepper, logger: logger}, nil
 }
 
-// form is the parsed request. An absent or oversized email or token is left
-// empty, which fails authorization like any other wrong credential.
+// form is the parsed request. An absent or oversized email, game, or token is
+// left empty, which fails authorization like any other wrong credential.
 type form struct {
-	email, token string
-	file         []byte
-	hasFile      bool
+	email, game, token string
+	file               []byte
+	hasFile            bool
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -114,7 +115,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 3. Authorization.
-	uploader, ok, err := h.authorize(r, f.email, f.token)
+	uploader, ok, err := h.authorize(r, f.email, f.game, f.token)
 	if err != nil {
 		h.logger.Error("upload: authorize", "err", err)
 		respond(w, http.StatusInternalServerError, false, msgServerError)
@@ -161,7 +162,7 @@ func readForm(r *http.Request) (form, error) {
 		}
 		seen[name] = true
 		switch name {
-		case FieldEmail, FieldToken:
+		case FieldEmail, FieldGame, FieldToken:
 			value, err := readPart(part, maxFieldSize)
 			if err != nil {
 				return f, err
@@ -169,9 +170,12 @@ func readForm(r *http.Request) (form, error) {
 			if len(value) > maxFieldSize {
 				value = nil
 			}
-			if name == FieldEmail {
+			switch name {
+			case FieldEmail:
 				f.email = string(value)
-			} else {
+			case FieldGame:
+				f.game = string(value)
+			case FieldToken:
 				f.token = string(value)
 			}
 		case FieldFile:
@@ -223,17 +227,24 @@ func allowed(b byte) bool {
 	return (0x20 <= b && b <= 0x7E) || b == '\t' || b == '\n' || b == '\r'
 }
 
-// authorize returns the active uploader whose credential matches.
-func (h *Handler) authorize(r *http.Request, email, token string) (store.Uploader, bool, error) {
-	if email == "" || token == "" {
+// authorize returns the active uploader whose credential matches. The game
+// code is lowercased, like the email. An unknown code still computes and looks up a
+// hash, with game ID 0, which no game has, so it fails the same way as a
+// wrong token.
+func (h *Handler) authorize(r *http.Request, email, game, token string) (store.Uploader, bool, error) {
+	if email == "" || game == "" || token == "" {
 		return store.Uploader{}, false, nil
 	}
-	hash := credential.Hash(h.pepper, email, token)
+	gameID, _, err := h.db.GameID(r.Context(), credential.NormalizeGameCode(game))
+	if err != nil {
+		return store.Uploader{}, false, err
+	}
+	hash := credential.Hash(h.pepper, email, gameID, token)
 	u, ok, err := h.db.FindUploader(r.Context(), hash)
 	if err != nil || !ok {
 		return store.Uploader{}, false, err
 	}
-	if !credential.Equal(u.CredentialHash, hash) {
+	if u.GameID != gameID || !credential.Equal(u.CredentialHash, hash) {
 		return store.Uploader{}, false, nil
 	}
 	return u, true, nil

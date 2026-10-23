@@ -13,20 +13,27 @@ import (
 
 func TestHash(t *testing.T) {
 	mac := hmac.New(sha256.New, []byte("pepper"))
-	mac.Write([]byte("catbird@example.com\x00token"))
+	mac.Write([]byte("catbird@example.com\x0012\x00token"))
 	want := mac.Sum(nil)
 
-	if got := credential.Hash("pepper", "CatBird@Example.COM", "token"); !credential.Equal(got, want) {
+	if got := credential.Hash("pepper", "CatBird@Example.COM", 12, "token"); !credential.Equal(got, want) {
 		t.Errorf("Hash with mixed-case email = %x, want %x", got, want)
 	}
-	for _, other := range [][3]string{
-		{"other", "catbird@example.com", "token"},
-		{"pepper", "catbird@example.org", "token"},
-		{"pepper", "catbird@example.com", "Token"},
-		{"pepper", "catbird@example.com\x00", "token"},
-	} {
-		if got := credential.Hash(other[0], other[1], other[2]); credential.Equal(got, want) {
-			t.Errorf("Hash(%q, %q, %q) matched", other[0], other[1], other[2])
+	others := []struct {
+		pepper, email string
+		gameID        int64
+		token         string
+	}{
+		{"other", "catbird@example.com", 12, "token"},
+		{"pepper", "catbird@example.org", 12, "token"},
+		{"pepper", "catbird@example.com", 1, "token"},
+		{"pepper", "catbird@example.com", 2, "token"},
+		{"pepper", "catbird@example.com", 12, "Token"},
+		{"pepper", "catbird@example.com", 1, "2\x00token"},
+	}
+	for _, o := range others {
+		if got := credential.Hash(o.pepper, o.email, o.gameID, o.token); credential.Equal(got, want) {
+			t.Errorf("Hash(%q, %q, %d, %q) matched", o.pepper, o.email, o.gameID, o.token)
 		}
 	}
 }

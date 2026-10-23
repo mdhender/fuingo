@@ -47,7 +47,13 @@ func defaultUploaders(t *testing.T, path string) int {
 	defer s.Close()
 	n := 0
 	for _, u := range devdata.Uploaders {
-		if _, ok, err := s.FindUploader(t.Context(), credential.Hash(pepper, u.Email, u.Token)); err != nil {
+		gameID, ok, err := s.GameID(t.Context(), u.Game)
+		if err != nil {
+			t.Fatal(err)
+		} else if !ok {
+			continue
+		}
+		if _, ok, err := s.FindUploader(t.Context(), credential.Hash(pepper, u.Email, gameID, u.Token)); err != nil {
 			t.Fatal(err)
 		} else if ok {
 			n++

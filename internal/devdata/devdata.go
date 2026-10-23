@@ -57,9 +57,11 @@ func Seed(ctx context.Context, s *store.Store, env, pepper string) error {
 	var uploaders []store.NewUploader
 	for _, u := range Uploaders {
 		uploaders = append(uploaders, store.NewUploader{
-			GameCode:       u.Game,
-			Email:          credential.NormalizeEmail(u.Email),
-			CredentialHash: credential.Hash(pepper, u.Email, u.Token),
+			GameCode: u.Game,
+			Email:    credential.NormalizeEmail(u.Email),
+			CredentialHash: func(gameID int64) []byte {
+				return credential.Hash(pepper, u.Email, gameID, u.Token)
+			},
 		})
 	}
 	return s.CreateGamesAndUploaders(ctx, Games, uploaders)

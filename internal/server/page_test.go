@@ -31,6 +31,7 @@ func TestIndexPage(t *testing.T) {
 		`hx-encoding="multipart/form-data"`,
 		`hx-target="#result"`,
 		`name="email"`,
+		`name="game"`,
 		`name="token"`,
 		`<script src="` + server.HTMXPath + `"></script>`,
 		`<script src="` + server.TailwindURL + `"></script>`,

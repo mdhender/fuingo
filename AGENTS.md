@@ -60,6 +60,11 @@ variable `FUINGO_NAME`; secrets such as `FUINGO_PEPPER` have no flag.
 | `cmd/fuingodb` | Database administration: `create` and `migrate`. |
 | `cmd/fuingo` | Future phase: the operators' CLI for managing games, uploaders, API accounts, and game managers. It is the only way to create accounts outside development and agent. Do not implement it until the user starts that phase. |
 
+Upload tokens are issued out of band: a game manager emails each uploader the
+game code and that game's token. A token cannot be recovered, because only its
+hash is stored; a lost token is replaced by resetting it and sending the new
+one. Resetting belongs to `cmd/fuingo` or the `/api/` phase.
+
 ## Data model
 
 Game codes and API account emails can change, so rows are identified by integer
@@ -76,9 +81,12 @@ never be reused.
 | `accounts` | `id`, `email`, `password_hash` | PK `id`; `email` unique (future `/api/` phase) |
 | `game_managers` | `game_id`, `account_id` | PK `(game_id, account_id)`; FKs to `games` and `accounts` (future `/api/` phase) |
 
+- `games.code` is stored lowercased, like emails.
 - `game_uploaders` holds the upload credentials. `email` is stored lowercased.
   `credential_hash` is the hash described below; the plaintext token is never
-  stored. Because it is unique, a match identifies exactly one uploader and game.
+  stored. The hash includes the game's ID, so an uploader in several games has
+  a separate credential in each, and may even reuse a token across them.
+  Because the hash is unique, a match identifies exactly one uploader and game.
 - `upload_blobs` holds uploaded file contents, keyed by the lowercase hex
   SHA-256 of the contents. Identical uploads share one blob, across uploaders
   and games, so a blob belongs to no single uploader. `created_at` is when the
@@ -100,9 +108,9 @@ from the default data and the development/agent helper in
 
 ## Upload requirements
 
-The web form has two fields, email address and upload token. The file picker
-stays disabled until both are filled in. The server handles each upload in this
-order:
+The web form has three fields: email address, game code, and upload token.
+The file picker stays disabled until all three are filled in. The server
+handles each upload in this order:
 
 1. **Size limit.** Reject any upload larger than 64 KiB (65,536 bytes). Enforce
    the limit while reading the request (for example, with `http.MaxBytesReader`),
@@ -112,12 +120,16 @@ order:
    printable ASCII (`0x20`–`0x7E`), tab (`0x09`), LF (`0x0A`), or CR (`0x0D`). Any
    other control byte, or any byte above `0x7F`, fails the check. Bytes beyond
    that sample are not checked. A file containing only a BOM is empty.
-3. **Authorization.** Lowercase the email with `strings.ToLower`; apply no other
-   normalization unless the user agrees to it. Compute the credential hash as
-   `HMAC-SHA256(pepper, lowercased-email + "\x00" + token)` and look it up in
-   `game_uploaders`. Both the matching uploader and its game must be active; an
-   inactive one fails like a missing row. There are no salts. Compare hashes in
-   constant time.
+3. **Authorization.** Lowercase the email and the game code with
+   `strings.ToLower`; apply no other normalization unless the user agrees to
+   it. Look up the game's ID by its code. Compute the credential hash as
+   `HMAC-SHA256(pepper, lowercased-email + "\x00" + game-id + "\x00" + token)`,
+   where `game-id` is the integer ID in decimal, and look it up in
+   `game_uploaders`. Using the ID, not the code, keeps credentials valid when a
+   game's code changes. An unknown game code still computes and looks up a
+   hash, with ID `0`, and fails like a wrong token. Both the matching uploader
+   and its game must be active; an inactive one fails like a missing row. There
+   are no salts. Compare hashes in constant time.
 4. **Storage.** Key the contents by their lowercase hex SHA-256 in
    `upload_blobs`. If a blob with that hash exists, keep it and do not rewrite
    it.
@@ -177,10 +189,11 @@ Do not implement these until the user starts the phase.
   rejected), empty and BOM-only files, a BOM followed by valid text, every
   boundary byte of the sanity check, files shorter than the 128-byte sample, a
   disallowed byte as the last sampled byte (rejected) and the first byte after
-  the sample (accepted), with and without a BOM, email case folding,
-  wrong email, wrong token, an inactive uploader, an inactive game, a missing
-  pepper, duplicate content, and identical
-  failure responses for unknown emails and wrong tokens. For duplicate content,
+  the sample (accepted), with and without a BOM, email and game code case
+  folding, wrong email, wrong game code, unknown game code, wrong token, the
+  same email and token in two games, an inactive uploader, an inactive game, a
+  missing pepper, duplicate content, and identical failure responses for
+  unknown emails, unknown or wrong game codes, and wrong tokens. For duplicate content,
   cover uploaders in the same game and in different games, concurrent uploads,
   and that the existing blob is not rewritten.
 - Run the checks required by [WORKFLOW.md](WORKFLOW.md) and identify any checks

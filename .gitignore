@@ -1,4 +1,8 @@
-# Build artifacts; see WORKFLOW.md.
+*~
+*.db
+*.db-*
+*.pdf
+.idea/
 /tmp/
 
 # Local environment overrides may hold secrets such as FUINGO_PEPPER.

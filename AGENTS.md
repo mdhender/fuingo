@@ -125,7 +125,10 @@ order:
   for responses; do not introduce a JavaScript framework.
 - Start with a native `<input type="file">` styled with Tailwind's `file:`
   modifier. The user may later replace it with a Tailwind UI kit component.
-- Ask the user before choosing how Tailwind CSS is built or served.
+- Load Tailwind CSS (the `@tailwindcss/browser` build) and HTMX from a CDN,
+  pinned to exact versions. Do not add a Tailwind CLI, watcher, or generated CSS
+  to the repository; the user will set those up if the project adopts a Tailwind
+  UI kit component.
 
 ## Future phase: the `/api/` routes
 

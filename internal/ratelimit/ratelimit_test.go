@@ -126,3 +126,32 @@ func TestSweepKeepsLimitedClients(t *testing.T) {
 		t.Errorf("sweep dropped a client that had not refilled")
 	}
 }
+
+func TestMaxClients(t *testing.T) {
+	c := &clock{now: time.Unix(1_000_000, 0)}
+	l := ratelimit.New(1, time.Hour, c.Now)
+	addr := func(i int) netip.Addr {
+		return netip.AddrFrom4([4]byte{10, byte(i >> 16), byte(i >> 8), byte(i)})
+	}
+	// Fill the table with limited clients, oldest first.
+	for i := range ratelimit.MaxClients {
+		l.Take(addr(i))
+		c.now = c.now.Add(time.Millisecond)
+	}
+	// A new client is tracked by replacing the client that has refilled
+	// the most: the oldest.
+	if ok, _ := l.Take(addr(ratelimit.MaxClients)); !ok {
+		t.Fatal("new client refused when the table is full")
+	}
+	if ok, _ := l.Take(addr(ratelimit.MaxClients)); ok {
+		t.Errorf("new client is not limited")
+	}
+	if ok, _ := l.Take(addr(0)); !ok {
+		t.Errorf("oldest client was not the one replaced")
+	}
+	for _, i := range []int{2, ratelimit.MaxClients / 2, ratelimit.MaxClients - 1} {
+		if ok, _ := l.Take(addr(i)); ok {
+			t.Errorf("client %d was dropped from the full table", i)
+		}
+	}
+}

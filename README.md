@@ -57,7 +57,9 @@ Failed upload authorizations are limited per client address: each address
 may fail 5 times, then once more per minute, and gets `429 Too Many Requests`
 while over the limit. IPv6 clients are grouped by /64. The limit applies to
 the address, not the email or game, so guesses from one address never lock an
-uploader out elsewhere. Limits are kept in memory and reset on restart.
+uploader out elsewhere. Limits are kept in memory and reset on restart. At
+most 16,384 addresses are tracked; when the table is full, a new address
+replaces the one that has regained the most attempts.
 
 Behind a proxy, every connection comes from the proxy, so `fuingod` must learn
 the real client address from the proxy's `X-Forwarded-For` header. Set this up

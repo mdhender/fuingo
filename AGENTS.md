@@ -166,7 +166,8 @@ The server handles each upload in this order:
    rightmost `X-Forwarded-For` address that is not a trusted proxy. Trust only
    the proxies configured in `FUINGO_TRUSTED_PROXIES`. Group IPv6 clients by
    their /64 prefix. The limits are kept in memory and reset when the server
-   restarts.
+   restarts. Track at most 16,384 (16 Ki) clients; a new client beyond that
+   replaces the one that has regained the most attempts.
 5. **Storage.** Store only the body: the BOM and header line, and so the token,
    never reach the database. Key the body by its lowercase hex SHA-256 in
    `upload_blobs`. If a blob with that hash exists, keep it and do not rewrite
@@ -251,7 +252,7 @@ Do not implement these until the user starts the phase.
   that successes and format errors do not count, that valid credentials are
   refused while limited, that other clients (including the same email from
   another address) are unaffected, concurrent failures from one client,
-  IPv6 /64 grouping, that `X-Forwarded-For` is ignored from untrusted peers,
+  IPv6 /64 grouping, the 16 Ki client cap, that `X-Forwarded-For` is ignored from untrusted peers,
   and that the rightmost untrusted address is used behind trusted proxies.
 - Run the checks required by [WORKFLOW.md](WORKFLOW.md) and identify any checks
   that could not be run.

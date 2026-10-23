@@ -11,7 +11,7 @@ var (
 	version = semver.Version{
 		Major:      0,
 		Minor:      10,
-		Patch:      0,
+		Patch:      1,
 		PreRelease: "alpha",
 	}
 )

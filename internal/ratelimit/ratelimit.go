@@ -6,7 +6,9 @@
 // Each client starts with burst tokens and regains one per interval, up to
 // burst. IPv4 clients are keyed by address and IPv6 clients by their /64
 // prefix, since one IPv6 subscriber usually holds a whole /64. Buckets are
-// kept in memory; idle full buckets are dropped.
+// kept in memory; idle full buckets are dropped. At most MaxClients buckets
+// are kept: a new client beyond that replaces the bucket that has refilled
+// the most, which is the client least recently limited.
 package ratelimit
 
 import (
@@ -15,6 +17,9 @@ import (
 	"sync"
 	"time"
 )
+
+// MaxClients is the most clients a Limiter tracks at once.
+const MaxClients = 16 << 10
 
 // Limiter is a set of per-client token buckets. It is safe for concurrent use.
 type Limiter struct {
@@ -52,10 +57,13 @@ func (l *Limiter) Take(a netip.Addr) (bool, time.Duration) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now := l.now()
-	l.sweep(now)
+	l.sweep(now, false)
 	k := key(a)
 	b := l.buckets[k]
 	if b == nil {
+		if len(l.buckets) >= MaxClients {
+			l.evict(now)
+		}
 		b = &bucket{tokens: l.burst, at: now}
 		l.buckets[k] = b
 	}
@@ -85,10 +93,11 @@ func (l *Limiter) refill(b *bucket, now time.Time) {
 	}
 }
 
-// sweep drops buckets that have refilled, at most once per refill period.
-func (l *Limiter) sweep(now time.Time) {
+// sweep drops buckets that have refilled, at most once per refill period
+// unless forced.
+func (l *Limiter) sweep(now time.Time, force bool) {
 	period := time.Duration(l.burst * float64(l.interval))
-	if now.Sub(l.lastSweep) < period {
+	if !force && now.Sub(l.lastSweep) < period {
 		return
 	}
 	l.lastSweep = now
@@ -96,6 +105,24 @@ func (l *Limiter) sweep(now time.Time) {
 		l.refill(b, now)
 		return b.tokens >= l.burst
 	})
+}
+
+// evict makes room for one bucket: it sweeps, and if every bucket is still
+// short of tokens, drops the one with the most.
+func (l *Limiter) evict(now time.Time) {
+	l.sweep(now, true)
+	if len(l.buckets) < MaxClients {
+		return
+	}
+	var victim netip.Prefix
+	most := -1.0
+	for k, b := range l.buckets {
+		l.refill(b, now)
+		if b.tokens > most {
+			victim, most = k, b.tokens
+		}
+	}
+	delete(l.buckets, victim)
 }
 
 // key groups a with the other addresses of its client.

@@ -76,11 +76,27 @@ func TestVersion(t *testing.T) {
 	}
 }
 
+func TestVersionIgnoresDatabase(t *testing.T) {
+	clearEnv(t)
+	missing := filepath.Join(t.TempDir(), "missing.db")
+	out, err := runCommand(t, "--db", missing, "version")
+	if err != nil {
+		t.Fatalf("--db %s version: %v\n%s", missing, err, out)
+	}
+	if want := fuingo.Version().String() + "\n"; out != want {
+		t.Errorf("version printed %q, want %q", out, want)
+	}
+	if _, err := os.Stat(missing); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("version created %s", missing)
+	}
+}
+
 func TestDBVersion(t *testing.T) {
 	clearEnv(t)
 	path := createDatabase(t)
 	want := strconv.Itoa(store.CurrentSchemaVersion()) + "\n"
 	for _, args := range [][]string{
+		{"--env", "test", "--db", path, "db", "version"},
 		{"--env", "test", "db", "--db", path, "version"},
 		{"--env", "test", "db", "version", "--db", path},
 	} {
@@ -118,7 +134,7 @@ func TestDBVersionRefusesOtherSchemaVersions(t *testing.T) {
 	} {
 		path := createDatabase(t)
 		setSchemaVersion(t, path, tc.version)
-		out, err := runCommand(t, "--env", "test", "db", "--db", path, "version")
+		out, err := runCommand(t, "--env", "test", "--db", path, "db", "version")
 		if !errors.Is(err, tc.want) {
 			t.Errorf("schema version %d: err = %v, want %v\n%s", tc.version, err, tc.want, out)
 		}
@@ -141,7 +157,7 @@ func TestDBVersionRefusesBadPaths(t *testing.T) {
 		{":memory:", ErrMemoryDatabase},
 		{missing, fs.ErrNotExist},
 	} {
-		out, err := runCommand(t, "--env", "test", "db", "--db", tc.path, "version")
+		out, err := runCommand(t, "--env", "test", "--db", tc.path, "db", "version")
 		if !errors.Is(err, tc.want) {
 			t.Errorf("--db %q: err = %v, want %v\n%s", tc.path, err, tc.want, out)
 		}
@@ -149,14 +165,14 @@ func TestDBVersionRefusesBadPaths(t *testing.T) {
 	if _, err := os.Stat(missing); !errors.Is(err, fs.ErrNotExist) {
 		t.Errorf("db version created %s", missing)
 	}
-	if out, err := runCommand(t, "--env", "test", "db", "--db", foreign, "version"); err == nil {
+	if out, err := runCommand(t, "--env", "test", "--db", foreign, "db", "version"); err == nil {
 		t.Errorf("db version accepted a file that is not a fuingo database:\n%s", out)
 	}
 }
 
 func TestDBRequiresEnvironment(t *testing.T) {
 	clearEnv(t)
-	out, err := runCommand(t, "db", "--db", createDatabase(t), "version")
+	out, err := runCommand(t, "--db", createDatabase(t), "db", "version")
 	if err == nil || !strings.Contains(err.Error(), "environment") {
 		t.Errorf("db version without an environment: err = %v\n%s", err, out)
 	}

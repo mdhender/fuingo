@@ -4,15 +4,16 @@
 // Command fuingo is the operators' CLI.
 //
 //	fuingo version
-//	fuingo [--env ENV] db --db PATH version
+//	fuingo [--env ENV] [--db PATH] db version
 //
 // Every flag can also be set with a FUINGO_ environment variable:
 //
 //	--env   FUINGO_ENV   development, test, production, or agent (required by db)
 //	--db    FUINGO_DB    path to the database file (required by db; :memory: is refused)
 //
-// The db commands only open a database that is already at the schema version
-// this program expects; they never create or migrate one.
+// Commands that use the database only open one that is already at the schema
+// version this program expects. fuingo never creates a database file or
+// migrates one; fuingodb does.
 package main
 
 import (
@@ -48,6 +49,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	var env, path string
 	rootFlags := ff.NewFlagSet("fuingo")
 	rootFlags.StringVar(&env, 0, "env", "", "environment: development, test, production, or agent (FUINGO_ENV)")
+	rootFlags.StringVar(&path, 0, "db", "", "path to the database file (FUINGO_DB)")
 
 	version := &ff.Command{
 		Name:      "version",
@@ -60,13 +62,11 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		},
 	}
 
-	dbFlags := ff.NewFlagSet("db").SetParent(rootFlags)
-	dbFlags.StringVar(&path, 0, "db", "", "path to the database file (FUINGO_DB)")
 	dbVersion := &ff.Command{
 		Name:      "version",
-		Usage:     "fuingo db --db PATH version",
+		Usage:     "fuingo [--db PATH] db version",
 		ShortHelp: "print the database's schema version",
-		Flags:     ff.NewFlagSet("db version").SetParent(dbFlags),
+		Flags:     ff.NewFlagSet("db version").SetParent(rootFlags),
 		Exec: func(ctx context.Context, args []string) error {
 			return withDatabase(ctx, path, func(s *store.Store) error {
 				v, err := s.SchemaVersion(ctx)
@@ -80,9 +80,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	}
 	db := &ff.Command{
 		Name:        "db",
-		Usage:       "fuingo db --db PATH <version>",
+		Usage:       "fuingo [--db PATH] db <version>",
 		ShortHelp:   "inspect a database",
-		Flags:       dbFlags,
+		Flags:       ff.NewFlagSet("db").SetParent(rootFlags),
 		Subcommands: []*ff.Command{dbVersion},
 		Exec: func(ctx context.Context, args []string) error {
 			return ff.ErrHelp
@@ -91,7 +91,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 
 	root := &ff.Command{
 		Name:        "fuingo",
-		Usage:       "fuingo [--env ENV] <version|db>",
+		Usage:       "fuingo [--env ENV] [--db PATH] <version|db>",
 		LongHelp:    "fuingo " + fuingo.Version().String(),
 		Flags:       rootFlags,
 		Subcommands: []*ff.Command{version, db},

@@ -12,15 +12,16 @@ go run ./cmd/fuingodb --env development create --db tmp/fuingo.db
 go run ./cmd/fuingodb --env development migrate --db tmp/fuingo.db
 go run ./cmd/fuingod  --env development --db tmp/fuingo.db
 go run ./cmd/fuingo   version
-go run ./cmd/fuingo   --env development db --db tmp/fuingo.db version
+go run ./cmd/fuingo   --env development --db tmp/fuingo.db db version
 ```
 
 `fuingodb` creates and migrates databases. `fuingod` serves the upload form and
 only opens an existing, current database; it never creates or migrates one.
-`fuingo` is the operators' CLI. `fuingo version` prints the program's version;
-`fuingo db version` prints the database's schema version. The `db` commands,
-like `fuingod`, refuse a database that is not at the schema version the
-program expects.
+`fuingo` is the operators' CLI for the application data. `fuingo version`
+prints the program's version; `fuingo db version` prints the database's schema
+version. Commands that use the database, like `fuingod`, refuse one that is not
+at the schema version the program expects. `fuingo` never creates or migrates
+a database file; use `fuingodb` for that.
 
 ## Configuration
 

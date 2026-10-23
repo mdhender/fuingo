@@ -1,0 +1,6 @@
+# Build artifacts; see WORKFLOW.md.
+/tmp/
+
+# Local environment overrides may hold secrets such as FUINGO_PEPPER.
+.env.local
+.env.*.local

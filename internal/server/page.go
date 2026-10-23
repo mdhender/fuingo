@@ -22,23 +22,29 @@ const (
 //go:embed static/htmx-2.0.11.min.js
 var htmxJS []byte
 
-//go:embed templates/index.html
+// DraggerPath serves the drag-and-drop variant of the upload page.
+const DraggerPath = "/dragger.html"
+
+//go:embed templates/*.html
 var templates embed.FS
 
-var indexTemplate = template.Must(template.ParseFS(templates, "templates/index.html"))
+var pageTemplates = template.Must(template.ParseFS(templates, "templates/*.html"))
 
 // startTime is the modification time reported for embedded files.
 var startTime = time.Now()
 
-func serveIndex(w http.ResponseWriter, r *http.Request) {
-	var buf bytes.Buffer
-	if err := indexTemplate.Execute(&buf, struct{ HTMX, Tailwind string }{HTMXPath, TailwindURL}); err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
+// servePage returns a handler for the upload page in the named template.
+func servePage(name string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var buf bytes.Buffer
+		if err := pageTemplates.ExecuteTemplate(&buf, name, struct{ HTMX, Tailwind string }{HTMXPath, TailwindURL}); err != nil {
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Write(buf.Bytes())
 	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Write(buf.Bytes())
 }
 
 func serveHTMX(w http.ResponseWriter, r *http.Request) {

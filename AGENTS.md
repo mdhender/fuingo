@@ -30,8 +30,11 @@ upload files over HTTPS instead of mailing them.
 - `version.go` provides the root package's version API.
 - `internal/dotenv` loads environment files; `internal/cerrs` defines constant
   errors. Use both rather than adding alternatives.
-- No server, database, or command exists yet. Do not document the planned
-  commands, routes, or packages below as implemented until they are.
+- `internal/store` wraps the SQLite database: `Create`, `Migrate`, and `Open`
+  for files, plus `OpenPrivateMemory`, `CreateSharedMemory`, and
+  `OpenSharedMemory`.
+- No server or command exists yet. Do not document the planned commands,
+  routes, or packages below as implemented until they are.
 
 ## Planned commands
 

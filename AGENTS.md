@@ -56,11 +56,35 @@ environment files, through `internal/cli`. Explicit flags override environment
 values, which override defaults. Every flag `--name` has an environment
 variable `FUINGO_NAME`; secrets such as `FUINGO_PEPPER` have no flag.
 
+Each program owns one area. Put a new command in the program that owns what
+it manages, even when another program could reach the same thing:
+
+- **`cmd/fuingo` manages the application data**: games, uploaders, API
+  accounts, game managers, and uploads. Every command that creates or changes
+  rows belongs here, including every `create` verb for application
+  data. Outside development and agent, it will be the only way to create
+  accounts.
+- **`cmd/fuingodb` manages the database itself**: creating, migrating, and any
+  future maintenance of the database file and its schema. Never add one of
+  these, such as `migrate`, to `fuingo`.
+- **`cmd/fuingod` manages the server**: it serves the upload form and owns the
+  server's startup flags. It opens an existing database; it never creates or
+  migrates one, and it has no subcommands for data.
+
+`fuingo` commands follow the noun-verb pattern, `fuingo <noun> <verb>`, as in
+`fuingo game create CODE`: each noun has only the verbs that make sense for it,
+and `fuingo <noun> --help` lists them. `--db` is a root flag, as in
+`fuingo --db PATH game create CODE`, because almost every command uses the
+database. Commands that use it open it with `store.Open` and fail unless it is
+at the schema version the program expects. `fuingo` has `version`,
+`db version`, and `game create CODE` so far; add further commands only as the
+user asks for them.
+
 | Command | Purpose |
 | --- | --- |
-| `cmd/fuingod` | The web server. Opens an existing database; never creates or migrates one. |
-| `cmd/fuingodb` | Database administration: `create` and `migrate`. |
-| `cmd/fuingo` | The operators' CLI for managing games, uploaders, API accounts, and game managers; it will be the only way to create accounts outside development and agent. It owns the application data, so commands that create rows (such as a future `fuingo create`) belong here, but creating and migrating database files belong to `cmd/fuingodb`: never add a migrate command to `fuingo`. `--db` is a root flag, as in `fuingo --db PATH db version`, because almost every command uses the database. Commands that use it open it with `store.Open` and fail unless it is at the schema version the program expects. It has `version`, `db version`, and `create game CODE` so far; add further commands only as the user asks for them. |
+| `cmd/fuingo` | Application data. The operators' CLI for games, uploaders, API accounts, and game managers. |
+| `cmd/fuingodb` | The database: `create` and `migrate`. |
+| `cmd/fuingod` | The server. Opens an existing database; never creates or migrates one. |
 
 Upload tokens are issued out of band: a game manager emails each uploader the
 game code and that game's token. A token cannot be recovered, because only its
@@ -106,7 +130,7 @@ never be reused.
 - Every foreign key is `ON DELETE RESTRICT`: deleting a row that others refer to
   fails instead of removing history. Revoke access by clearing `is_active`.
 
-Apart from games made with `fuingo create game`, the only rows in `games` and
+Apart from games made with `fuingo game create`, the only rows in `games` and
 `game_uploaders` come from the default data and the development/agent helper in
 [TESTING.md](TESTING.md).
 

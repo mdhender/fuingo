@@ -13,14 +13,14 @@ go run ./cmd/fuingodb --env development migrate --db tmp/fuingo.db
 go run ./cmd/fuingod  --env development --db tmp/fuingo.db
 go run ./cmd/fuingo   version
 go run ./cmd/fuingo   --env development --db tmp/fuingo.db db version
-go run ./cmd/fuingo   --env development --db tmp/fuingo.db create game game01
+go run ./cmd/fuingo   --env development --db tmp/fuingo.db game create game01
 ```
 
 `fuingodb` creates and migrates databases. `fuingod` serves the upload form and
 only opens an existing, current database; it never creates or migrates one.
 `fuingo` is the operators' CLI for the application data. `fuingo version`
 prints the program's version; `fuingo db version` prints the database's schema
-version; `fuingo create game CODE` adds an active game. Game codes are
+version; `fuingo game create CODE` adds an active game. Game codes are
 lowercased, like the codes in uploaded files, and must be one or more printable
 ASCII bytes with no spaces. Commands that use the database, like `fuingod`, refuse one that is not
 at the schema version the program expects. `fuingo` never creates or migrates

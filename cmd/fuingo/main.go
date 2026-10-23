@@ -1,11 +1,12 @@
 // Copyright (c) 2026 Michael D Henderson.
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-// Command fuingo is the operators' CLI.
+// Command fuingo is the operators' CLI for the application data. Its commands
+// follow the pattern fuingo <noun> <verb>.
 //
 //	fuingo version
 //	fuingo [--env ENV] [--db PATH] db version
-//	fuingo [--env ENV] [--db PATH] create game CODE
+//	fuingo [--env ENV] [--db PATH] game create CODE
 //
 // Every flag can also be set with a FUINGO_ environment variable:
 //
@@ -96,14 +97,14 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		},
 	}
 
-	createGame := &ff.Command{
-		Name:      "game",
-		Usage:     "fuingo [--db PATH] create game CODE",
+	gameCreate := &ff.Command{
+		Name:      "create",
+		Usage:     "fuingo [--db PATH] game create CODE",
 		ShortHelp: "create an active game",
-		Flags:     ff.NewFlagSet("create game").SetParent(rootFlags),
+		Flags:     ff.NewFlagSet("game create").SetParent(rootFlags),
 		Exec: func(ctx context.Context, args []string) error {
 			if len(args) != 1 {
-				return fmt.Errorf("create game CODE: %w", ErrUsage)
+				return fmt.Errorf("game create CODE: %w", ErrUsage)
 			}
 			code, err := gameCode(args[0])
 			if err != nil {
@@ -119,12 +120,12 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 			})
 		},
 	}
-	create := &ff.Command{
-		Name:        "create",
-		Usage:       "fuingo [--db PATH] create <game>",
-		ShortHelp:   "add application data",
-		Flags:       ff.NewFlagSet("create").SetParent(rootFlags),
-		Subcommands: []*ff.Command{createGame},
+	game := &ff.Command{
+		Name:        "game",
+		Usage:       "fuingo [--db PATH] game <create>",
+		ShortHelp:   "manage games",
+		Flags:       ff.NewFlagSet("game").SetParent(rootFlags),
+		Subcommands: []*ff.Command{gameCreate},
 		Exec: func(ctx context.Context, args []string) error {
 			return ff.ErrHelp
 		},
@@ -132,10 +133,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 
 	root := &ff.Command{
 		Name:        "fuingo",
-		Usage:       "fuingo [--env ENV] [--db PATH] <version|db|create>",
+		Usage:       "fuingo [--env ENV] [--db PATH] <version|db|game>",
 		LongHelp:    "fuingo " + fuingo.Version().String(),
 		Flags:       rootFlags,
-		Subcommands: []*ff.Command{version, db, create},
+		Subcommands: []*ff.Command{version, db, game},
 		Exec: func(ctx context.Context, args []string) error {
 			return ff.ErrHelp
 		},

@@ -193,31 +193,31 @@ func games(t *testing.T, path string) []string {
 	return codes
 }
 
-func TestCreateGame(t *testing.T) {
+func TestGameCreate(t *testing.T) {
 	clearEnv(t)
 	path := createDatabase(t)
-	out, err := runCommand(t, "--env", "test", "--db", path, "create", "game", "Game-01")
+	out, err := runCommand(t, "--env", "test", "--db", path, "game", "create", "Game-01")
 	if err != nil {
-		t.Fatalf("create game: %v\n%s", err, out)
+		t.Fatalf("game create: %v\n%s", err, out)
 	}
 	if want := "created game game-01 (id 1)\n"; out != want {
-		t.Errorf("create game printed %q, want %q", out, want)
+		t.Errorf("game create printed %q, want %q", out, want)
 	}
 	if got := games(t, path); len(got) != 1 || got[0] != "game-01" {
 		t.Errorf("games = %q, want [game-01]", got)
 	}
 }
 
-func TestCreateGameRefusesExistingCode(t *testing.T) {
+func TestGameCreateRefusesExistingCode(t *testing.T) {
 	clearEnv(t)
 	path := createDatabase(t)
-	if out, err := runCommand(t, "--env", "test", "--db", path, "create", "game", "game01"); err != nil {
-		t.Fatalf("create game: %v\n%s", err, out)
+	if out, err := runCommand(t, "--env", "test", "--db", path, "game", "create", "game01"); err != nil {
+		t.Fatalf("game create: %v\n%s", err, out)
 	}
 	for _, code := range []string{"game01", "GAME01"} {
-		out, err := runCommand(t, "--env", "test", "--db", path, "create", "game", code)
+		out, err := runCommand(t, "--env", "test", "--db", path, "game", "create", code)
 		if !errors.Is(err, store.ErrGameExists) {
-			t.Errorf("create game %s: err = %v, want ErrGameExists\n%s", code, err, out)
+			t.Errorf("game create %s: err = %v, want ErrGameExists\n%s", code, err, out)
 		}
 	}
 	if got := games(t, path); len(got) != 1 {
@@ -225,19 +225,19 @@ func TestCreateGameRefusesExistingCode(t *testing.T) {
 	}
 }
 
-func TestCreateGameRefusesInvalidCodes(t *testing.T) {
+func TestGameCreateRefusesInvalidCodes(t *testing.T) {
 	clearEnv(t)
 	path := createDatabase(t)
 	for _, code := range []string{"", " ", "game 01", "game\t01", "game\x7f", "game\x1f", "gämé"} {
-		out, err := runCommand(t, "--env", "test", "--db", path, "create", "game", code)
+		out, err := runCommand(t, "--env", "test", "--db", path, "game", "create", code)
 		if !errors.Is(err, ErrGameCode) {
-			t.Errorf("create game %q: err = %v, want ErrGameCode\n%s", code, err, out)
+			t.Errorf("game create %q: err = %v, want ErrGameCode\n%s", code, err, out)
 		}
 	}
 	for _, args := range [][]string{{}, {"game01", "game02"}} {
-		out, err := runCommand(t, append([]string{"--env", "test", "--db", path, "create", "game"}, args...)...)
+		out, err := runCommand(t, append([]string{"--env", "test", "--db", path, "game", "create"}, args...)...)
 		if !errors.Is(err, ErrUsage) {
-			t.Errorf("create game %q: err = %v, want ErrUsage\n%s", args, err, out)
+			t.Errorf("game create %q: err = %v, want ErrUsage\n%s", args, err, out)
 		}
 	}
 	if got := games(t, path); len(got) != 0 {
@@ -245,11 +245,11 @@ func TestCreateGameRefusesInvalidCodes(t *testing.T) {
 	}
 }
 
-func TestCreateGameRefusesOtherSchemaVersions(t *testing.T) {
+func TestGameCreateRefusesOtherSchemaVersions(t *testing.T) {
 	clearEnv(t)
 	path := createDatabase(t)
 	setSchemaVersion(t, path, store.CurrentSchemaVersion()-1)
-	out, err := runCommand(t, "--env", "test", "--db", path, "create", "game", "game01")
+	out, err := runCommand(t, "--env", "test", "--db", path, "game", "create", "game01")
 	if !errors.Is(err, store.ErrOutdatedSchema) {
 		t.Errorf("err = %v, want ErrOutdatedSchema\n%s", err, out)
 	}

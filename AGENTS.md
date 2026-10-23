@@ -125,10 +125,13 @@ order:
   for responses; do not introduce a JavaScript framework.
 - Start with a native `<input type="file">` styled with Tailwind's `file:`
   modifier. The user may later replace it with a Tailwind UI kit component.
-- Load Tailwind CSS (the `@tailwindcss/browser` build) and HTMX from a CDN,
-  pinned to exact versions. Do not add a Tailwind CLI, watcher, or generated CSS
-  to the repository; the user will set those up if the project adopts a Tailwind
-  UI kit component.
+- Vendor HTMX: commit the minified file for one exact release, with its version
+  in the file name, and serve it from the binary with `embed`. Do not load HTMX
+  from a CDN.
+- Load Tailwind CSS (the `@tailwindcss/browser` build) from a CDN, pinned to an
+  exact version. Do not add a Tailwind CLI, watcher, or generated CSS to the
+  repository; the user will set those up if the project adopts a Tailwind UI kit
+  component.
 
 ## Future phase: the `/api/` routes
 

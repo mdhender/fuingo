@@ -66,7 +66,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 
 	var schema bool
 	versionFlags := ff.NewFlagSet("version").SetParent(rootFlags)
-	versionFlags.BoolVar(&schema, 0, "schema", "print the database's schema version instead")
+	versionFlags.BoolVar(&schema, 0, "schema", "print the database's schema version instead (command line only)")
 	version := &ff.Command{
 		Name:      "version",
 		Usage:     "fuingo [--db PATH] version [--schema]",

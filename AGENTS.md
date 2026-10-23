@@ -106,7 +106,7 @@ never be reused.
 - Every foreign key is `ON DELETE RESTRICT`: deleting a row that others refer to
   fails instead of removing history. Revoke access by clearing `is_active`.
 
-Until `cmd/fuingo` exists, the only rows in `games` and `game_uploaders` come
+Until `cmd/fuingo` can create them, the only rows in `games` and `game_uploaders` come
 from the default data and the development/agent helper in
 [TESTING.md](TESTING.md).
 

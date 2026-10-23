@@ -102,7 +102,7 @@ not CSRF bypasses.
 
 These helpers and the default accounts are the explicit development/agent-only
 exceptions to account creation. Otherwise, both kinds of account are created
-only by the future `cmd/fuingo` operators' CLI.
+only by the `cmd/fuingo` operators' CLI, which cannot create them yet.
 
 ### Create an upload account
 

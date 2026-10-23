@@ -166,11 +166,8 @@ func postUpload(t *testing.T, base, email, game, token, file string) (int, strin
 	t.Helper()
 	var body bytes.Buffer
 	mw := multipart.NewWriter(&body)
-	mw.WriteField("email", email)
-	mw.WriteField("game", game)
-	mw.WriteField("token", token)
 	fw, _ := mw.CreateFormFile("file", "turn.txt")
-	io.WriteString(fw, file)
+	io.WriteString(fw, game+" 1 "+email+" "+token+"\n"+file)
 	mw.Close()
 	return post(t, base+"/upload", mw.FormDataContentType(), &body)
 }

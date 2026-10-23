@@ -30,9 +30,7 @@ func TestIndexPage(t *testing.T) {
 		`hx-post="/upload"`,
 		`hx-encoding="multipart/form-data"`,
 		`hx-target="#result"`,
-		`name="email"`,
-		`name="game"`,
-		`name="token"`,
+		`accept=".txt"`,
 		`<script src="` + server.HTMXPath + `"></script>`,
 		`<script src="` + server.TailwindURL + `"></script>`,
 		`file:`, // the native file input is styled with Tailwind's file: modifier
@@ -41,9 +39,12 @@ func TestIndexPage(t *testing.T) {
 			t.Errorf("page does not contain %s", want)
 		}
 	}
-	// The file picker starts disabled.
-	if !regexp.MustCompile(`<input id="file" name="file" type="file"[^>]* disabled`).MatchString(body) {
-		t.Errorf("file input is not disabled initially")
+	// The file picker is the only field, and it starts enabled.
+	if regexp.MustCompile(`<input id="file"[^>]* disabled`).MatchString(body) {
+		t.Errorf("file input is disabled initially")
+	}
+	if n := strings.Count(body, "<input "); n != 1 {
+		t.Errorf("page has %d inputs, want only the file picker", n)
 	}
 	// Tailwind is pinned to an exact version; HTMX is never loaded from a CDN.
 	if !regexp.MustCompile(`@tailwindcss/browser@\d+\.\d+\.\d+/`).MatchString(server.TailwindURL) {

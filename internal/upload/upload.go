@@ -3,11 +3,16 @@
 
 // Package upload implements the turn-file upload handler.
 //
+// Every turn file starts with a header line:
+//
+//	<game code> <turn number> <email address> <token>
+//
 // The handler checks each upload in a fixed order: size limit, sanity check,
-// authorization, then storage and record in one database transaction. It
-// responds with a server-rendered HTML
-// fragment. Every authorization failure gets the same response, so it never
-// reveals whether an email exists or which credential was wrong.
+// header, authorization, then storage of the body and the upload record in one
+// database transaction. The header line, and so the token, is never stored.
+// The handler responds with a server-rendered HTML fragment. Every
+// authorization failure gets the same response, so it never reveals whether an
+// email or game exists or which credential was wrong.
 package upload
 
 import (
@@ -35,33 +40,31 @@ const (
 const (
 	// MaxFileSize is the largest accepted file, in bytes.
 	MaxFileSize = 64 << 10
-	// maxBodySize bounds the whole request: the file plus the email and token
-	// fields and the multipart framing.
+	// maxBodySize bounds the whole request: the file plus the multipart
+	// framing.
 	maxBodySize = MaxFileSize + 16<<10
-	// maxFieldSize bounds the email and token fields.
-	maxFieldSize = 1 << 10
 	// sampleSize is how many bytes after an optional BOM the sanity check reads.
-	sampleSize = 128
+	sampleSize = 256
+	// maxTurnSize bounds the turn number, which is stored as written.
+	maxTurnSize = 32
 )
 
-// Form field names.
-const (
-	FieldEmail = "email"
-	FieldGame  = "game"
-	FieldToken = "token"
-	FieldFile  = "file"
-)
+// FieldFile is the form field holding the turn file.
+const FieldFile = "file"
 
 var utf8BOM = []byte{0xEF, 0xBB, 0xBF}
 
 // Messages shown to the client.
 const (
-	msgAuthorization = "The email address, game code, or upload token is not valid."
-	msgBadRequest    = "The upload could not be read. Fill in every field, choose one file, and try again."
+	msgAuthorization = "The game code, email address, or upload token on the first line is not valid."
+	msgBadRequest    = "The upload could not be read. Choose one file and try again."
 	msgEmpty         = "The file is empty."
+	msgHeader        = "The first line must be the game code, turn number, email address, and upload token, separated by spaces or tabs."
+	msgNoBody        = "The file has nothing after the first line."
 	msgNoFile        = "Choose a file to upload."
 	msgServerError   = "The upload could not be saved. Please try again later."
 	msgTooLarge      = "The file is larger than 64 KiB (65,536 bytes)."
+	msgTurnTooLong   = "The turn number on the first line is longer than 32 characters."
 )
 
 // Handler accepts turn-file uploads.
@@ -80,12 +83,15 @@ func New(s *store.Store, pepper string, logger *slog.Logger) (*Handler, error) {
 	return &Handler{db: s, pepper: pepper, logger: logger}, nil
 }
 
-// form is the parsed request. An absent or oversized email, game, or token is
-// left empty, which fails authorization like any other wrong credential.
+// form is the parsed request.
 type form struct {
-	email, game, token string
-	file               []byte
-	hasFile            bool
+	file    []byte
+	hasFile bool
+}
+
+// header is a turn file's first line.
+type header struct {
+	game, turn, email, token string
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -114,8 +120,15 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 3. Authorization.
-	uploader, ok, err := h.authorize(r, f.email, f.game, f.token)
+	// 3. Header.
+	hdr, body, msg, ok := parseFile(f.file)
+	if !ok {
+		respond(w, http.StatusBadRequest, false, msg)
+		return
+	}
+
+	// 4. Authorization.
+	uploader, ok, err := h.authorize(r, hdr)
 	if err != nil {
 		h.logger.Error("upload: authorize", "err", err)
 		respond(w, http.StatusInternalServerError, false, msgServerError)
@@ -125,19 +138,21 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 4 and 5. Storage and record, in one transaction: the contents are kept
-	// under their SHA-256 unless already stored, and every upload gets a row.
-	sum := sha256.Sum256(f.file)
+	// 5 and 6. Storage of the body and the record, in one transaction: the body
+	// is kept under its SHA-256 unless already stored, and every upload gets a
+	// row.
+	sum := sha256.Sum256(body)
 	contentHash := hex.EncodeToString(sum[:])
-	if err := h.db.RecordUpload(r.Context(), uploader.GameID, uploader.Email, contentHash, f.file, time.Now()); err != nil {
+	if err := h.db.RecordUpload(r.Context(), uploader.GameID, uploader.Email, hdr.turn, contentHash, body, time.Now()); err != nil {
 		h.logger.Error("upload: record", "game_id", uploader.GameID, "content_hash", contentHash, "err", err)
 		respond(w, http.StatusInternalServerError, false, msgServerError)
 		return
 	}
-	h.logger.Info("upload", "game_id", uploader.GameID, "email", uploader.Email, "content_hash", contentHash, "bytes", len(f.file))
+	h.logger.Info("upload", "game_id", uploader.GameID, "email", uploader.Email, "turn", hdr.turn, "content_hash", contentHash, "bytes", len(body))
 
-	// 6. Response.
-	respond(w, http.StatusOK, true, fmt.Sprintf("Upload received: %d bytes, SHA-256 %s.", len(f.file), contentHash))
+	// 7. Response.
+	respond(w, http.StatusOK, true, fmt.Sprintf("Received turn %s for %s from %s: %d bytes, SHA-256 %s.",
+		hdr.turn, credential.NormalizeGameCode(hdr.game), uploader.Email, len(body), contentHash))
 }
 
 // readForm streams the multipart body, reading at most one byte more than
@@ -148,7 +163,7 @@ func readForm(r *http.Request) (form, error) {
 	if err != nil {
 		return f, err
 	}
-	seen := map[string]bool{}
+	seen := false
 	for {
 		part, err := mr.NextPart()
 		if errors.Is(err, io.EOF) {
@@ -156,36 +171,16 @@ func readForm(r *http.Request) (form, error) {
 		} else if err != nil {
 			return f, err
 		}
-		name := part.FormName()
-		if seen[name] {
-			return f, fmt.Errorf("duplicate field %q", name)
+		if part.FormName() != FieldFile {
+			return f, fmt.Errorf("unexpected field %q", part.FormName())
+		} else if seen {
+			return f, fmt.Errorf("duplicate field %q", FieldFile)
 		}
-		seen[name] = true
-		switch name {
-		case FieldEmail, FieldGame, FieldToken:
-			value, err := readPart(part, maxFieldSize)
-			if err != nil {
-				return f, err
-			}
-			if len(value) > maxFieldSize {
-				value = nil
-			}
-			switch name {
-			case FieldEmail:
-				f.email = string(value)
-			case FieldGame:
-				f.game = string(value)
-			case FieldToken:
-				f.token = string(value)
-			}
-		case FieldFile:
-			if f.file, err = readPart(part, MaxFileSize); err != nil {
-				return f, err
-			}
-			f.hasFile = part.FileName() != "" || len(f.file) > 0
-		default:
-			return f, fmt.Errorf("unexpected field %q", name)
+		seen = true
+		if f.file, err = readPart(part, MaxFileSize); err != nil {
+			return f, err
 		}
+		f.hasFile = part.FileName() != "" || len(f.file) > 0
 	}
 }
 
@@ -227,19 +222,46 @@ func allowed(b byte) bool {
 	return (0x20 <= b && b <= 0x7E) || b == '\t' || b == '\n' || b == '\r'
 }
 
-// authorize returns the active uploader whose credential matches. The game
-// code is lowercased, like the email. An unknown code still computes and looks up a
-// hash, with game ID 0, which no game has, so it fails the same way as a
-// wrong token.
-func (h *Handler) authorize(r *http.Request, email, game, token string) (store.Uploader, bool, error) {
-	if email == "" || game == "" || token == "" {
-		return store.Uploader{}, false, nil
+// parseFile splits a file that passed the sanity check into its header and
+// body. It skips one BOM, takes the header line up to the first LF, and trims
+// spaces and tabs around it, along with the CR of a CRLF ending. The line must
+// be four words of bytes in 0x21-0x7E, separated by spaces or tabs. The body
+// is everything after the first LF and must not be empty.
+func parseFile(data []byte) (header, []byte, string, bool) {
+	data = bytes.TrimPrefix(data, utf8BOM)
+	line, body, _ := bytes.Cut(data, []byte{'\n'})
+	line = bytes.Trim(bytes.TrimSuffix(line, []byte{'\r'}), " \t")
+	words := bytes.FieldsFunc(line, func(r rune) bool { return r == ' ' || r == '\t' })
+	if len(words) != 4 {
+		return header{}, nil, msgHeader, false
 	}
-	gameID, _, err := h.db.GameID(r.Context(), credential.NormalizeGameCode(game))
+	for _, word := range words {
+		for _, b := range word {
+			if b < 0x21 || b > 0x7E {
+				return header{}, nil, msgHeader, false
+			}
+		}
+	}
+	hdr := header{game: string(words[0]), turn: string(words[1]), email: string(words[2]), token: string(words[3])}
+	if len(hdr.turn) > maxTurnSize {
+		return header{}, nil, msgTurnTooLong, false
+	}
+	if len(body) == 0 {
+		return header{}, nil, msgNoBody, false
+	}
+	return hdr, body, "", true
+}
+
+// authorize returns the active uploader whose credential matches the header.
+// The game code and email are lowercased. An unknown code still computes and
+// looks up a hash, with game ID 0, which no game has, so it fails the same
+// way as a wrong token.
+func (h *Handler) authorize(r *http.Request, hdr header) (store.Uploader, bool, error) {
+	gameID, _, err := h.db.GameID(r.Context(), credential.NormalizeGameCode(hdr.game))
 	if err != nil {
 		return store.Uploader{}, false, err
 	}
-	hash := credential.Hash(h.pepper, email, gameID, token)
+	hash := credential.Hash(h.pepper, hdr.email, gameID, hdr.token)
 	u, ok, err := h.db.FindUploader(r.Context(), hash)
 	if err != nil || !ok {
 		return store.Uploader{}, false, err

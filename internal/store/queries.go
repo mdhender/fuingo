@@ -48,6 +48,7 @@ type Upload struct {
 	GameID      int64
 	GameCode    string
 	Email       string
+	TurnNo      string
 	ContentHash string
 	UploadedAt  time.Time
 }
@@ -173,9 +174,9 @@ WHERE u.credential_hash = ? AND u.is_active = 1 AND g.is_active = 1;`, &sqlitex.
 }
 
 // RecordUpload stores contents under contentHash and inserts a row in the
-// upload history, in one transaction. Contents already stored under that hash
+// upload history for the given turn, in one transaction. Contents already stored under that hash
 // are kept as they are, so every upload of identical bytes shares one blob.
-func (s *Store) RecordUpload(ctx context.Context, gameID int64, email, contentHash string, contents []byte, at time.Time) (err error) {
+func (s *Store) RecordUpload(ctx context.Context, gameID int64, email, turnNo, contentHash string, contents []byte, at time.Time) (err error) {
 	conn, err := s.take(ctx)
 	if err != nil {
 		return err
@@ -194,8 +195,8 @@ ON CONFLICT (content_hash) DO NOTHING;`, &sqlitex.ExecOptions{
 	}); err != nil {
 		return err
 	}
-	return sqlitex.Execute(conn, "INSERT INTO uploads (game_id, email, content_hash, uploaded_at) VALUES (?, ?, ?, ?);", &sqlitex.ExecOptions{
-		Args: []any{gameID, email, contentHash, uploadedAt},
+	return sqlitex.Execute(conn, "INSERT INTO uploads (game_id, email, turn_no, content_hash, uploaded_at) VALUES (?, ?, ?, ?, ?);", &sqlitex.ExecOptions{
+		Args: []any{gameID, email, turnNo, contentHash, uploadedAt},
 	})
 }
 
@@ -238,11 +239,11 @@ func (s *Store) Uploads(ctx context.Context) ([]Upload, error) {
 	defer s.pool.Put(conn)
 	var uploads []Upload
 	err = sqlitex.Execute(conn, `
-SELECT u.id, u.game_id, g.code, u.email, u.content_hash, u.uploaded_at
+SELECT u.id, u.game_id, g.code, u.email, u.turn_no, u.content_hash, u.uploaded_at
 FROM uploads u JOIN games g ON g.id = u.game_id
 ORDER BY u.id;`, &sqlitex.ExecOptions{
 		ResultFunc: func(stmt *sqlite.Stmt) error {
-			at, err := time.Parse(timeLayout, stmt.ColumnText(5))
+			at, err := time.Parse(timeLayout, stmt.ColumnText(6))
 			if err != nil {
 				return err
 			}
@@ -251,7 +252,8 @@ ORDER BY u.id;`, &sqlitex.ExecOptions{
 				GameID:      stmt.ColumnInt64(1),
 				GameCode:    stmt.ColumnText(2),
 				Email:       stmt.ColumnText(3),
-				ContentHash: stmt.ColumnText(4),
+				TurnNo:      stmt.ColumnText(4),
+				ContentHash: stmt.ColumnText(5),
 				UploadedAt:  at,
 			})
 			return nil

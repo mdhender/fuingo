@@ -22,7 +22,8 @@ CREATE TABLE game_uploaders (
 	PRIMARY KEY (game_id, email)
 );
 
--- Uploaded file contents, shared by every upload of identical bytes.
+-- Uploaded file bodies (without the header line), shared by every upload of
+-- identical bytes.
 -- created_at is when the content first arrived.
 CREATE TABLE upload_blobs (
 	content_hash TEXT NOT NULL PRIMARY KEY CHECK (length(content_hash) = 64),
@@ -34,6 +35,7 @@ CREATE TABLE uploads (
 	id           INTEGER PRIMARY KEY AUTOINCREMENT,
 	game_id      INTEGER NOT NULL,
 	email        TEXT    NOT NULL,
+	turn_no      TEXT    NOT NULL,
 	content_hash TEXT    NOT NULL REFERENCES upload_blobs (content_hash) ON DELETE RESTRICT,
 	uploaded_at  TEXT    NOT NULL,
 	FOREIGN KEY (game_id, email) REFERENCES game_uploaders (game_id, email) ON DELETE RESTRICT

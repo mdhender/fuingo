@@ -1,8 +1,9 @@
 # fuingo
 
 A web server that accepts turn-file uploads for play-by-email games. Players
-upload a file through a web form, authorized by their email address and upload
-token, instead of mailing it.
+upload a turn file through a web form instead of mailing it. The file's first
+line, `<game code> <turn number> <email address> <token>`, authorizes it; the
+server stores the rest of the file.
 
 ## Commands
 

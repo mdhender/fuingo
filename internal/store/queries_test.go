@@ -56,7 +56,7 @@ func TestConcurrentRecordUpload(t *testing.T) {
 	for range rounds {
 		for _, u := range uploaders {
 			wg.Go(func() {
-				if err := s.RecordUpload(t.Context(), u.game, u.email, hash, contents, time.Now()); err != nil {
+				if err := s.RecordUpload(t.Context(), u.game, u.email, "1", hash, contents, time.Now()); err != nil {
 					t.Errorf("RecordUpload: %v", err)
 				}
 			})
@@ -90,7 +90,7 @@ func TestRecordUploadIsAtomic(t *testing.T) {
 	defer s.Close()
 	seedUploaders(t, s)
 	contents := []byte("orders\n")
-	if err := s.RecordUpload(t.Context(), 1, "nobody@example.com", sha(contents), contents, time.Now()); err == nil {
+	if err := s.RecordUpload(t.Context(), 1, "nobody@example.com", "1", sha(contents), contents, time.Now()); err == nil {
 		t.Fatal("RecordUpload for an unknown uploader succeeded")
 	}
 	if blobs, _ := s.Blobs(t.Context()); len(blobs) != 0 {
@@ -115,7 +115,7 @@ func TestBlobsAreProtectedByForeignKeys(t *testing.T) {
 		email    string
 		contents []byte
 	}{{game1, "a@example.com", shared}, {game2, "c@example.com", shared}, {game1, "b@example.com", other}} {
-		if err := s.RecordUpload(t.Context(), r.game, r.email, sha(r.contents), r.contents, time.Now()); err != nil {
+		if err := s.RecordUpload(t.Context(), r.game, r.email, "1", sha(r.contents), r.contents, time.Now()); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -131,7 +131,7 @@ func TestBlobsAreProtectedByForeignKeys(t *testing.T) {
 	if err := run("DELETE FROM upload_blobs WHERE content_hash = ?;", sha(shared)); !isForeignKeyError(err) {
 		t.Errorf("deleting a referenced blob = %v, want a foreign key error", err)
 	}
-	if err := run("INSERT INTO uploads (game_id, email, content_hash, uploaded_at) VALUES (1, 'a@example.com', ?, 'x');", sha([]byte("missing"))); !isForeignKeyError(err) {
+	if err := run("INSERT INTO uploads (game_id, email, turn_no, content_hash, uploaded_at) VALUES (1, 'a@example.com', '1', ?, 'x');", sha([]byte("missing"))); !isForeignKeyError(err) {
 		t.Errorf("upload of a missing blob = %v, want a foreign key error", err)
 	}
 

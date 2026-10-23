@@ -57,16 +57,14 @@ func serve(h http.Handler, r *http.Request) *httptest.ResponseRecorder {
 }
 
 // uploadRequest builds a same-origin upload through the public origin, with
-// the headers a browser sends.
+// the headers a browser sends. The turn file is a header line naming game,
+// email, and token, followed by file.
 func uploadRequest(t *testing.T, email, game, token, file string) *http.Request {
 	t.Helper()
 	var body bytes.Buffer
 	mw := multipart.NewWriter(&body)
-	mw.WriteField("email", email)
-	mw.WriteField("game", game)
-	mw.WriteField("token", token)
 	fw, _ := mw.CreateFormFile("file", "turn.txt")
-	io.WriteString(fw, file)
+	io.WriteString(fw, game+" 1 "+email+" "+token+"\n"+file)
 	mw.Close()
 	r := httptest.NewRequest(http.MethodPost, publicOrigin+"/upload", &body)
 	r.Header.Set("Content-Type", mw.FormDataContentType())

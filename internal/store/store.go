@@ -185,6 +185,22 @@ func Migrate(ctx context.Context, path string) error {
 	return nil
 }
 
+// CurrentSchemaVersion is the schema version this program expects.
+func CurrentSchemaVersion() int {
+	return len(schema.Migrations)
+}
+
+// SchemaVersion returns the database's schema version. A store returned by
+// Open is always at CurrentSchemaVersion.
+func (s *Store) SchemaVersion(ctx context.Context) (int, error) {
+	conn, err := s.take(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer s.pool.Put(conn)
+	return userVersion(conn)
+}
+
 // OpenPrivateMemory creates a fresh, private in-memory database.
 // It has a single connection, because each connection to a private memory
 // database would see a different database.

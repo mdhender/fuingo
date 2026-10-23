@@ -44,10 +44,10 @@ upload files over HTTPS instead of mailing them.
   the vendored HTMX under `/static/`, `POST /upload`, and the
   development/agent helper) behind `http.NewCrossOriginProtection`. HTMX
   2.0.11 is vendored as `internal/server/static/htmx-2.0.11.min.js`.
-- `cmd/fuingod` and `cmd/fuingodb` exist; [README.md](README.md) documents
-  their flags and environment variables. Keep it current when adding either.
-  `cmd/fuingo` and the `/api/` routes do not exist yet; do not document them
-  as implemented until they are.
+- `cmd/fuingod`, `cmd/fuingodb`, and `cmd/fuingo` exist; [README.md](README.md)
+  documents their flags and environment variables. Keep it current when adding
+  any of them. `cmd/fuingo` has only `version` and `db version` so far. The `/api/`
+  routes do not exist yet; do not document them as implemented until they are.
 
 ## Commands
 
@@ -60,7 +60,7 @@ variable `FUINGO_NAME`; secrets such as `FUINGO_PEPPER` have no flag.
 | --- | --- |
 | `cmd/fuingod` | The web server. Opens an existing database; never creates or migrates one. |
 | `cmd/fuingodb` | Database administration: `create` and `migrate`. |
-| `cmd/fuingo` | Future phase: the operators' CLI for managing games, uploaders, API accounts, and game managers. It is the only way to create accounts outside development and agent. Do not implement it until the user starts that phase. |
+| `cmd/fuingo` | The operators' CLI for managing games, uploaders, API accounts, and game managers; it will be the only way to create accounts outside development and agent. It has `version` and `db --path PATH version` so far. Its `db` commands open the database with `store.Open` and fail unless it is at the schema version the program expects. Add further commands only as the user asks for them. |
 
 Upload tokens are issued out of band: a game manager emails each uploader the
 game code and that game's token. A token cannot be recovered, because only its

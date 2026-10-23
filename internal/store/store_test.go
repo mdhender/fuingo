@@ -446,3 +446,21 @@ func equalSnapshots(a, b map[string]string) bool {
 	}
 	return true
 }
+
+func TestSchemaVersion(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "fuingo.db")
+	mustCreate(t, path)
+	s, err := Open(t.Context(), path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+	got, err := s.SchemaVersion(t.Context())
+	if err != nil {
+		t.Fatalf("SchemaVersion: %v", err)
+	}
+	if want := CurrentSchemaVersion(); got != want || want != len(migrations) {
+		t.Errorf("SchemaVersion = %d, CurrentSchemaVersion = %d, want %d", got, want, len(migrations))
+	}
+}

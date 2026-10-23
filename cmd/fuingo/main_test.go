@@ -91,14 +91,14 @@ func TestVersionIgnoresDatabase(t *testing.T) {
 	}
 }
 
-func TestDBVersion(t *testing.T) {
+func TestSchemaVersion(t *testing.T) {
 	clearEnv(t)
 	path := createDatabase(t)
 	want := strconv.Itoa(store.CurrentSchemaVersion()) + "\n"
 	for _, args := range [][]string{
-		{"--env", "test", "--db", path, "db", "version"},
-		{"--env", "test", "db", "--db", path, "version"},
-		{"--env", "test", "db", "version", "--db", path},
+		{"--env", "test", "--db", path, "version", "--schema"},
+		{"--env", "test", "version", "--schema", "--db", path},
+		{"version", "--schema", "--env", "test", "--db", path},
 	} {
 		out, err := runCommand(t, args...)
 		if err != nil {
@@ -110,20 +110,20 @@ func TestDBVersion(t *testing.T) {
 	}
 }
 
-func TestDBVersionFromEnvironment(t *testing.T) {
+func TestSchemaVersionFromEnvironment(t *testing.T) {
 	clearEnv(t)
 	t.Setenv("FUINGO_ENV", "test")
 	t.Setenv("FUINGO_DB", createDatabase(t))
-	out, err := runCommand(t, "db", "version")
+	out, err := runCommand(t, "version", "--schema")
 	if err != nil {
-		t.Fatalf("db version: %v\n%s", err, out)
+		t.Fatalf("version --schema: %v\n%s", err, out)
 	}
 	if want := strconv.Itoa(store.CurrentSchemaVersion()) + "\n"; out != want {
-		t.Errorf("db version printed %q, want %q", out, want)
+		t.Errorf("version --schema printed %q, want %q", out, want)
 	}
 }
 
-func TestDBVersionRefusesOtherSchemaVersions(t *testing.T) {
+func TestSchemaVersionRefusesOtherSchemaVersions(t *testing.T) {
 	clearEnv(t)
 	for _, tc := range []struct {
 		version int
@@ -134,14 +134,14 @@ func TestDBVersionRefusesOtherSchemaVersions(t *testing.T) {
 	} {
 		path := createDatabase(t)
 		setSchemaVersion(t, path, tc.version)
-		out, err := runCommand(t, "--env", "test", "--db", path, "db", "version")
+		out, err := runCommand(t, "--env", "test", "--db", path, "version", "--schema")
 		if !errors.Is(err, tc.want) {
 			t.Errorf("schema version %d: err = %v, want %v\n%s", tc.version, err, tc.want, out)
 		}
 	}
 }
 
-func TestDBVersionRefusesBadPaths(t *testing.T) {
+func TestSchemaVersionRefusesBadPaths(t *testing.T) {
 	clearEnv(t)
 	dir := t.TempDir()
 	foreign := filepath.Join(dir, "foreign.db")
@@ -157,24 +157,24 @@ func TestDBVersionRefusesBadPaths(t *testing.T) {
 		{":memory:", ErrMemoryDatabase},
 		{missing, fs.ErrNotExist},
 	} {
-		out, err := runCommand(t, "--env", "test", "--db", tc.path, "db", "version")
+		out, err := runCommand(t, "--env", "test", "--db", tc.path, "version", "--schema")
 		if !errors.Is(err, tc.want) {
 			t.Errorf("--db %q: err = %v, want %v\n%s", tc.path, err, tc.want, out)
 		}
 	}
 	if _, err := os.Stat(missing); !errors.Is(err, fs.ErrNotExist) {
-		t.Errorf("db version created %s", missing)
+		t.Errorf("version --schema created %s", missing)
 	}
-	if out, err := runCommand(t, "--env", "test", "--db", foreign, "db", "version"); err == nil {
-		t.Errorf("db version accepted a file that is not a fuingo database:\n%s", out)
+	if out, err := runCommand(t, "--env", "test", "--db", foreign, "version", "--schema"); err == nil {
+		t.Errorf("version --schema accepted a file that is not a fuingo database:\n%s", out)
 	}
 }
 
-func TestDBRequiresEnvironment(t *testing.T) {
+func TestSchemaVersionRequiresEnvironment(t *testing.T) {
 	clearEnv(t)
-	out, err := runCommand(t, "--db", createDatabase(t), "db", "version")
+	out, err := runCommand(t, "--db", createDatabase(t), "version", "--schema")
 	if err == nil || !strings.Contains(err.Error(), "environment") {
-		t.Errorf("db version without an environment: err = %v\n%s", err, out)
+		t.Errorf("version --schema without an environment: err = %v\n%s", err, out)
 	}
 }
 

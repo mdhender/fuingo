@@ -12,15 +12,15 @@ go run ./cmd/fuingodb --env development create --db tmp/fuingo.db
 go run ./cmd/fuingodb --env development migrate --db tmp/fuingo.db
 go run ./cmd/fuingod  --env development --db tmp/fuingo.db
 go run ./cmd/fuingo   version
-go run ./cmd/fuingo   --env development --db tmp/fuingo.db db version
+go run ./cmd/fuingo   --env development --db tmp/fuingo.db version --schema
 go run ./cmd/fuingo   --env development --db tmp/fuingo.db game create game01
 ```
 
 `fuingodb` creates and migrates databases. `fuingod` serves the upload form and
 only opens an existing, current database; it never creates or migrates one.
 `fuingo` is the operators' CLI for the application data. `fuingo version`
-prints the program's version; `fuingo db version` prints the database's schema
-version; `fuingo game create CODE` adds an active game. Game codes are
+prints the program's version; `fuingo version --schema` prints the database's
+schema version; `fuingo game create CODE` adds an active game. Game codes are
 lowercased, like the codes in uploaded files, and must be one or more printable
 ASCII bytes with no spaces. Commands that use the database, like `fuingod`, refuse one that is not
 at the schema version the program expects. `fuingo` never creates or migrates
@@ -33,8 +33,8 @@ override environment variables, which override the defaults.
 
 | Flag | Environment variable | Commands | Meaning |
 | --- | --- | --- | --- |
-| `--env` | `FUINGO_ENV` | all | `development`, `test`, `production`, or `agent`. Required, except by `fuingo version`. |
-| `--db` | `FUINGO_DB` | `fuingod`, `fuingodb`, `fuingo db` | Database file. Required. `fuingod` accepts `:memory:` in `development` and `agent` only; `fuingodb` and `fuingo` never do. |
+| `--env` | `FUINGO_ENV` | all | `development`, `test`, `production`, or `agent`. Required, except by `fuingo version` without `--schema`. |
+| `--db` | `FUINGO_DB` | all | Database file. Required. `fuingod` accepts `:memory:` in `development` and `agent` only; `fuingodb` and `fuingo` never do. `fuingo version` uses it only with `--schema`. |
 | `--addr` | `FUINGO_ADDR` | `fuingod` | Backend listen address, `host:port`. Default `127.0.0.1:18443`. |
 | `--trusted-proxies` | `FUINGO_TRUSTED_PROXIES` | `fuingod` | Comma-separated addresses and CIDR prefixes of the reverse proxies whose `X-Forwarded-For` header is trusted. Default `127.0.0.0/8,::1` (loopback); empty trusts none. |
 | (none) | `FUINGO_PEPPER` | `fuingod`, `fuingodb create` | Key for the upload credential hashes. Required. |

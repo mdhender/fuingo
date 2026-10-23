@@ -46,8 +46,8 @@ upload files over HTTPS instead of mailing them.
   2.0.11 is vendored as `internal/server/static/htmx-2.0.11.min.js`.
 - `cmd/fuingod`, `cmd/fuingodb`, and `cmd/fuingo` exist; [README.md](README.md)
   documents their flags and environment variables. Keep it current when adding
-  any of them. `cmd/fuingo` has only `version` and `db version` so far. The `/api/`
-  routes do not exist yet; do not document them as implemented until they are.
+  any of them. The `/api/` routes do not exist yet; do not document them as
+  implemented until they are.
 
 ## Commands
 
@@ -77,7 +77,8 @@ and `fuingo <noun> --help` lists them. `--db` is a root flag, as in
 `fuingo --db PATH game create CODE`, because almost every command uses the
 database. Commands that use it open it with `store.Open` and fail unless it is
 at the schema version the program expects. `fuingo` has `version`,
-`db version`, and `game create CODE` so far; add further commands only as the
+`version --schema` (the database's schema version), and `game create CODE` so
+far; add further commands only as the
 user asks for them.
 
 | Command | Purpose |

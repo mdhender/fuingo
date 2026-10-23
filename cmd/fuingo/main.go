@@ -5,13 +5,18 @@
 // follow the pattern fuingo <noun> <verb>.
 //
 //	fuingo version
-//	fuingo [--env ENV] [--db PATH] db version
+//	fuingo [--env ENV] [--db PATH] version --schema
 //	fuingo [--env ENV] [--db PATH] game create CODE
 //
 // Every flag can also be set with a FUINGO_ environment variable:
 //
-//	--env   FUINGO_ENV   development, test, production, or agent (required by db)
-//	--db    FUINGO_DB    path to the database file (required by db; :memory: is refused)
+//	--env   FUINGO_ENV   development, test, production, or agent (required by every
+//	                     command but version without --schema)
+//	--db    FUINGO_DB    path to the database file (required by commands that use it;
+//	                     :memory: is refused)
+//
+// version --schema has no environment variable: version reads no
+// environment unless --schema is on the command line.
 //
 // Commands that use the database only open one that is already at the schema
 // version this program expects. fuingo never creates a database file or
@@ -59,23 +64,19 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	rootFlags.StringVar(&env, 0, "env", "", "environment: development, test, production, or agent (FUINGO_ENV)")
 	rootFlags.StringVar(&path, 0, "db", "", "path to the database file (FUINGO_DB)")
 
+	var schema bool
+	versionFlags := ff.NewFlagSet("version").SetParent(rootFlags)
+	versionFlags.BoolVar(&schema, 0, "schema", "print the database's schema version instead")
 	version := &ff.Command{
 		Name:      "version",
-		Usage:     "fuingo version",
-		ShortHelp: "print the program's version",
-		Flags:     ff.NewFlagSet("version").SetParent(rootFlags),
+		Usage:     "fuingo [--db PATH] version [--schema]",
+		ShortHelp: "print the program's version, or the database's schema version",
+		Flags:     versionFlags,
 		Exec: func(ctx context.Context, args []string) error {
-			fmt.Fprintln(stdout, fuingo.Version().String())
-			return nil
-		},
-	}
-
-	dbVersion := &ff.Command{
-		Name:      "version",
-		Usage:     "fuingo [--db PATH] db version",
-		ShortHelp: "print the database's schema version",
-		Flags:     ff.NewFlagSet("db version").SetParent(rootFlags),
-		Exec: func(ctx context.Context, args []string) error {
+			if !schema {
+				fmt.Fprintln(stdout, fuingo.Version().String())
+				return nil
+			}
 			return withDatabase(ctx, path, func(s *store.Store) error {
 				v, err := s.SchemaVersion(ctx)
 				if err != nil {
@@ -84,16 +85,6 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 				fmt.Fprintln(stdout, v)
 				return nil
 			})
-		},
-	}
-	db := &ff.Command{
-		Name:        "db",
-		Usage:       "fuingo [--db PATH] db <version>",
-		ShortHelp:   "inspect a database",
-		Flags:       ff.NewFlagSet("db").SetParent(rootFlags),
-		Subcommands: []*ff.Command{dbVersion},
-		Exec: func(ctx context.Context, args []string) error {
-			return ff.ErrHelp
 		},
 	}
 
@@ -133,16 +124,18 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 
 	root := &ff.Command{
 		Name:        "fuingo",
-		Usage:       "fuingo [--env ENV] [--db PATH] <version|db|game>",
+		Usage:       "fuingo [--env ENV] [--db PATH] <version|game>",
 		LongHelp:    "fuingo " + fuingo.Version().String(),
 		Flags:       rootFlags,
-		Subcommands: []*ff.Command{version, db, game},
+		Subcommands: []*ff.Command{version, game},
 		Exec: func(ctx context.Context, args []string) error {
 			return ff.ErrHelp
 		},
 	}
 
-	err := parse(root, version, args, &env)
+	err := parse(root, args, &env, func() bool {
+		return root.GetSelected() == version && !schema
+	})
 	if err == nil {
 		err = root.Run(ctx)
 	}
@@ -152,10 +145,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	return err
 }
 
-// parse parses args into root with cli.Parse, except that the version
-// command needs no environment, so it is selected without loading one.
-func parse(root, version *ff.Command, args []string, env *string) error {
-	if err := root.Parse(args); err != nil || root.GetSelected() == version {
+// parse parses args into root with cli.Parse, except that it loads no
+// environment when the command line alone selects a command that needs none.
+func parse(root *ff.Command, args []string, env *string, needsNoEnvironment func() bool) error {
+	if err := root.Parse(args); err != nil || needsNoEnvironment() {
 		return err
 	}
 	if err := root.Reset(); err != nil {

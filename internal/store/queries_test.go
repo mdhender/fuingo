@@ -179,3 +179,28 @@ func TestGameCodesMustBeLowercase(t *testing.T) {
 		t.Errorf("games = %v, want none", games)
 	}
 }
+
+func TestCreateGame(t *testing.T) {
+	t.Parallel()
+	s, err := OpenPrivateMemory(t.Context(), t.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	id, err := s.CreateGame(t.Context(), "game01")
+	if err != nil {
+		t.Fatalf("CreateGame: %v", err)
+	}
+	if got, ok, err := s.GameID(t.Context(), "game01"); err != nil || !ok || got != id {
+		t.Errorf("GameID = %d, %v, %v; want %d, true, nil", got, ok, err, id)
+	}
+	if _, err := s.CreateGame(t.Context(), "game01"); !errors.Is(err, ErrGameExists) {
+		t.Errorf("CreateGame with an existing code = %v, want ErrGameExists", err)
+	}
+	if _, err := s.CreateGame(t.Context(), "Game02"); !errors.Is(err, ErrGameCodeCase) {
+		t.Errorf("CreateGame with an uppercase code = %v, want ErrGameCodeCase", err)
+	}
+	if games, _ := s.Games(t.Context()); len(games) != 1 {
+		t.Errorf("games = %v, want only game01", games)
+	}
+}

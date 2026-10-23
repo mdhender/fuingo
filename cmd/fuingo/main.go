@@ -5,6 +5,7 @@
 //
 //	fuingo version
 //	fuingo [--env ENV] [--db PATH] db version
+//	fuingo [--env ENV] [--db PATH] create game CODE
 //
 // Every flag can also be set with a FUINGO_ environment variable:
 //
@@ -14,6 +15,9 @@
 // Commands that use the database only open one that is already at the schema
 // version this program expects. fuingo never creates a database file or
 // migrates one; fuingodb does.
+//
+// Game codes are lowercased with strings.ToLower, as uploads are, and must be
+// a valid header word: one or more bytes in 0x21-0x7E. New games are active.
 package main
 
 import (
@@ -22,6 +26,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/mdhender/fuingo"
 	"github.com/mdhender/fuingo/internal/cerrs"
@@ -34,6 +39,8 @@ import (
 const (
 	ErrMissingDatabase = cerrs.Error("--db (FUINGO_DB) is required")
 	ErrMemoryDatabase  = cerrs.Error("fuingo requires a database file, not :memory:")
+	ErrGameCode        = cerrs.Error("game code must be one or more printable ASCII bytes with no spaces")
+	ErrUsage           = cerrs.Error("wrong number of arguments")
 )
 
 func main() {
@@ -89,12 +96,46 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		},
 	}
 
+	createGame := &ff.Command{
+		Name:      "game",
+		Usage:     "fuingo [--db PATH] create game CODE",
+		ShortHelp: "create an active game",
+		Flags:     ff.NewFlagSet("create game").SetParent(rootFlags),
+		Exec: func(ctx context.Context, args []string) error {
+			if len(args) != 1 {
+				return fmt.Errorf("create game CODE: %w", ErrUsage)
+			}
+			code, err := gameCode(args[0])
+			if err != nil {
+				return err
+			}
+			return withDatabase(ctx, path, func(s *store.Store) error {
+				id, err := s.CreateGame(ctx, code)
+				if err != nil {
+					return err
+				}
+				fmt.Fprintf(stdout, "created game %s (id %d)\n", code, id)
+				return nil
+			})
+		},
+	}
+	create := &ff.Command{
+		Name:        "create",
+		Usage:       "fuingo [--db PATH] create <game>",
+		ShortHelp:   "add application data",
+		Flags:       ff.NewFlagSet("create").SetParent(rootFlags),
+		Subcommands: []*ff.Command{createGame},
+		Exec: func(ctx context.Context, args []string) error {
+			return ff.ErrHelp
+		},
+	}
+
 	root := &ff.Command{
 		Name:        "fuingo",
-		Usage:       "fuingo [--env ENV] [--db PATH] <version|db>",
+		Usage:       "fuingo [--env ENV] [--db PATH] <version|db|create>",
 		LongHelp:    "fuingo " + fuingo.Version().String(),
 		Flags:       rootFlags,
-		Subcommands: []*ff.Command{version, db},
+		Subcommands: []*ff.Command{version, db, create},
 		Exec: func(ctx context.Context, args []string) error {
 			return ff.ErrHelp
 		},
@@ -137,4 +178,18 @@ func withDatabase(ctx context.Context, path string, fn func(*store.Store) error)
 	}
 	defer func() { err = errors.Join(err, s.Close()) }()
 	return fn(s)
+}
+
+// gameCode lowercases code and checks that it can appear as the first word of
+// a turn file's header line.
+func gameCode(code string) (string, error) {
+	if code == "" {
+		return "", ErrGameCode
+	}
+	for i := 0; i < len(code); i++ {
+		if code[i] < 0x21 || code[i] > 0x7e {
+			return "", fmt.Errorf("%q: %w", code, ErrGameCode)
+		}
+	}
+	return strings.ToLower(code), nil
 }

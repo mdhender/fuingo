@@ -60,7 +60,7 @@ variable `FUINGO_NAME`; secrets such as `FUINGO_PEPPER` have no flag.
 | --- | --- |
 | `cmd/fuingod` | The web server. Opens an existing database; never creates or migrates one. |
 | `cmd/fuingodb` | Database administration: `create` and `migrate`. |
-| `cmd/fuingo` | The operators' CLI for managing games, uploaders, API accounts, and game managers; it will be the only way to create accounts outside development and agent. It owns the application data, so commands that create rows (such as a future `fuingo create`) belong here, but creating and migrating database files belong to `cmd/fuingodb`: never add a migrate command to `fuingo`. `--db` is a root flag, as in `fuingo --db PATH db version`, because almost every command uses the database. Commands that use it open it with `store.Open` and fail unless it is at the schema version the program expects. It has `version` and `db version` so far; add further commands only as the user asks for them. |
+| `cmd/fuingo` | The operators' CLI for managing games, uploaders, API accounts, and game managers; it will be the only way to create accounts outside development and agent. It owns the application data, so commands that create rows (such as a future `fuingo create`) belong here, but creating and migrating database files belong to `cmd/fuingodb`: never add a migrate command to `fuingo`. `--db` is a root flag, as in `fuingo --db PATH db version`, because almost every command uses the database. Commands that use it open it with `store.Open` and fail unless it is at the schema version the program expects. It has `version`, `db version`, and `create game CODE` so far; add further commands only as the user asks for them. |
 
 Upload tokens are issued out of band: a game manager emails each uploader the
 game code and that game's token. A token cannot be recovered, because only its
@@ -106,8 +106,8 @@ never be reused.
 - Every foreign key is `ON DELETE RESTRICT`: deleting a row that others refer to
   fails instead of removing history. Revoke access by clearing `is_active`.
 
-Until `cmd/fuingo` can create them, the only rows in `games` and `game_uploaders` come
-from the default data and the development/agent helper in
+Apart from games made with `fuingo create game`, the only rows in `games` and
+`game_uploaders` come from the default data and the development/agent helper in
 [TESTING.md](TESTING.md).
 
 ## Upload requirements

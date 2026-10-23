@@ -63,7 +63,7 @@ func (s *Store) CreateGamesAndUploaders(ctx context.Context, games []string, upl
 	defer s.pool.Put(conn)
 	defer sqlitex.Save(conn)(&err)
 	for _, code := range games {
-		if err := createGame(conn, code); err != nil {
+		if _, err := createGame(conn, code); err != nil {
 			return err
 		}
 	}
@@ -73,6 +73,18 @@ func (s *Store) CreateGamesAndUploaders(ctx context.Context, games []string, upl
 		}
 	}
 	return nil
+}
+
+// CreateGame inserts an active game and returns its ID. The code must be
+// lowercase. It never modifies an existing row: a duplicate code fails with
+// ErrGameExists.
+func (s *Store) CreateGame(ctx context.Context, code string) (int64, error) {
+	conn, err := s.take(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer s.pool.Put(conn)
+	return createGame(conn, code)
 }
 
 // CreateUploader inserts an active upload account for an existing game.
@@ -87,17 +99,19 @@ func (s *Store) CreateUploader(ctx context.Context, u NewUploader) error {
 	return createUploader(conn, u)
 }
 
-func createGame(conn *sqlite.Conn, code string) error {
+func createGame(conn *sqlite.Conn, code string) (int64, error) {
 	if code != strings.ToLower(code) {
-		return fmt.Errorf("%s: %w", code, ErrGameCodeCase)
+		return 0, fmt.Errorf("%s: %w", code, ErrGameCodeCase)
 	}
 	err := sqlitex.Execute(conn, "INSERT INTO games (code, is_active) VALUES (?, 1);", &sqlitex.ExecOptions{
 		Args: []any{code},
 	})
 	if sqlite.ErrCode(err) == sqlite.ResultConstraintUnique {
-		return fmt.Errorf("%s: %w", code, ErrGameExists)
+		return 0, fmt.Errorf("%s: %w", code, ErrGameExists)
+	} else if err != nil {
+		return 0, err
 	}
-	return err
+	return conn.LastInsertRowID(), nil
 }
 
 func createUploader(conn *sqlite.Conn, u NewUploader) (err error) {

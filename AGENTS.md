@@ -56,6 +56,13 @@ environment files, through `internal/cli`. Explicit flags override environment
 values, which override defaults. Every flag `--name` has an environment
 variable `FUINGO_NAME`; secrets such as `FUINGO_PEPPER` have no flag.
 
+The exception is a flag that changes what a command does rather than
+configuring it, such as `fuingo version --schema`, which prints the database's
+schema version instead of the program's version. Such a flag is honored only
+on the command line, never from the environment: set in an environment file, it
+would silently change the command for every later run. Document each one in the
+command's help and package comment.
+
 Each program owns one area. Put a new command in the program that owns what
 it manages, even when another program could reach the same thing:
 

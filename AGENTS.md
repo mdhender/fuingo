@@ -33,8 +33,11 @@ upload files over HTTPS instead of mailing them.
 - `internal/store` wraps the SQLite database: `Create`, `Migrate`, and `Open`
   for files, plus `OpenPrivateMemory`, `CreateSharedMemory`, and
   `OpenSharedMemory`.
-- No server or command exists yet. Do not document the planned commands,
-  routes, or packages below as implemented until they are.
+- `internal/credential` computes upload credential hashes; `internal/devdata`
+  holds the default games and upload accounts; `internal/cli` holds the flag
+  and environment-file parsing shared by the commands.
+- `cmd/fuingodb` exists. The server does not yet. Do not document the planned
+  commands, routes, or packages below as implemented until they are.
 
 ## Planned commands
 

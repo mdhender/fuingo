@@ -50,6 +50,8 @@ func New(cfg Config) (http.Handler, error) {
 		return nil, err
 	}
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /{$}", serveIndex)
+	mux.HandleFunc("GET "+HTMXPath, serveHTMX)
 	mux.Handle("POST /upload", uploads)
 	if prefix := HelperPrefix(cfg.Env); prefix != "" && devdata.Allowed(cfg.Env) {
 		h := &helpers{store: cfg.Store, pepper: cfg.Pepper, logger: cfg.Logger}

@@ -38,8 +38,10 @@ upload files over HTTPS instead of mailing them.
   and environment-file parsing shared by the commands.
 - `internal/upload` is the upload handler, implementing the requirements
   below.
-- `internal/server` assembles the browser-facing routes (`POST /upload` and
-  the development/agent helper) behind `http.NewCrossOriginProtection`.
+- `internal/server` assembles the browser-facing routes (the page at `/`,
+  the vendored HTMX under `/static/`, `POST /upload`, and the
+  development/agent helper) behind `http.NewCrossOriginProtection`. HTMX
+  2.0.11 is vendored as `internal/server/static/htmx-2.0.11.min.js`.
 - `cmd/fuingod` and `cmd/fuingodb` exist; [README.md](README.md) documents
   their flags and environment variables. Keep it current when adding either.
   `cmd/fuingo` and the `/api/` routes do not exist yet; do not document them

@@ -65,7 +65,6 @@ func New(cfg Config) (http.Handler, error) {
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", servePage("index.html"))
-	mux.HandleFunc("GET "+DraggerPath, servePage("dragger.html"))
 	mux.HandleFunc("GET "+HTMXPath, serveHTMX)
 	mux.Handle("POST /upload", uploads)
 	if prefix := HelperPrefix(cfg.Env); prefix != "" && devdata.Allowed(cfg.Env) {

@@ -17,20 +17,15 @@ import (
 
 func TestIndexPage(t *testing.T) {
 	t.Parallel()
-	checkUploadPage(t, "/")
-}
-
-func TestDraggerPage(t *testing.T) {
-	t.Parallel()
-	body := checkUploadPage(t, server.DraggerPath)
+	body := checkUploadPage(t, "/")
 	for _, want := range []string{`id="drop-zone"`, `hx-trigger="change"`, `class="sr-only"`, `"drop"`, `maxSize = 64 * 1024`} {
 		if !strings.Contains(body, want) {
-			t.Errorf("dragger page does not contain %s", want)
+			t.Errorf("page does not contain %s", want)
 		}
 	}
 	// Browser dialogs block the page; errors are shown in the result area.
 	if strings.Contains(body, "alert(") {
-		t.Errorf("dragger page uses alert")
+		t.Errorf("page uses alert")
 	}
 }
 
@@ -77,15 +72,6 @@ func checkUploadPage(t *testing.T, path string) string {
 		t.Errorf("page does not swap error responses")
 	}
 	return body
-}
-
-func TestIndexStylesTheNativePicker(t *testing.T) {
-	t.Parallel()
-	h, _ := newServer(t, "production")
-	// The native file input is styled with Tailwind's file: modifier.
-	if body := serve(h, httptest.NewRequest(http.MethodGet, publicOrigin+"/", nil)).Body.String(); !strings.Contains(body, "file:") {
-		t.Errorf("index page does not style the file input with file:")
-	}
 }
 
 func TestOnlyRootServesThePage(t *testing.T) {

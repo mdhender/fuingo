@@ -41,7 +41,7 @@ upload files over HTTPS instead of mailing them.
   below. `internal/clientip` finds the client's address behind trusted
   proxies; `internal/ratelimit` limits failed authorizations per client.
 - `internal/server` assembles the browser-facing routes (the page at `/`,
-  its drag-and-drop variant at `/dragger.html`, the vendored HTMX under `/static/`, `POST /upload`, and the
+  the vendored HTMX under `/static/`, `POST /upload`, and the
   development/agent helper) behind `http.NewCrossOriginProtection`. HTMX
   2.0.11 is vendored as `internal/server/static/htmx-2.0.11.min.js`.
 - `cmd/fuingod` and `cmd/fuingodb` exist; [README.md](README.md) documents
@@ -200,16 +200,15 @@ The server handles each upload in this order:
 
 - Build the form with HTMX and Tailwind CSS. Use server-rendered HTML fragments
   for responses; do not introduce a JavaScript framework.
-- The form is a single file picker and an Upload button; the uploader's game,
-  turn, email, and token come from the file's header line.
-- Start with a native `<input type="file">` styled with Tailwind's `file:`
-  modifier. The user may later replace it with a Tailwind UI kit component.
-- `/dragger.html` is a variant under evaluation: a drop zone around a
-  visually hidden file input, which uploads as soon as one `.txt` file is
-  selected or dropped, with no Upload button. Its script rejects more than one
-  file, other extensions, empty files, and files over 64 KiB before sending,
-  showing the message in the result area, never in a browser dialog. These
-  checks are conveniences; the server enforces the rules.
+- The form is a single file picker; the uploader's game, turn, email, and
+  token come from the file's header line.
+- The picker is a drop zone around a visually hidden `<input type="file">`.
+  It uploads as soon as one `.txt` file is selected or dropped, with no
+  Upload button. Its script rejects more than one file, other extensions,
+  empty files, and files over 64 KiB before sending, showing the message in
+  the result area, never in a browser dialog. These checks are conveniences;
+  the server enforces the rules. The user may later replace it with a
+  Tailwind UI kit component.
 - Vendor HTMX: commit the minified file for one exact release, with its version
   in the file name, and serve it from the binary with `embed`. Do not load HTMX
   from a CDN.

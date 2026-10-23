@@ -22,9 +22,6 @@ const (
 //go:embed static/htmx-2.0.11.min.js
 var htmxJS []byte
 
-// DraggerPath serves the drag-and-drop variant of the upload page.
-const DraggerPath = "/dragger.html"
-
 //go:embed templates/*.html
 var templates embed.FS
 

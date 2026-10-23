@@ -9,7 +9,7 @@ token, instead of mailing it.
 ```sh
 go run ./cmd/fuingodb --env development create --db tmp/fuingo.db
 go run ./cmd/fuingodb --env development migrate --db tmp/fuingo.db
-go run ./cmd/fuingod  --env development --db tmp/fuingo.db --upload-dir tmp/uploads
+go run ./cmd/fuingod  --env development --db tmp/fuingo.db
 ```
 
 `fuingodb` creates and migrates databases. `fuingod` serves the upload form and
@@ -25,7 +25,6 @@ override environment variables, which override the defaults.
 | `--env` | `FUINGO_ENV` | both | `development`, `test`, `production`, or `agent`. Required. |
 | `--db` | `FUINGO_DB` | both | Database file. Required. `fuingod` accepts `:memory:` in `development` and `agent` only; `fuingodb` never does. |
 | `--addr` | `FUINGO_ADDR` | `fuingod` | Backend listen address, `host:port`. Default `127.0.0.1:18443`. |
-| `--upload-dir` | `FUINGO_UPLOAD_DIR` | `fuingod` | Directory for uploaded files. Required; it must already exist. |
 | (none) | `FUINGO_PEPPER` | `fuingod`, `fuingodb create` | Key for the upload credential hashes. Required. |
 
 - The environment is read from `--env` or the process's `FUINGO_ENV`. The
@@ -38,8 +37,10 @@ override environment variables, which override the defaults.
 - `fuingodb create` in `development` and `agent` seeds the default games and
   upload accounts listed in [TESTING.md](TESTING.md). So does
   `fuingod --db :memory:`.
-- Uploaded files are named by the SHA-256 of their contents. Each successful
-  upload is recorded in the `uploads` table.
+- Uploaded files are stored in the database, in `upload_blobs`, keyed by the
+  SHA-256 of their contents; identical files are stored once. Each successful
+  upload is recorded in the `uploads` table. Nothing is written to the
+  filesystem, so backing up the database backs up every upload.
 
 ## Proxy
 

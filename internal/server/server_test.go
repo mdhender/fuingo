@@ -39,11 +39,10 @@ func newServer(t *testing.T, env string) (http.Handler, *store.Store) {
 		t.Fatal(err)
 	}
 	h, err := server.New(server.Config{
-		Env:       env,
-		Store:     s,
-		Pepper:    pepper,
-		UploadDir: t.TempDir(),
-		Logger:    slog.New(slog.DiscardHandler),
+		Env:    env,
+		Store:  s,
+		Pepper: pepper,
+		Logger: slog.New(slog.DiscardHandler),
 	})
 	if err != nil {
 		t.Fatal(err)

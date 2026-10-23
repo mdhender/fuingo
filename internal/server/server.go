@@ -24,11 +24,10 @@ import (
 type Config struct {
 	// Env is the application environment: development, test, production,
 	// or agent.
-	Env       string
-	Store     *store.Store
-	Pepper    string
-	UploadDir string
-	Logger    *slog.Logger
+	Env    string
+	Store  *store.Store
+	Pepper string
+	Logger *slog.Logger
 }
 
 // HelperPrefix returns the path prefix of the account helpers in env, or ""
@@ -45,7 +44,7 @@ func HelperPrefix(env string) string {
 
 // New returns the handler for every browser-facing route.
 func New(cfg Config) (http.Handler, error) {
-	uploads, err := upload.New(cfg.Store, cfg.Pepper, cfg.UploadDir, cfg.Logger)
+	uploads, err := upload.New(cfg.Store, cfg.Pepper, cfg.Logger)
 	if err != nil {
 		return nil, err
 	}

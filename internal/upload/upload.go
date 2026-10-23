@@ -4,7 +4,8 @@
 // Package upload implements the turn-file upload handler.
 //
 // The handler checks each upload in a fixed order: size limit, sanity check,
-// authorization, storage, record. It responds with a server-rendered HTML
+// authorization, then storage and record in one database transaction. It
+// responds with a server-rendered HTML
 // fragment. Every authorization failure gets the same response, so it never
 // reveals whether an email exists or which credential was wrong.
 package upload
@@ -17,12 +18,9 @@ import (
 	"fmt"
 	"html/template"
 	"io"
-	"io/fs"
 	"log/slog"
 	"mime/multipart"
 	"net/http"
-	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/mdhender/fuingo/internal/cerrs"
@@ -32,7 +30,6 @@ import (
 
 const (
 	ErrMissingPepper = cerrs.Error("upload pepper is missing or empty")
-	ErrNotDirectory  = cerrs.Error("upload directory is not a directory")
 )
 
 const (
@@ -70,24 +67,16 @@ const (
 type Handler struct {
 	db     *store.Store
 	pepper string
-	dir    string
 	logger *slog.Logger
 }
 
 // New returns a handler that authorizes uploads against s using pepper and
-// stores files in dir, which must already exist.
-func New(s *store.Store, pepper, dir string, logger *slog.Logger) (*Handler, error) {
+// stores their contents in s.
+func New(s *store.Store, pepper string, logger *slog.Logger) (*Handler, error) {
 	if pepper == "" {
 		return nil, ErrMissingPepper
 	}
-	sb, err := os.Stat(dir)
-	if err != nil {
-		return nil, fmt.Errorf("upload directory: %w", err)
-	}
-	if !sb.IsDir() {
-		return nil, fmt.Errorf("%s: %w", dir, ErrNotDirectory)
-	}
-	return &Handler{db: s, pepper: pepper, dir: dir, logger: logger}, nil
+	return &Handler{db: s, pepper: pepper, logger: logger}, nil
 }
 
 // form is the parsed request. An absent or oversized email or token is left
@@ -135,17 +124,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 4. Storage.
+	// 4 and 5. Storage and record, in one transaction: the contents are kept
+	// under their SHA-256 unless already stored, and every upload gets a row.
 	sum := sha256.Sum256(f.file)
 	contentHash := hex.EncodeToString(sum[:])
-	if err := h.save(contentHash, f.file); err != nil {
-		h.logger.Error("upload: store file", "game_id", uploader.GameID, "content_hash", contentHash, "err", err)
-		respond(w, http.StatusInternalServerError, false, msgServerError)
-		return
-	}
-
-	// 5. Record.
-	if err := h.db.RecordUpload(r.Context(), uploader.GameID, uploader.Email, contentHash, time.Now()); err != nil {
+	if err := h.db.RecordUpload(r.Context(), uploader.GameID, uploader.Email, contentHash, f.file, time.Now()); err != nil {
 		h.logger.Error("upload: record", "game_id", uploader.GameID, "content_hash", contentHash, "err", err)
 		respond(w, http.StatusInternalServerError, false, msgServerError)
 		return
@@ -254,42 +237,6 @@ func (h *Handler) authorize(r *http.Request, email, token string) (store.Uploade
 		return store.Uploader{}, false, nil
 	}
 	return u, true, nil
-}
-
-// save writes data to the upload directory under its content hash. An
-// existing file is kept, never rewritten. A new file is written to a
-// temporary name and then linked into place, so a partial write is never
-// visible under the final name and a concurrent upload of the same content
-// cannot replace it.
-func (h *Handler) save(contentHash string, data []byte) (err error) {
-	final := filepath.Join(h.dir, contentHash)
-	if _, err := os.Lstat(final); err == nil {
-		return nil
-	} else if !errors.Is(err, fs.ErrNotExist) {
-		return err
-	}
-	tmp, err := os.CreateTemp(h.dir, ".upload-*.tmp")
-	if err != nil {
-		return err
-	}
-	defer func() {
-		err = errors.Join(err, os.Remove(tmp.Name()))
-	}()
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	if err := os.Link(tmp.Name(), final); err != nil && !errors.Is(err, fs.ErrExist) {
-		return err
-	}
-	return nil
 }
 
 var resultTemplate = template.Must(template.New("result").Parse(

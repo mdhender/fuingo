@@ -13,8 +13,6 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -36,7 +34,6 @@ var (
 type fixture struct {
 	t       *testing.T
 	store   *store.Store
-	dir     string
 	handler http.Handler
 }
 
@@ -50,12 +47,11 @@ func newFixture(t *testing.T) *fixture {
 	if err := devdata.Seed(t.Context(), s, "development", pepper); err != nil {
 		t.Fatal(err)
 	}
-	dir := t.TempDir()
-	h, err := upload.New(s, pepper, dir, slog.New(slog.DiscardHandler))
+	h, err := upload.New(s, pepper, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &fixture{t: t, store: s, dir: dir, handler: h}
+	return &fixture{t: t, store: s, handler: h}
 }
 
 // request builds a multipart upload like the web form's.
@@ -94,18 +90,14 @@ func (f *fixture) upload(email, token string, file []byte) response {
 	return f.do(request(f.t, email, token, file))
 }
 
-// files lists the upload directory.
-func (f *fixture) files() []string {
+// blobs lists the stored contents.
+func (f *fixture) blobs() []store.Blob {
 	f.t.Helper()
-	entries, err := os.ReadDir(f.dir)
+	blobs, err := f.store.Blobs(f.t.Context())
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	var names []string
-	for _, e := range entries {
-		names = append(names, e.Name())
-	}
-	return names
+	return blobs
 }
 
 func (f *fixture) uploads() []store.Upload {
@@ -130,10 +122,15 @@ func (f *fixture) expectAccepted(name string, r response, file []byte) {
 		f.t.Errorf("%s: status %d, want 200: %s", name, r.status, r.body)
 		return
 	}
-	stored, err := os.ReadFile(filepath.Join(f.dir, hash(file)))
-	if err != nil || !bytes.Equal(stored, file) {
-		f.t.Errorf("%s: stored file is missing or wrong: %v", name, err)
+	for _, b := range f.blobs() {
+		if b.ContentHash == hash(file) {
+			if !bytes.Equal(b.Contents, file) {
+				f.t.Errorf("%s: stored contents differ from the file", name)
+			}
+			return
+		}
 	}
+	f.t.Errorf("%s: contents were not stored", name)
 }
 
 // expectRejected checks a failed upload: nothing stored or recorded.
@@ -145,8 +142,8 @@ func (f *fixture) expectRejected(name string, r response, status int, message st
 	if !strings.Contains(r.body, message) {
 		f.t.Errorf("%s: body %q does not contain %q", name, r.body, message)
 	}
-	if files := f.files(); len(files) != 0 {
-		f.t.Errorf("%s: upload directory has %v", name, files)
+	if blobs := f.blobs(); len(blobs) != 0 {
+		f.t.Errorf("%s: %d blobs stored", name, len(blobs))
 	}
 	if uploads := f.uploads(); len(uploads) != 0 {
 		f.t.Errorf("%s: %d uploads recorded", name, len(uploads))
@@ -181,8 +178,8 @@ func TestSuccessfulUpload(t *testing.T) {
 	if u.UploadedAt.Location() != time.UTC || u.UploadedAt.Before(before.Add(-time.Second)) || u.UploadedAt.After(time.Now().Add(time.Second)) {
 		t.Errorf("uploaded_at = %v", u.UploadedAt)
 	}
-	if files := f.files(); len(files) != 1 {
-		t.Errorf("upload directory has %v, want only the stored file", files)
+	if blobs := f.blobs(); len(blobs) != 1 || !blobs[0].CreatedAt.Equal(u.UploadedAt) {
+		t.Errorf("blobs = %+v, want one created at %v", blobs, u.UploadedAt)
 	}
 }
 
@@ -402,7 +399,7 @@ func TestInactiveUploaderAndGame(t *testing.T) {
 func TestDifferentPepperRejectsDefaultTokens(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
-	h, err := upload.New(f.store, "another-pepper", f.dir, slog.New(slog.DiscardHandler))
+	h, err := upload.New(f.store, "another-pepper", slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -410,64 +407,52 @@ func TestDifferentPepperRejectsDefaultTokens(t *testing.T) {
 	f.expectRejected("other pepper", f.upload(catbird.Email, catbird.Token, []byte("turn\n")), http.StatusForbidden, "not valid")
 }
 
-func TestNewRequiresPepperAndDirectory(t *testing.T) {
+func TestNewRequiresPepper(t *testing.T) {
 	t.Parallel()
 	s, err := store.OpenPrivateMemory(t.Context(), t.Name())
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	logger := slog.New(slog.DiscardHandler)
-	dir := t.TempDir()
-	if _, err := upload.New(s, "", dir, logger); !errors.Is(err, upload.ErrMissingPepper) {
+	if _, err := upload.New(s, "", slog.New(slog.DiscardHandler)); !errors.Is(err, upload.ErrMissingPepper) {
 		t.Errorf("New without pepper = %v, want ErrMissingPepper", err)
-	}
-	if _, err := upload.New(s, pepper, filepath.Join(dir, "missing"), logger); !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("New with missing directory = %v, want ErrNotExist", err)
-	}
-	file := filepath.Join(dir, "file")
-	os.WriteFile(file, nil, 0o600)
-	if _, err := upload.New(s, pepper, file, logger); !errors.Is(err, upload.ErrNotDirectory) {
-		t.Errorf("New with a file = %v, want ErrNotDirectory", err)
-	}
-	if _, err := os.Stat(filepath.Join(dir, "missing")); !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("New created the upload directory")
 	}
 }
 
 func TestDuplicateContent(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
-	file := []byte("turn 1\n")
+	file := []byte("setup orders\n")
 	f.expectAccepted("first", f.upload(catbird.Email, catbird.Token, file), file)
+	first := f.blobs()[0]
 
-	// Mark the stored file so a rewrite would be detectable.
-	path := filepath.Join(f.dir, hash(file))
-	old := time.Date(2001, 1, 1, 0, 0, 0, 0, time.UTC)
-	if err := os.Chtimes(path, old, old); err != nil {
-		t.Fatal(err)
-	}
-	before, _ := os.Stat(path)
-
+	// Another uploader in the same game, the same uploader again, and an
+	// uploader in another game all send identical bytes.
 	spoonbill := devdata.Uploaders[1]
-	f.expectAccepted("same uploader again", f.upload(catbird.Email, catbird.Token, file), file)
 	f.expectAccepted("another uploader", f.upload(spoonbill.Email, spoonbill.Token, file), file)
+	f.expectAccepted("same uploader again", f.upload(catbird.Email, catbird.Token, file), file)
+	f.expectAccepted("another game", f.upload(caracara.Email, caracara.Token, file), file)
 
-	after, _ := os.Stat(path)
-	if !after.ModTime().Equal(old) || !os.SameFile(before, after) {
-		t.Errorf("the stored file was rewritten")
+	// One blob, unchanged since the first upload.
+	if blobs := f.blobs(); len(blobs) != 1 || !blobs[0].CreatedAt.Equal(first.CreatedAt) || !bytes.Equal(blobs[0].Contents, first.Contents) {
+		t.Errorf("blobs = %+v, want only the first", blobs)
 	}
-	if files := f.files(); len(files) != 1 {
-		t.Errorf("upload directory has %v, want one file", files)
-	}
+	// One row per upload.
 	uploads := f.uploads()
-	if len(uploads) != 3 {
-		t.Fatalf("%d uploads recorded, want 3", len(uploads))
+	want := []devdata.Uploader{catbird, spoonbill, catbird, caracara}
+	if len(uploads) != len(want) {
+		t.Fatalf("%d uploads recorded, want %d", len(uploads), len(want))
 	}
-	for i, want := range []string{catbird.Email, catbird.Email, spoonbill.Email} {
-		if uploads[i].Email != want || uploads[i].ContentHash != hash(file) {
-			t.Errorf("upload %d = %+v", i, uploads[i])
+	for i, w := range want {
+		if uploads[i].GameCode != w.Game || uploads[i].Email != w.Email || uploads[i].ContentHash != hash(file) {
+			t.Errorf("upload %d = %+v, want %s %s", i, uploads[i], w.Game, w.Email)
 		}
+	}
+	// The response does not reveal that the content was already stored.
+	r1 := f.upload(spoonbill.Email, spoonbill.Token, []byte("new orders\n"))
+	r2 := f.upload(spoonbill.Email, spoonbill.Token, []byte("new orders\n"))
+	if r1.status != r2.status || r1.body != r2.body {
+		t.Errorf("first and repeated uploads differ:\n%q\n%q", r1.body, r2.body)
 	}
 }
 
@@ -488,8 +473,8 @@ func TestConcurrentDuplicateUploads(t *testing.T) {
 			t.Errorf("status %d", code)
 		}
 	}
-	if files := f.files(); len(files) != 1 || files[0] != hash(file) {
-		t.Errorf("upload directory has %v", files)
+	if blobs := f.blobs(); len(blobs) != 1 || blobs[0].ContentHash != hash(file) {
+		t.Errorf("blobs = %+v, want one", blobs)
 	}
 	if n := len(f.uploads()); n != 8 {
 		t.Errorf("%d uploads recorded, want 8", n)

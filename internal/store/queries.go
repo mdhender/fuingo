@@ -14,10 +14,10 @@ import (
 )
 
 const (
-	ErrGameExists     = cerrs.Error("game already exists")
-	ErrUnknownGame    = cerrs.Error("unknown game")
+	ErrGameExists      = cerrs.Error("game already exists")
+	ErrUnknownGame     = cerrs.Error("unknown game")
 	ErrUnknownUploader = cerrs.Error("unknown uploader")
-	ErrUploaderExists = cerrs.Error("uploader already exists or credential is in use")
+	ErrUploaderExists  = cerrs.Error("uploader already exists or credential is in use")
 )
 
 // timeLayout stores UTC timestamps at a fixed width so they sort as text.
@@ -143,16 +143,61 @@ WHERE u.credential_hash = ? AND u.is_active = 1 AND g.is_active = 1;`, &sqlitex.
 	return u, found, nil
 }
 
-// RecordUpload inserts a row in the upload history.
-func (s *Store) RecordUpload(ctx context.Context, gameID int64, email, contentHash string, at time.Time) error {
+// RecordUpload stores contents under contentHash and inserts a row in the
+// upload history, in one transaction. Contents already stored under that hash
+// are kept as they are, so every upload of identical bytes shares one blob.
+func (s *Store) RecordUpload(ctx context.Context, gameID int64, email, contentHash string, contents []byte, at time.Time) (err error) {
 	conn, err := s.take(ctx)
 	if err != nil {
 		return err
 	}
 	defer s.pool.Put(conn)
+	end, err := sqlitex.ImmediateTransaction(conn)
+	if err != nil {
+		return err
+	}
+	defer end(&err)
+	uploadedAt := at.UTC().Format(timeLayout)
+	if err := sqlitex.Execute(conn, `
+INSERT INTO upload_blobs (content_hash, contents, created_at) VALUES (?, ?, ?)
+ON CONFLICT (content_hash) DO NOTHING;`, &sqlitex.ExecOptions{
+		Args: []any{contentHash, contents, uploadedAt},
+	}); err != nil {
+		return err
+	}
 	return sqlitex.Execute(conn, "INSERT INTO uploads (game_id, email, content_hash, uploaded_at) VALUES (?, ?, ?, ?);", &sqlitex.ExecOptions{
-		Args: []any{gameID, email, contentHash, at.UTC().Format(timeLayout)},
+		Args: []any{gameID, email, contentHash, uploadedAt},
 	})
+}
+
+// Blob is stored upload content.
+type Blob struct {
+	ContentHash string
+	Contents    []byte
+	CreatedAt   time.Time
+}
+
+// Blobs returns every stored blob, in hash order.
+func (s *Store) Blobs(ctx context.Context) ([]Blob, error) {
+	conn, err := s.take(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer s.pool.Put(conn)
+	var blobs []Blob
+	err = sqlitex.Execute(conn, "SELECT content_hash, contents, created_at FROM upload_blobs ORDER BY content_hash;", &sqlitex.ExecOptions{
+		ResultFunc: func(stmt *sqlite.Stmt) error {
+			at, err := time.Parse(timeLayout, stmt.ColumnText(2))
+			if err != nil {
+				return err
+			}
+			contents := make([]byte, stmt.ColumnLen(1))
+			stmt.ColumnBytes(1, contents)
+			blobs = append(blobs, Blob{ContentHash: stmt.ColumnText(0), Contents: contents, CreatedAt: at})
+			return nil
+		},
+	})
+	return blobs, err
 }
 
 // Uploads returns the upload history, oldest first.

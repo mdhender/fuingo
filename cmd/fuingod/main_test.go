@@ -27,7 +27,7 @@ const pepper = "test-pepper"
 
 func clearEnv(t *testing.T) {
 	t.Helper()
-	for _, key := range []string{"FUINGO_ENV", "FUINGO_ADDR", "FUINGO_DB", "FUINGO_UPLOAD_DIR", "FUINGO_PEPPER"} {
+	for _, key := range []string{"FUINGO_ENV", "FUINGO_ADDR", "FUINGO_DB", "FUINGO_PEPPER"} {
 		t.Setenv(key, "")
 		os.Unsetenv(key)
 	}
@@ -36,8 +36,7 @@ func clearEnv(t *testing.T) {
 func TestConfigDefaultsAndPrecedence(t *testing.T) {
 	clearEnv(t)
 	t.Setenv("FUINGO_PEPPER", pepper)
-	dir := t.TempDir()
-	cfg, err := loadConfig([]string{"--env", "development", "--db", ":memory:", "--upload-dir", dir}, io.Discard)
+	cfg, err := loadConfig([]string{"--env", "development", "--db", ":memory:"}, io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,10 +47,9 @@ func TestConfigDefaultsAndPrecedence(t *testing.T) {
 	t.Setenv("FUINGO_ENV", "development")
 	t.Setenv("FUINGO_ADDR", "127.0.0.1:28443")
 	t.Setenv("FUINGO_DB", ":memory:")
-	t.Setenv("FUINGO_UPLOAD_DIR", dir)
 	if cfg, err = loadConfig(nil, io.Discard); err != nil {
 		t.Fatal(err)
-	} else if cfg.addr != "127.0.0.1:28443" || cfg.env != "development" || cfg.uploadDir != dir {
+	} else if cfg.addr != "127.0.0.1:28443" || cfg.env != "development" {
 		t.Errorf("from environment: %+v", cfg)
 	}
 	if cfg, err = loadConfig([]string{"--addr", "0.0.0.0:38443"}, io.Discard); err != nil {
@@ -63,24 +61,18 @@ func TestConfigDefaultsAndPrecedence(t *testing.T) {
 
 func TestConfigRefusals(t *testing.T) {
 	clearEnv(t)
-	dir := t.TempDir()
-	file := filepath.Join(dir, "file")
-	os.WriteFile(file, nil, 0o600)
 	cases := []struct {
 		name   string
 		pepper string
 		args   []string
 		want   error
 	}{
-		{"missing pepper", "", []string{"--env", "development", "--db", ":memory:", "--upload-dir", dir}, cli.ErrMissingPepper},
-		{"missing upload dir", pepper, []string{"--env", "development", "--db", ":memory:"}, ErrMissingUploads},
-		{"nonexistent upload dir", pepper, []string{"--env", "development", "--db", ":memory:", "--upload-dir", filepath.Join(dir, "missing")}, fs.ErrNotExist},
-		{"upload dir is a file", pepper, []string{"--env", "development", "--db", ":memory:", "--upload-dir", file}, ErrNotDirectory},
-		{"missing db", pepper, []string{"--env", "development", "--upload-dir", dir}, ErrMissingDatabase},
-		{"memory in test", pepper, []string{"--env", "test", "--db", ":memory:", "--upload-dir", dir}, ErrMemoryDatabase},
-		{"memory in production", pepper, []string{"--env", "production", "--db", ":memory:", "--upload-dir", dir}, ErrMemoryDatabase},
-		{"bad addr", pepper, []string{"--env", "development", "--addr", "18443", "--db", ":memory:", "--upload-dir", dir}, ErrInvalidAddress},
-		{"bad port", pepper, []string{"--env", "development", "--addr", "127.0.0.1:99999", "--db", ":memory:", "--upload-dir", dir}, ErrInvalidAddress},
+		{"missing pepper", "", []string{"--env", "development", "--db", ":memory:"}, cli.ErrMissingPepper},
+		{"missing db", pepper, []string{"--env", "development"}, ErrMissingDatabase},
+		{"memory in test", pepper, []string{"--env", "test", "--db", ":memory:"}, ErrMemoryDatabase},
+		{"memory in production", pepper, []string{"--env", "production", "--db", ":memory:"}, ErrMemoryDatabase},
+		{"bad addr", pepper, []string{"--env", "development", "--addr", "18443", "--db", ":memory:"}, ErrInvalidAddress},
+		{"bad port", pepper, []string{"--env", "development", "--addr", "127.0.0.1:99999", "--db", ":memory:"}, ErrInvalidAddress},
 	}
 	for _, c := range cases {
 		os.Unsetenv("FUINGO_PEPPER")
@@ -91,11 +83,8 @@ func TestConfigRefusals(t *testing.T) {
 			t.Errorf("%s: %v, want %v", c.name, err, c.want)
 		}
 	}
-	if _, err := os.Stat(filepath.Join(dir, "missing")); !errors.Is(err, fs.ErrNotExist) {
-		t.Errorf("the upload directory was created")
-	}
 	t.Setenv("FUINGO_PEPPER", pepper)
-	if _, err := loadConfig([]string{"--db", ":memory:", "--upload-dir", dir}, io.Discard); err == nil {
+	if _, err := loadConfig([]string{"--db", ":memory:"}, io.Discard); err == nil {
 		t.Errorf("no environment: succeeded")
 	}
 }
@@ -105,7 +94,7 @@ func TestRunNeverCreatesOrMigrates(t *testing.T) {
 	t.Setenv("FUINGO_PEPPER", pepper)
 	dir := t.TempDir()
 	missing := filepath.Join(dir, "missing.db")
-	err := run(t.Context(), []string{"--env", "development", "--addr", "127.0.0.1:0", "--db", missing, "--upload-dir", dir}, io.Discard, nil)
+	err := run(t.Context(), []string{"--env", "development", "--addr", "127.0.0.1:0", "--db", missing}, io.Discard, nil)
 	if !errors.Is(err, fs.ErrNotExist) {
 		t.Errorf("missing database: %v, want ErrNotExist", err)
 	}
@@ -122,7 +111,7 @@ func TestRunReportsBindFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer ln.Close()
-	err = run(t.Context(), []string{"--env", "development", "--addr", ln.Addr().String(), "--db", ":memory:", "--upload-dir", t.TempDir()}, io.Discard, nil)
+	err = run(t.Context(), []string{"--env", "development", "--addr", ln.Addr().String(), "--db", ":memory:"}, io.Discard, nil)
 	if err == nil || !strings.Contains(err.Error(), "listen on "+ln.Addr().String()) {
 		t.Errorf("bind failure: %v", err)
 	}
@@ -188,8 +177,7 @@ func postUpload(t *testing.T, base, email, token, file string) (int, string) {
 func TestServeMemoryDatabase(t *testing.T) {
 	clearEnv(t)
 	t.Setenv("FUINGO_PEPPER", pepper)
-	uploads := t.TempDir()
-	base := startServer(t, "--env", "development", "--db", ":memory:", "--upload-dir", uploads)
+	base := startServer(t, "--env", "development", "--db", ":memory:")
 
 	u := devdata.Uploaders[0]
 	if code, body := postUpload(t, base, u.Email, u.Token, "turn\n"); code != http.StatusOK {
@@ -203,9 +191,6 @@ func TestServeMemoryDatabase(t *testing.T) {
 	}
 	if code, _ := post(t, base+"/__agent/create-account/game01/a%40example.com/t", "", nil); code != http.StatusNotFound {
 		t.Errorf("/__agent in development: %d, want 404", code)
-	}
-	if entries, _ := os.ReadDir(uploads); len(entries) != 2 {
-		t.Errorf("upload directory has %d files, want 2", len(entries))
 	}
 }
 
@@ -224,10 +209,23 @@ func TestServeDatabaseFile(t *testing.T) {
 	s.Close()
 
 	// In test, the defaults in the file still work but the helpers do not exist.
-	base := startServer(t, "--env", "test", "--db", path, "--upload-dir", dir)
+	base := startServer(t, "--env", "test", "--db", path)
 	u := devdata.Uploaders[2]
 	if code, body := postUpload(t, base, u.Email, u.Token, "turn\n"); code != http.StatusOK {
 		t.Errorf("upload: %d %s", code, body)
+	}
+	// The contents are in the database file, not on the filesystem.
+	s, err = store.Open(t.Context(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blobs, err := s.Blobs(t.Context())
+	s.Close()
+	if err != nil || len(blobs) != 1 || string(blobs[0].Contents) != "turn\n" {
+		t.Errorf("blobs = %+v, %v; want the uploaded file", blobs, err)
+	}
+	if entries, _ := os.ReadDir(dir); len(entries) > 3 {
+		t.Errorf("directory has %d entries; want only the database and its WAL files", len(entries))
 	}
 	for _, prefix := range []string{"/__development", "/__agent", "/__test"} {
 		if code, _ := post(t, base+prefix+"/create-account/game01/a%40example.com/t", "", nil); code != http.StatusNotFound {

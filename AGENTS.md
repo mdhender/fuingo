@@ -71,15 +71,23 @@ never be reused.
 | --- | --- | --- |
 | `games` | `id`, `code`, `is_active` | PK `id`; `code` unique |
 | `game_uploaders` | `game_id`, `email`, `credential_hash`, `is_active` | PK `(game_id, email)`; `credential_hash` unique; FK `game_id` → `games` |
-| `uploads` | `id`, `game_id`, `email`, `content_hash`, `uploaded_at` | PK `id`; FK `(game_id, email)` → `game_uploaders` |
+| `upload_blobs` | `content_hash`, `contents`, `created_at` | PK `content_hash` |
+| `uploads` | `id`, `game_id`, `email`, `content_hash`, `uploaded_at` | PK `id`; FK `(game_id, email)` → `game_uploaders`; FK `content_hash` → `upload_blobs` |
 | `accounts` | `id`, `email`, `password_hash` | PK `id`; `email` unique (future `/api/` phase) |
 | `game_managers` | `game_id`, `account_id` | PK `(game_id, account_id)`; FKs to `games` and `accounts` (future `/api/` phase) |
 
 - `game_uploaders` holds the upload credentials. `email` is stored lowercased.
   `credential_hash` is the hash described below; the plaintext token is never
   stored. Because it is unique, a match identifies exactly one uploader and game.
+- `upload_blobs` holds uploaded file contents, keyed by the lowercase hex
+  SHA-256 of the contents. Identical uploads share one blob, across uploaders
+  and games, so a blob belongs to no single uploader. `created_at` is when the
+  contents first arrived, in UTC.
 - `uploads` records each successful upload by game and uploader, so its history
   survives a change of the uploader's token. `uploaded_at` is UTC.
+- Uploaded files are stored only in the database, never on the filesystem.
+  Games and other clients read them through the future `/api/` routes, which
+  enforce access controls.
 - `accounts` holds API accounts only, with lowercased emails. Upload credentials
   are never stored there. `game_managers` lists the games each API account
   manages.
@@ -110,13 +118,13 @@ order:
    `game_uploaders`. Both the matching uploader and its game must be active; an
    inactive one fails like a missing row. There are no salts. Compare hashes in
    constant time.
-4. **Storage.** Name the file with the lowercase hex SHA-256 of its contents.
-   If that file already exists, keep it and do not rewrite it. Otherwise write a
-   temporary file in the upload directory and rename it into place, so a partial
-   write is never visible under the final name.
+4. **Storage.** Key the contents by their lowercase hex SHA-256 in
+   `upload_blobs`. If a blob with that hash exists, keep it and do not rewrite
+   it.
 5. **Record.** Insert an `uploads` row with the matched uploader's game and
-   email, the content hash, and the UTC timestamp. Every successful upload gets its own row, including a
-   repeat of content already stored.
+   email, the content hash, and the UTC timestamp. Every successful upload gets
+   its own row, including a repeat of content already stored. Do storage and
+   record in one transaction, so a blob is never stored without its row.
 6. **Response.** Return success or failure to the client. Use one generic
    message for every authorization failure, so a response never reveals whether
    an email exists or which credential was wrong. Size and sanity failures may say
@@ -172,6 +180,8 @@ Do not implement these until the user starts the phase.
   the sample (accepted), with and without a BOM, email case folding,
   wrong email, wrong token, an inactive uploader, an inactive game, a missing
   pepper, duplicate content, and identical
-  failure responses for unknown emails and wrong tokens.
+  failure responses for unknown emails and wrong tokens. For duplicate content,
+  cover uploaders in the same game and in different games, concurrent uploads,
+  and that the existing blob is not rewritten.
 - Run the checks required by [WORKFLOW.md](WORKFLOW.md) and identify any checks
   that could not be run.

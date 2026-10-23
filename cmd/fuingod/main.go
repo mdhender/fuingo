@@ -3,21 +3,21 @@
 
 // Command fuingod is the turn-file upload server.
 //
-//	fuingod [--env ENV] [--addr HOST:PORT] --db PATH --upload-dir DIR
+//	fuingod [--env ENV] [--addr HOST:PORT] --db PATH
 //
 // Every flag can also be set with a FUINGO_ environment variable. Explicit
 // flags override the environment, which overrides the defaults:
 //
-//	--env         FUINGO_ENV         development, test, production, or agent (required)
-//	--addr        FUINGO_ADDR        backend listen address (default 127.0.0.1:18443)
-//	--db          FUINGO_DB          existing database file; :memory: in development and agent only
-//	--upload-dir  FUINGO_UPLOAD_DIR  existing directory for uploaded files
+//	--env   FUINGO_ENV   development, test, production, or agent (required)
+//	--addr  FUINGO_ADDR  backend listen address (default 127.0.0.1:18443)
+//	--db    FUINGO_DB    existing database file; :memory: in development and agent only
 //
 // FUINGO_PEPPER keys the upload credential hashes. It has no flag: set it in
 // the process environment or an ignored .local environment file.
 //
 // fuingod serves plain HTTP behind a TLS-terminating reverse proxy. It opens an
 // existing database and never creates or migrates one; use fuingodb for that.
+// Uploaded files are stored in the database.
 // With --db :memory:, it runs against a fresh private in-memory database seeded
 // with the default accounts, discarded when the server stops.
 package main
@@ -50,8 +50,6 @@ const (
 	ErrInvalidAddress  = cerrs.Error("invalid listen address")
 	ErrMemoryDatabase  = cerrs.Error(":memory: is allowed only in development and agent")
 	ErrMissingDatabase = cerrs.Error("--db (FUINGO_DB) is required")
-	ErrMissingUploads  = cerrs.Error("--upload-dir (FUINGO_UPLOAD_DIR) is required")
-	ErrNotDirectory    = cerrs.Error("upload directory is not a directory")
 )
 
 const defaultAddr = "127.0.0.1:18443"
@@ -68,11 +66,10 @@ func main() {
 }
 
 type config struct {
-	env       string
-	addr      string
-	db        string
-	uploadDir string
-	pepper    string
+	env    string
+	addr   string
+	db     string
+	pepper string
 }
 
 // loadConfig resolves and validates the configuration.
@@ -82,10 +79,9 @@ func loadConfig(args []string, stderr io.Writer) (config, error) {
 	fs.StringVar(&cfg.env, 0, "env", "", "environment: development, test, production, or agent (FUINGO_ENV)")
 	fs.StringVar(&cfg.addr, 0, "addr", defaultAddr, "backend listen address, host:port (FUINGO_ADDR)")
 	fs.StringVar(&cfg.db, 0, "db", "", "existing database file, or :memory: in development and agent (FUINGO_DB)")
-	fs.StringVar(&cfg.uploadDir, 0, "upload-dir", "", "existing directory for uploaded files (FUINGO_UPLOAD_DIR)")
 	cmd := &ff.Command{
 		Name:     "fuingod",
-		Usage:    "fuingod [--env ENV] [--addr HOST:PORT] --db PATH --upload-dir DIR",
+		Usage:    "fuingod [--env ENV] [--addr HOST:PORT] --db PATH",
 		LongHelp: "fuingod " + fuingo.Version().String() + "\n\nFUINGO_PEPPER must be set in the environment.",
 		Flags:    fs,
 	}
@@ -109,14 +105,6 @@ func loadConfig(args []string, stderr io.Writer) (config, error) {
 		if !devdata.Allowed(cfg.env) {
 			return cfg, ErrMemoryDatabase
 		}
-	}
-	if cfg.uploadDir == "" {
-		return cfg, ErrMissingUploads
-	}
-	if sb, err := os.Stat(cfg.uploadDir); err != nil {
-		return cfg, fmt.Errorf("upload directory: %w", err)
-	} else if !sb.IsDir() {
-		return cfg, fmt.Errorf("%s: %w", cfg.uploadDir, ErrNotDirectory)
 	}
 	var err error
 	if cfg.pepper, err = cli.Pepper(); err != nil {
@@ -152,11 +140,10 @@ func run(ctx context.Context, args []string, stderr io.Writer, ready func(net.Ad
 	defer s.Close()
 
 	handler, err := server.New(server.Config{
-		Env:       cfg.env,
-		Store:     s,
-		Pepper:    cfg.pepper,
-		UploadDir: cfg.uploadDir,
-		Logger:    logger,
+		Env:    cfg.env,
+		Store:  s,
+		Pepper: cfg.pepper,
+		Logger: logger,
 	})
 	if err != nil {
 		return err
@@ -174,7 +161,7 @@ func run(ctx context.Context, args []string, stderr io.Writer, ready func(net.Ad
 		IdleTimeout:       2 * time.Minute,
 		ErrorLog:          slog.NewLogLogger(logger.Handler(), slog.LevelWarn),
 	}
-	logger.Info("fuingod listening", "version", fuingo.Version().String(), "env", cfg.env, "addr", ln.Addr().String(), "db", cfg.db, "upload_dir", cfg.uploadDir)
+	logger.Info("fuingod listening", "version", fuingo.Version().String(), "env", cfg.env, "addr", ln.Addr().String(), "db", cfg.db)
 	if prefix := server.HelperPrefix(cfg.env); prefix != "" {
 		logger.Info("account helpers enabled", "prefix", prefix)
 	}

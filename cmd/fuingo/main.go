@@ -4,12 +4,12 @@
 // Command fuingo is the operators' CLI.
 //
 //	fuingo version
-//	fuingo [--env ENV] db --path PATH version
+//	fuingo [--env ENV] db --db PATH version
 //
 // Every flag can also be set with a FUINGO_ environment variable:
 //
 //	--env   FUINGO_ENV   development, test, production, or agent (required by db)
-//	--path  FUINGO_PATH  path to the database file (required by db; :memory: is refused)
+//	--db    FUINGO_DB    path to the database file (required by db; :memory: is refused)
 //
 // The db commands only open a database that is already at the schema version
 // this program expects; they never create or migrate one.
@@ -31,7 +31,7 @@ import (
 )
 
 const (
-	ErrMissingDatabase = cerrs.Error("--path (FUINGO_PATH) is required")
+	ErrMissingDatabase = cerrs.Error("--db (FUINGO_DB) is required")
 	ErrMemoryDatabase  = cerrs.Error("fuingo requires a database file, not :memory:")
 )
 
@@ -61,10 +61,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	}
 
 	dbFlags := ff.NewFlagSet("db").SetParent(rootFlags)
-	dbFlags.StringVar(&path, 0, "path", "", "path to the database file (FUINGO_PATH)")
+	dbFlags.StringVar(&path, 0, "db", "", "path to the database file (FUINGO_DB)")
 	dbVersion := &ff.Command{
 		Name:      "version",
-		Usage:     "fuingo db --path PATH version",
+		Usage:     "fuingo db --db PATH version",
 		ShortHelp: "print the database's schema version",
 		Flags:     ff.NewFlagSet("db version").SetParent(dbFlags),
 		Exec: func(ctx context.Context, args []string) error {
@@ -80,7 +80,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	}
 	db := &ff.Command{
 		Name:        "db",
-		Usage:       "fuingo db --path PATH <version>",
+		Usage:       "fuingo db --db PATH <version>",
 		ShortHelp:   "inspect a database",
 		Flags:       dbFlags,
 		Subcommands: []*ff.Command{dbVersion},

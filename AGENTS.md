@@ -60,7 +60,7 @@ variable `FUINGO_NAME`; secrets such as `FUINGO_PEPPER` have no flag.
 | --- | --- |
 | `cmd/fuingod` | The web server. Opens an existing database; never creates or migrates one. |
 | `cmd/fuingodb` | Database administration: `create` and `migrate`. |
-| `cmd/fuingo` | The operators' CLI for managing games, uploaders, API accounts, and game managers; it will be the only way to create accounts outside development and agent. It has `version` and `db --path PATH version` so far. Its `db` commands open the database with `store.Open` and fail unless it is at the schema version the program expects. Add further commands only as the user asks for them. |
+| `cmd/fuingo` | The operators' CLI for managing games, uploaders, API accounts, and game managers; it will be the only way to create accounts outside development and agent. It has `version` and `db --db PATH version` so far. Its `db` commands open the database with `store.Open` and fail unless it is at the schema version the program expects. Add further commands only as the user asks for them. |
 
 Upload tokens are issued out of band: a game manager emails each uploader the
 game code and that game's token. A token cannot be recovered, because only its

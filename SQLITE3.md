@@ -21,8 +21,10 @@ squash migrations by folding them into migration 1. This is the only exception
 to the rule against editing applied migrations, and it applies only when the
 user asks. In beta or later, refuse to squash and append a new migration instead.
 
-A squash keeps the schema version unchanged, so existing databases still appear
-current but do not have the new schema. `fuingodb migrate` cannot repair them.
+A squash leaves existing databases with a schema that does not match their
+version. One at a version the squash kept appears current but does not have
+the new schema; one past the new last migration is refused as newer.
+`fuingodb migrate` cannot repair either.
 Recreate each one with `fuingodb create`, after backing it up or getting the
 user's agreement to discard it.
 

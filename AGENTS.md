@@ -54,11 +54,15 @@ upload files over HTTPS instead of mailing them.
 Use `github.com/peterbourgon/ff/v4` for flags and `internal/dotenv` for
 environment files, through `internal/cli`. Explicit flags override environment
 values, which override defaults. Every flag `--name` has an environment
-variable `FUINGO_NAME`; secrets such as `FUINGO_PEPPER` have no flag.
+variable `FUINGO_NAME`; secrets such as `FUINGO_PEPPER` have no flag. The one
+secret with a flag is `fuingo uploader create --token`, which is command-line
+only (below) so that no environment file can give every uploader one token.
 
 The exception is a flag that changes what a command does rather than
 configuring it, such as `fuingo version --schema`, which prints the database's
-schema version instead of the program's version. Such a flag is honored only
+schema version instead of the program's version. `--token` and
+`--generate-password` are the others. Pass their names to `cli.Parse`, which
+removes their environment variables before applying the environment. Such a flag is honored only
 on the command line, never from the environment: set in an environment file, it
 would silently change the command for every later run. Document each one in the
 command's help and package comment.
@@ -84,9 +88,21 @@ and `fuingo <noun> --help` lists them. `--db` is a root flag, as in
 `fuingo --db PATH game create CODE`, because almost every command uses the
 database. Commands that use it open it with `store.Open` and fail unless it is
 at the schema version the program expects. `fuingo` has `version`,
-`version --schema` (the database's schema version), and `game create CODE` so
-far; add further commands only as the
-user asks for them.
+`version --schema` (the database's schema version), `game create CODE`,
+`uploader create [--token TOKEN] GAME EMAIL`, and
+`account create [--generate-password] EMAIL` so far; add further commands only
+as the user asks for them.
+
+- Game codes, emails, and tokens given to `fuingo` must be valid header words
+  (one or more bytes in `0x21`–`0x7E`), so that an upload can name them. Codes
+  and emails are lowercased with `strings.ToLower`.
+- `uploader create` generates a random UUID token unless `--token` is given,
+  prints a generated token once, and never prints a given one. It requires
+  `FUINGO_PEPPER`.
+- `account create` reads the password from the first line of standard input,
+  without its LF or CRLF, or generates one with `--generate-password` and
+  prints it once. Passwords are hashed with bcrypt at `bcrypt.MinCost` and are
+  at most 72 bytes.
 
 | Command | Purpose |
 | --- | --- |
@@ -112,7 +128,7 @@ never be reused.
 | `game_uploaders` | `game_id`, `email`, `credential_hash`, `is_active` | PK `(game_id, email)`; `credential_hash` unique; FK `game_id` → `games` |
 | `upload_blobs` | `content_hash`, `contents`, `created_at` | PK `content_hash` |
 | `uploads` | `id`, `game_id`, `email`, `turn_no`, `content_hash`, `uploaded_at` | PK `id`; FK `(game_id, email)` → `game_uploaders`; FK `content_hash` → `upload_blobs` |
-| `accounts` | `id`, `email`, `password_hash` | PK `id`; `email` unique (future `/api/` phase) |
+| `accounts` | `id`, `email`, `password_hash` | PK `id`; `email` unique |
 | `game_managers` | `game_id`, `account_id` | PK `(game_id, account_id)`; FKs to `games` and `accounts` (future `/api/` phase) |
 
 - `games.code` is stored lowercased, like emails.
@@ -138,9 +154,10 @@ never be reused.
 - Every foreign key is `ON DELETE RESTRICT`: deleting a row that others refer to
   fails instead of removing history. Revoke access by clearing `is_active`.
 
-Apart from games made with `fuingo game create`, the only rows in `games` and
-`game_uploaders` come from the default data and the development/agent helper in
-[TESTING.md](TESTING.md).
+Rows in `games`, `game_uploaders`, and `accounts` come from `fuingo`, the
+default data, and the development/agent helpers in [TESTING.md](TESTING.md).
+The `accounts` table exists, but the `/api/` routes that use it do not yet;
+`game_managers` waits for that phase.
 
 ## Upload requirements
 
@@ -220,11 +237,13 @@ The server handles each upload in this order:
 
 - The pepper comes from `FUINGO_PEPPER`, never from the database, source
   control, or a shared `.env` file. Keep it in the process environment or an
-  ignored `.local` file. `fuingod` refuses to start, and `fuingodb` refuses to
-  create or seed a database, if it is missing or empty.
+  ignored `.local` file. `fuingod` refuses to start, `fuingodb` refuses to
+  create or seed a database, and `fuingo uploader create` refuses to run, if it
+  is missing or empty.
 - Changing the pepper invalidates every stored credential hash. Do not rotate it
   without a plan agreed with the user.
-- Never log tokens, the pepper, or file contents.
+- Never log tokens, passwords, the pepper, or file contents. `fuingo` prints a
+  token or password only when it generated it, once, to standard output.
 - The default tokens and passwords in [TESTING.md](TESTING.md) are fixed,
   public test values. They are the only credentials allowed in source control.
 

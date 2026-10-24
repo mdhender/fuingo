@@ -4,7 +4,7 @@
 package store
 
 // migrations are applied in order; never edit one that has been applied.
-// The accounts and game_managers tables wait for the /api/ phase.
+// The game_managers table waits for the /api/ phase.
 var migrations = []string{
 	// 1: games, upload credentials, uploaded contents, and the upload history.
 	`
@@ -43,5 +43,13 @@ CREATE TABLE uploads (
 
 CREATE INDEX uploads_by_uploader ON uploads (game_id, email);
 CREATE INDEX uploads_by_content ON uploads (content_hash);
+`,
+	// 2: API accounts. password_hash is a bcrypt hash.
+	`
+CREATE TABLE accounts (
+	id            INTEGER PRIMARY KEY AUTOINCREMENT,
+	email         TEXT    NOT NULL UNIQUE CHECK (email = lower(email)),
+	password_hash TEXT    NOT NULL
+);
 `,
 }

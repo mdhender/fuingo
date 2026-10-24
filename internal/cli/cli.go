@@ -6,6 +6,7 @@ package cli
 
 import (
 	"os"
+	"strings"
 
 	"github.com/mdhender/fuingo/internal/cerrs"
 	"github.com/mdhender/fuingo/internal/dotenv"
@@ -27,7 +28,12 @@ const EnvPrefix = "FUINGO"
 // environment. It loads that environment's files with internal/dotenv, then
 // parses again with FUINGO_ environment variables. env must be the variable
 // bound to the root command's --env flag.
-func Parse(cmd *ff.Command, args []string, env *string) error {
+//
+// The flags named in commandLineOnly change what a command does rather than
+// configure it, so they are honored only on the command line: Parse removes
+// their environment variables, including any set by an environment file,
+// before applying the environment.
+func Parse(cmd *ff.Command, args []string, env *string, commandLineOnly ...string) error {
 	if err := cmd.Parse(args); err != nil {
 		return err
 	}
@@ -37,10 +43,21 @@ func Parse(cmd *ff.Command, args []string, env *string) error {
 	if err := dotenv.Load(*env); err != nil {
 		return err
 	}
+	for _, name := range commandLineOnly {
+		if err := os.Unsetenv(EnvVar(name)); err != nil {
+			return err
+		}
+	}
 	if err := cmd.Reset(); err != nil {
 		return err
 	}
 	return cmd.Parse(args, ff.WithEnvVarPrefix(EnvPrefix))
+}
+
+// EnvVar returns the environment variable for the flag --name, as ff names it:
+// --generate-password reads FUINGO_GENERATE_PASSWORD.
+func EnvVar(name string) string {
+	return EnvPrefix + "_" + strings.ToUpper(strings.NewReplacer("-", "_", ".", "_", "/", "_").Replace(name))
 }
 
 // Pepper returns FUINGO_PEPPER, which only ever comes from the environment

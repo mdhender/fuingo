@@ -15,6 +15,8 @@ import (
 )
 
 const (
+	ErrAccountExists   = cerrs.Error("account already exists")
+	ErrEmailCase       = cerrs.Error("email must be lowercase")
 	ErrGameExists      = cerrs.Error("game already exists")
 	ErrGameCodeCase    = cerrs.Error("game code must be lowercase")
 	ErrUnknownGame     = cerrs.Error("unknown game")
@@ -35,6 +37,27 @@ type NewUploader struct {
 	CredentialHash func(gameID int64) []byte
 }
 
+// NewAccount is an API account to insert. Email must already be lowercased.
+// PasswordHash is a bcrypt hash.
+type NewAccount struct {
+	Email        string
+	PasswordHash []byte
+}
+
+// Account is an API account.
+type Account struct {
+	ID           int64
+	Email        string
+	PasswordHash []byte
+}
+
+// Rows are rows to insert together with CreateRows.
+type Rows struct {
+	Games     []string
+	Uploaders []NewUploader
+	Accounts  []NewAccount
+}
+
 // Uploader is an active upload account in an active game.
 type Uploader struct {
 	GameID         int64
@@ -53,26 +76,77 @@ type Upload struct {
 	UploadedAt  time.Time
 }
 
-// CreateGamesAndUploaders inserts active games and upload accounts in one
-// transaction. It fails, inserting nothing, if any game or uploader exists.
-func (s *Store) CreateGamesAndUploaders(ctx context.Context, games []string, uploaders []NewUploader) (err error) {
+// CreateRows inserts active games, active upload accounts, and API accounts
+// in one transaction. It fails, inserting nothing, if any of them exists.
+func (s *Store) CreateRows(ctx context.Context, rows Rows) (err error) {
 	conn, err := s.take(ctx)
 	if err != nil {
 		return err
 	}
 	defer s.pool.Put(conn)
 	defer sqlitex.Save(conn)(&err)
-	for _, code := range games {
+	for _, code := range rows.Games {
 		if _, err := createGame(conn, code); err != nil {
 			return err
 		}
 	}
-	for _, u := range uploaders {
+	for _, u := range rows.Uploaders {
 		if err := createUploader(conn, u); err != nil {
 			return err
 		}
 	}
+	for _, a := range rows.Accounts {
+		if _, err := createAccount(conn, a); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+// CreateAccount inserts an API account and returns its ID. It never modifies
+// an existing row: a duplicate email fails with ErrAccountExists.
+func (s *Store) CreateAccount(ctx context.Context, a NewAccount) (int64, error) {
+	conn, err := s.take(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer s.pool.Put(conn)
+	return createAccount(conn, a)
+}
+
+func createAccount(conn *sqlite.Conn, a NewAccount) (int64, error) {
+	if a.Email != strings.ToLower(a.Email) {
+		return 0, fmt.Errorf("%s: %w", a.Email, ErrEmailCase)
+	}
+	err := sqlitex.Execute(conn, "INSERT INTO accounts (email, password_hash) VALUES (?, ?);", &sqlitex.ExecOptions{
+		Args: []any{a.Email, string(a.PasswordHash)},
+	})
+	if sqlite.ErrCode(err) == sqlite.ResultConstraintUnique {
+		return 0, fmt.Errorf("%s: %w", a.Email, ErrAccountExists)
+	} else if err != nil {
+		return 0, err
+	}
+	return conn.LastInsertRowID(), nil
+}
+
+// FindAccount returns the API account with the given lowercased email.
+func (s *Store) FindAccount(ctx context.Context, email string) (Account, bool, error) {
+	conn, err := s.take(ctx)
+	if err != nil {
+		return Account{}, false, err
+	}
+	defer s.pool.Put(conn)
+	var a Account
+	var found bool
+	err = sqlitex.Execute(conn, "SELECT id, email, password_hash FROM accounts WHERE email = ?;", &sqlitex.ExecOptions{
+		Args: []any{email},
+		ResultFunc: func(stmt *sqlite.Stmt) error {
+			a = Account{ID: stmt.ColumnInt64(0), Email: stmt.ColumnText(1), PasswordHash: []byte(stmt.ColumnText(2))}
+			found = true
+			return nil
+		},
+	})
+	return a, found, err
 }
 
 // CreateGame inserts an active game and returns its ID. The code must be

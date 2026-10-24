@@ -13,8 +13,12 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/mdhender/fuingo"
+	"github.com/mdhender/fuingo/internal/cli"
+	"github.com/mdhender/fuingo/internal/credential"
 	"github.com/mdhender/fuingo/internal/store"
+	"golang.org/x/crypto/bcrypt"
 	"zombiezen.com/go/sqlite"
 	"zombiezen.com/go/sqlite/sqlitex"
 )
@@ -22,7 +26,7 @@ import (
 // clearEnv keeps the developer's environment out of the test.
 func clearEnv(t *testing.T) {
 	t.Helper()
-	for _, key := range []string{"FUINGO_ENV", "FUINGO_DB"} {
+	for _, key := range []string{"FUINGO_ENV", "FUINGO_DB", "FUINGO_PEPPER", "FUINGO_SCHEMA", "FUINGO_TOKEN", "FUINGO_GENERATE_PASSWORD"} {
 		t.Setenv(key, "")
 		os.Unsetenv(key)
 	}
@@ -30,8 +34,14 @@ func clearEnv(t *testing.T) {
 
 func runCommand(t *testing.T, args ...string) (stdout string, err error) {
 	t.Helper()
+	return runWithInput(t, "", args...)
+}
+
+// runWithInput runs the command with input on standard input.
+func runWithInput(t *testing.T, input string, args ...string) (stdout string, err error) {
+	t.Helper()
 	var out, errOut bytes.Buffer
-	err = run(t.Context(), args, &out, &errOut)
+	err = run(t.Context(), args, strings.NewReader(input), &out, &errOut)
 	if err != nil {
 		return out.String() + errOut.String(), err
 	}
@@ -252,5 +262,259 @@ func TestGameCreateRefusesOtherSchemaVersions(t *testing.T) {
 	out, err := runCommand(t, "--env", "test", "--db", path, "game", "create", "game01")
 	if !errors.Is(err, store.ErrOutdatedSchema) {
 		t.Errorf("err = %v, want ErrOutdatedSchema\n%s", err, out)
+	}
+}
+
+const pepper = "test-pepper"
+
+// createDatabaseWithGames makes a current database holding the given games.
+func createDatabaseWithGames(t *testing.T, codes ...string) string {
+	t.Helper()
+	path := createDatabase(t)
+	for _, code := range codes {
+		if out, err := runCommand(t, "--env", "test", "--db", path, "game", "create", code); err != nil {
+			t.Fatalf("game create %s: %v\n%s", code, err, out)
+		}
+	}
+	return path
+}
+
+// uploaderExists reports whether the database accepts the credentials.
+func uploaderExists(t *testing.T, path, game, email, token string) bool {
+	t.Helper()
+	s, err := store.Open(t.Context(), path)
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	defer s.Close()
+	gameID, ok, err := s.GameID(t.Context(), game)
+	if err != nil || !ok {
+		t.Fatalf("GameID(%s) = %v, %v", game, ok, err)
+	}
+	_, ok, err = s.FindUploader(t.Context(), credential.Hash(pepper, email, gameID, token))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ok
+}
+
+// account returns the API account with the given email.
+func account(t *testing.T, path, email string) (store.Account, bool) {
+	t.Helper()
+	s, err := store.Open(t.Context(), path)
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	defer s.Close()
+	a, ok, err := s.FindAccount(t.Context(), email)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return a, ok
+}
+
+func TestUploaderCreateGeneratesToken(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("FUINGO_PEPPER", pepper)
+	path := createDatabaseWithGames(t, "game01")
+	out, err := runCommand(t, "--env", "test", "--db", path, "uploader", "create", "GAME01", "CatBird@Example.com")
+	if err != nil {
+		t.Fatalf("uploader create: %v\n%s", err, out)
+	}
+	first, token, ok := strings.Cut(out, "token: ")
+	if want := "created uploader catbird@example.com in game game01\n"; !ok || first != want {
+		t.Fatalf("uploader create printed %q, want %q and a token", out, want)
+	}
+	token = strings.TrimSuffix(token, "\n")
+	if _, err := uuid.Parse(token); err != nil {
+		t.Errorf("generated token %q is not a UUID: %v", token, err)
+	}
+	if !uploaderExists(t, path, "game01", "catbird@example.com", token) {
+		t.Error("the generated token does not authorize the uploader")
+	}
+}
+
+func TestUploaderCreateWithToken(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("FUINGO_PEPPER", pepper)
+	path := createDatabaseWithGames(t, "game01", "game02")
+	const token = "my-chosen-token"
+	// The same email and token may be used in two games.
+	for _, game := range []string{"game01", "game02"} {
+		out, err := runCommand(t, "--env", "test", "--db", path, "uploader", "create", "--token", token, game, "catbird@example.com")
+		if err != nil {
+			t.Fatalf("uploader create %s: %v\n%s", game, err, out)
+		}
+		if strings.Contains(out, token) {
+			t.Errorf("uploader create echoed the token: %q", out)
+		}
+		if !uploaderExists(t, path, game, "catbird@example.com", token) {
+			t.Errorf("%s: the token does not authorize the uploader", game)
+		}
+	}
+}
+
+func TestUploaderCreateRefusals(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("FUINGO_PEPPER", pepper)
+	path := createDatabaseWithGames(t, "game01")
+	const token = "secret-token"
+	if out, err := runCommand(t, "--env", "test", "--db", path, "uploader", "create", "--token", token, "game01", "catbird@example.com"); err != nil {
+		t.Fatalf("uploader create: %v\n%s", err, out)
+	}
+	for _, tc := range []struct {
+		args []string
+		want error
+	}{
+		{[]string{"--token", "other-token", "game01", "CATBIRD@example.com"}, store.ErrUploaderExists},
+		{[]string{"--token", token, "game99", "spoonbill@example.com"}, store.ErrUnknownGame},
+		{[]string{"--token", "secret token", "game01", "spoonbill@example.com"}, ErrToken},
+		{[]string{"--token", "secret\x7ftoken", "game01", "spoonbill@example.com"}, ErrToken},
+		{[]string{"game01", "spoon bill@example.com"}, ErrEmail},
+		{[]string{"game01", "spoonbill@exämple.com"}, ErrEmail},
+		{[]string{"game 01", "spoonbill@example.com"}, ErrGameCode},
+		{[]string{"game01"}, ErrUsage},
+		{[]string{"game01", "spoonbill@example.com", "extra"}, ErrUsage},
+	} {
+		out, err := runCommand(t, append([]string{"--env", "test", "--db", path, "uploader", "create"}, tc.args...)...)
+		if !errors.Is(err, tc.want) {
+			t.Errorf("uploader create %q: err = %v, want %v\n%s", tc.args, err, tc.want, out)
+		}
+		if strings.Contains(out, "secret") || (err != nil && strings.Contains(err.Error(), "secret")) {
+			t.Errorf("uploader create %q revealed the token: %v\n%s", tc.args, err, out)
+		}
+	}
+}
+
+func TestUploaderCreateRequiresPepper(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("FUINGO_PEPPER", pepper)
+	path := createDatabaseWithGames(t, "game01")
+	os.Unsetenv("FUINGO_PEPPER")
+	out, err := runCommand(t, "--env", "test", "--db", path, "uploader", "create", "game01", "catbird@example.com")
+	if !errors.Is(err, cli.ErrMissingPepper) {
+		t.Errorf("err = %v, want ErrMissingPepper\n%s", err, out)
+	}
+}
+
+func TestUploaderCreateIgnoresTokenEnvironmentVariable(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("FUINGO_PEPPER", pepper)
+	t.Setenv("FUINGO_TOKEN", "from-the-environment")
+	path := createDatabaseWithGames(t, "game01")
+	out, err := runCommand(t, "--env", "test", "--db", path, "uploader", "create", "game01", "catbird@example.com")
+	if err != nil {
+		t.Fatalf("uploader create: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "token: ") {
+		t.Errorf("uploader create did not generate a token: %q", out)
+	}
+	if uploaderExists(t, path, "game01", "catbird@example.com", "from-the-environment") {
+		t.Error("uploader create used FUINGO_TOKEN")
+	}
+}
+
+func TestAccountCreateReadsPassword(t *testing.T) {
+	clearEnv(t)
+	path := createDatabase(t)
+	for _, tc := range []struct{ email, input, password string }{
+		{"Acct01@Example.com", "a pass phrase\n", "a pass phrase"},
+		{"acct02@example.com", "crlf-password\r\nsecond line\n", "crlf-password"},
+		{"acct03@example.com", "no-newline", "no-newline"},
+	} {
+		out, err := runWithInput(t, tc.input, "--env", "test", "--db", path, "account", "create", tc.email)
+		if err != nil {
+			t.Fatalf("account create %s: %v\n%s", tc.email, err, out)
+		}
+		email := strings.ToLower(tc.email)
+		if !strings.HasPrefix(out, "created account "+email+" (id ") || strings.Contains(out, "password") {
+			t.Errorf("account create %s printed %q", tc.email, out)
+		}
+		a, ok := account(t, path, email)
+		if !ok {
+			t.Fatalf("account %s not found", email)
+		}
+		if err := bcrypt.CompareHashAndPassword(a.PasswordHash, []byte(tc.password)); err != nil {
+			t.Errorf("%s: password %q does not match: %v", email, tc.password, err)
+		}
+		if cost, err := bcrypt.Cost(a.PasswordHash); err != nil || cost != bcrypt.MinCost {
+			t.Errorf("%s: bcrypt cost %d, %v; want MinCost", email, cost, err)
+		}
+	}
+}
+
+func TestAccountCreateGeneratesPassword(t *testing.T) {
+	clearEnv(t)
+	path := createDatabase(t)
+	out, err := runWithInput(t, "ignored\n", "--env", "test", "--db", path, "account", "create", "--generate-password", "acct01@example.com")
+	if err != nil {
+		t.Fatalf("account create: %v\n%s", err, out)
+	}
+	first, password, ok := strings.Cut(out, "password: ")
+	if !ok || !strings.HasPrefix(first, "created account acct01@example.com (id ") {
+		t.Fatalf("account create printed %q, want the account and a password", out)
+	}
+	password = strings.TrimSuffix(password, "\n")
+	a, _ := account(t, path, "acct01@example.com")
+	if err := bcrypt.CompareHashAndPassword(a.PasswordHash, []byte(password)); err != nil {
+		t.Errorf("the generated password does not match: %v", err)
+	}
+	if bcrypt.CompareHashAndPassword(a.PasswordHash, []byte("ignored")) == nil {
+		t.Error("account create used standard input with --generate-password")
+	}
+}
+
+func TestAccountCreateRefusals(t *testing.T) {
+	clearEnv(t)
+	path := createDatabase(t)
+	if out, err := runWithInput(t, "first\n", "--env", "test", "--db", path, "account", "create", "acct01@example.com"); err != nil {
+		t.Fatalf("account create: %v\n%s", err, out)
+	}
+	for _, tc := range []struct {
+		input string
+		args  []string
+		want  error
+	}{
+		{"second\n", []string{"ACCT01@example.com"}, store.ErrAccountExists},
+		{"", []string{"acct02@example.com"}, ErrMissingPassword},
+		{"\n", []string{"acct02@example.com"}, ErrMissingPassword},
+		{strings.Repeat("x", 73) + "\n", []string{"acct02@example.com"}, bcrypt.ErrPasswordTooLong},
+		{"pw\n", []string{"acct 02@example.com"}, ErrEmail},
+		{"pw\n", []string{}, ErrUsage},
+		{"pw\n", []string{"a@example.com", "b@example.com"}, ErrUsage},
+	} {
+		out, err := runWithInput(t, tc.input, append([]string{"--env", "test", "--db", path, "account", "create"}, tc.args...)...)
+		if !errors.Is(err, tc.want) {
+			t.Errorf("account create %q: err = %v, want %v\n%s", tc.args, err, tc.want, out)
+		}
+	}
+	a, _ := account(t, path, "acct01@example.com")
+	if err := bcrypt.CompareHashAndPassword(a.PasswordHash, []byte("first")); err != nil {
+		t.Errorf("a refused account create changed the password: %v", err)
+	}
+	if _, ok := account(t, path, "acct02@example.com"); ok {
+		t.Error("a refused account create made acct02@example.com")
+	}
+}
+
+func TestAccountCreateIgnoresGeneratePasswordEnvironmentVariable(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("FUINGO_GENERATE_PASSWORD", "true")
+	path := createDatabase(t)
+	out, err := runCommand(t, "--env", "test", "--db", path, "account", "create", "acct01@example.com")
+	if !errors.Is(err, ErrMissingPassword) {
+		t.Errorf("err = %v, want ErrMissingPassword\n%s", err, out)
+	}
+}
+
+func TestSchemaVersionIgnoresEnvironmentVariable(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("FUINGO_SCHEMA", "true")
+	out, err := runCommand(t, "--env", "test", "--db", createDatabase(t), "version")
+	if err != nil {
+		t.Fatalf("version: %v\n%s", err, out)
+	}
+	if want := fuingo.Version().String() + "\n"; out != want {
+		t.Errorf("version printed %q, want %q", out, want)
 	}
 }

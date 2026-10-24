@@ -18,10 +18,13 @@ import (
 
 func seedUploaders(t *testing.T, s *Store) (game1, game2 int64) {
 	t.Helper()
-	err := s.CreateGamesAndUploaders(t.Context(), []string{"game01", "game02"}, []NewUploader{
-		{GameCode: "game01", Email: "a@example.com", CredentialHash: fixedHash(1)},
-		{GameCode: "game01", Email: "b@example.com", CredentialHash: fixedHash(2)},
-		{GameCode: "game02", Email: "c@example.com", CredentialHash: fixedHash(3)},
+	err := s.CreateRows(t.Context(), Rows{
+		Games: []string{"game01", "game02"},
+		Uploaders: []NewUploader{
+			{GameCode: "game01", Email: "a@example.com", CredentialHash: fixedHash(1)},
+			{GameCode: "game01", Email: "b@example.com", CredentialHash: fixedHash(2)},
+			{GameCode: "game02", Email: "c@example.com", CredentialHash: fixedHash(3)},
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -172,8 +175,8 @@ func TestGameCodesMustBeLowercase(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	if err := s.CreateGamesAndUploaders(t.Context(), []string{"game01", "Game02"}, nil); !errors.Is(err, ErrGameCodeCase) {
-		t.Errorf("CreateGamesAndUploaders with an uppercase code = %v, want ErrGameCodeCase", err)
+	if err := s.CreateRows(t.Context(), Rows{Games: []string{"game01", "Game02"}}); !errors.Is(err, ErrGameCodeCase) {
+		t.Errorf("CreateRows with an uppercase code = %v, want ErrGameCodeCase", err)
 	}
 	if games, _ := s.Games(t.Context()); len(games) != 0 {
 		t.Errorf("games = %v, want none", games)
@@ -202,5 +205,59 @@ func TestCreateGame(t *testing.T) {
 	}
 	if games, _ := s.Games(t.Context()); len(games) != 1 {
 		t.Errorf("games = %v, want only game01", games)
+	}
+}
+
+func TestCreateAccount(t *testing.T) {
+	t.Parallel()
+	s, err := OpenPrivateMemory(t.Context(), t.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	id, err := s.CreateAccount(t.Context(), NewAccount{Email: "a@example.com", PasswordHash: []byte("hash-a")})
+	if err != nil {
+		t.Fatalf("CreateAccount: %v", err)
+	}
+	a, ok, err := s.FindAccount(t.Context(), "a@example.com")
+	if err != nil || !ok {
+		t.Fatalf("FindAccount = %v, %v", ok, err)
+	}
+	if a.ID != id || a.Email != "a@example.com" || string(a.PasswordHash) != "hash-a" {
+		t.Errorf("FindAccount = %+v, want ID %d and hash-a", a, id)
+	}
+	if _, err := s.CreateAccount(t.Context(), NewAccount{Email: "a@example.com", PasswordHash: []byte("hash-b")}); !errors.Is(err, ErrAccountExists) {
+		t.Errorf("CreateAccount with an existing email = %v, want ErrAccountExists", err)
+	}
+	if a, _, _ := s.FindAccount(t.Context(), "a@example.com"); string(a.PasswordHash) != "hash-a" {
+		t.Errorf("a duplicate CreateAccount changed the password hash to %q", a.PasswordHash)
+	}
+	if _, err := s.CreateAccount(t.Context(), NewAccount{Email: "B@example.com", PasswordHash: []byte("hash-b")}); !errors.Is(err, ErrEmailCase) {
+		t.Errorf("CreateAccount with an uppercase email = %v, want ErrEmailCase", err)
+	}
+	if _, ok, _ := s.FindAccount(t.Context(), "missing@example.com"); ok {
+		t.Error("FindAccount found a missing account")
+	}
+}
+
+func TestCreateRowsIsAtomic(t *testing.T) {
+	t.Parallel()
+	s, err := OpenPrivateMemory(t.Context(), t.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	err = s.CreateRows(t.Context(), Rows{
+		Games:    []string{"game01"},
+		Accounts: []NewAccount{{Email: "a@example.com", PasswordHash: []byte("x")}, {Email: "a@example.com", PasswordHash: []byte("y")}},
+	})
+	if !errors.Is(err, ErrAccountExists) {
+		t.Fatalf("CreateRows with a duplicate account = %v, want ErrAccountExists", err)
+	}
+	if games, _ := s.Games(t.Context()); len(games) != 0 {
+		t.Errorf("games = %v, want none", games)
+	}
+	if _, ok, _ := s.FindAccount(t.Context(), "a@example.com"); ok {
+		t.Error("CreateRows kept an account after failing")
 	}
 }

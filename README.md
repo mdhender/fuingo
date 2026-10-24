@@ -13,18 +13,28 @@ go run ./cmd/fuingodb --env development migrate --db tmp/fuingo.db
 go run ./cmd/fuingod  --env development --db tmp/fuingo.db
 go run ./cmd/fuingo   version
 go run ./cmd/fuingo   --env development --db tmp/fuingo.db version --schema
-go run ./cmd/fuingo   --env development --db tmp/fuingo.db game create game01
+go run ./cmd/fuingo   --env development --db tmp/fuingo.db game create game03
+go run ./cmd/fuingo   --env development --db tmp/fuingo.db uploader create game03 tern@example.com
+go run ./cmd/fuingo   --env development --db tmp/fuingo.db account create --generate-password acct03@example.com
 ```
 
 `fuingodb` creates and migrates databases. `fuingod` serves the upload form and
 only opens an existing, current database; it never creates or migrates one.
 `fuingo` is the operators' CLI for the application data. `fuingo version`
 prints the program's version; `fuingo version --schema` prints the database's
-schema version; `fuingo game create CODE` adds an active game. Game codes are
-lowercased, like the codes in uploaded files, and must be one or more printable
-ASCII bytes with no spaces. Commands that use the database, like `fuingod`, refuse one that is not
-at the schema version the program expects. `fuingo` never creates or migrates
-a database file; use `fuingodb` for that.
+schema version. Commands that use the database, like `fuingod`, refuse one
+that is not at the schema version the program expects. `fuingo` never creates
+or migrates a database file; use `fuingodb` for that.
+
+| Command | Does |
+| --- | --- |
+| `fuingo game create CODE` | Adds an active game. |
+| `fuingo uploader create [--token TOKEN] GAME EMAIL` | Adds an active upload account to a game. Without `--token`, generates a random UUID token and prints it once; send it to the uploader, because it cannot be recovered. A given token is never printed. |
+| `fuingo account create [--generate-password] EMAIL` | Adds an API account. Reads the password from the first line of standard input (`printf '%s\n' "$PW" \| fuingo ... account create EMAIL`), or with `--generate-password` generates one and prints it once. At most 72 bytes. |
+
+Game codes and emails are lowercased, like the ones in uploaded files. Game
+codes, emails, and tokens must be one or more printable ASCII bytes with no
+spaces.
 
 ## Configuration
 
@@ -37,17 +47,22 @@ override environment variables, which override the defaults.
 | `--db` | `FUINGO_DB` | all | Database file. Required. `fuingod` accepts `:memory:` in `development` and `agent` only; `fuingodb` and `fuingo` never do. `fuingo version` uses it only with `--schema`. |
 | `--addr` | `FUINGO_ADDR` | `fuingod` | Backend listen address, `host:port`. Default `127.0.0.1:18443`. |
 | `--trusted-proxies` | `FUINGO_TRUSTED_PROXIES` | `fuingod` | Comma-separated addresses and CIDR prefixes of the reverse proxies whose `X-Forwarded-For` header is trusted. Default `127.0.0.0/8,::1` (loopback); empty trusts none. |
-| (none) | `FUINGO_PEPPER` | `fuingod`, `fuingodb create` | Key for the upload credential hashes. Required. |
+| `--schema` | (none) | `fuingo version` | Print the database's schema version. Command line only. |
+| `--token` | (none) | `fuingo uploader create` | The new uploader's token. Command line only. |
+| `--generate-password` | (none) | `fuingo account create` | Generate the password instead of reading it. Command line only. |
+| (none) | `FUINGO_PEPPER` | `fuingod`, `fuingodb create`, `fuingo uploader create` | Key for the upload credential hashes. Required. |
 
 - The environment is read from `--env` or the process's `FUINGO_ENV`. The
   commands then load that environment's files from the working directory, in
   this order of precedence: the process environment, `.env.<env>.local`,
   `.env.local`, `.env.<env>`, `.env`.
+- Flags marked "command line only" ignore their `FUINGO_` variables, so an
+  environment file cannot change what a command does.
 - `FUINGO_PEPPER` is a secret and has no flag. Keep it in the process
   environment or an ignored `.local` file, never in `.env` or `.env.<env>`.
   Changing it invalidates every stored upload token.
-- `fuingodb create` in `development` and `agent` seeds the default games and
-  upload accounts listed in [TESTING.md](TESTING.md). So does
+- `fuingodb create` in `development` and `agent` seeds the default games,
+  upload accounts, and API accounts listed in [TESTING.md](TESTING.md). So does
   `fuingod --db :memory:`.
 - Uploaded files are stored in the database, in `upload_blobs`, keyed by the
   SHA-256 of their contents; identical files are stored once. Each successful

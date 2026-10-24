@@ -7,6 +7,8 @@
 //	fuingo version
 //	fuingo [--env ENV] [--db PATH] version --schema
 //	fuingo [--env ENV] [--db PATH] game create CODE
+//	fuingo [--env ENV] [--db PATH] uploader create [--token TOKEN] GAME EMAIL
+//	fuingo [--env ENV] [--db PATH] account create [--generate-password] EMAIL
 //
 // Every flag can also be set with a FUINGO_ environment variable:
 //
@@ -15,42 +17,60 @@
 //	--db    FUINGO_DB    path to the database file (required by commands that use it;
 //	                     :memory: is refused)
 //
-// version --schema has no environment variable: version reads no
-// environment unless --schema is on the command line.
+// uploader create also requires FUINGO_PEPPER.
+//
+// --schema, --token, and --generate-password are honored only on the command
+// line; their FUINGO_ variables are ignored. version reads no environment
+// unless --schema is on the command line.
 //
 // Commands that use the database only open one that is already at the schema
 // version this program expects. fuingo never creates a database file or
 // migrates one; fuingodb does.
 //
-// Game codes are lowercased with strings.ToLower, as uploads are, and must be
-// a valid header word: one or more bytes in 0x21-0x7E. New games are active.
+// Game codes and emails are lowercased with strings.ToLower, as uploads are.
+// Game codes, emails, and tokens must be valid header words: one or more
+// bytes in 0x21-0x7E. New games and uploaders are active.
+//
+// uploader create generates a random UUID for the token unless --token is
+// given, and prints a generated token once; only its hash is stored.
+// account create reads the password from the first line of standard input,
+// or, with --generate-password, generates one and prints it once. Passwords
+// are hashed with bcrypt at bcrypt.MinCost and are at most 72 bytes.
 package main
 
 import (
+	"bufio"
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"strings"
 
+	"github.com/google/uuid"
 	"github.com/mdhender/fuingo"
 	"github.com/mdhender/fuingo/internal/cerrs"
 	"github.com/mdhender/fuingo/internal/cli"
+	"github.com/mdhender/fuingo/internal/credential"
 	"github.com/mdhender/fuingo/internal/store"
 	"github.com/peterbourgon/ff/v4"
 	"github.com/peterbourgon/ff/v4/ffhelp"
+	"golang.org/x/crypto/bcrypt"
 )
 
 const (
 	ErrMissingDatabase = cerrs.Error("--db (FUINGO_DB) is required")
 	ErrMemoryDatabase  = cerrs.Error("fuingo requires a database file, not :memory:")
+	ErrEmail           = cerrs.Error("email must be one or more printable ASCII bytes with no spaces")
 	ErrGameCode        = cerrs.Error("game code must be one or more printable ASCII bytes with no spaces")
+	ErrMissingPassword = cerrs.Error("no password on standard input; pipe one in or use --generate-password")
+	ErrToken           = cerrs.Error("token must be one or more printable ASCII bytes with no spaces")
 	ErrUsage           = cerrs.Error("wrong number of arguments")
 )
 
 func main() {
-	if err := run(context.Background(), os.Args[1:], os.Stdout, os.Stderr); err != nil {
+	if err := run(context.Background(), os.Args[1:], os.Stdin, os.Stdout, os.Stderr); err != nil {
 		if !errors.Is(err, ff.ErrHelp) {
 			fmt.Fprintf(os.Stderr, "fuingo: %v\n", err)
 		}
@@ -58,7 +78,7 @@ func main() {
 	}
 }
 
-func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	var env, path string
 	rootFlags := ff.NewFlagSet("fuingo")
 	rootFlags.StringVar(&env, 0, "env", "", "environment: development, test, production, or agent (FUINGO_ENV)")
@@ -122,12 +142,121 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		},
 	}
 
+	var token string
+	uploaderCreateFlags := ff.NewFlagSet("uploader create").SetParent(rootFlags)
+	uploaderCreateFlags.StringVar(&token, 0, "token", "", "upload token; a random UUID if omitted (command line only)")
+	uploaderCreate := &ff.Command{
+		Name:      "create",
+		Usage:     "fuingo [--db PATH] uploader create [--token TOKEN] GAME EMAIL",
+		ShortHelp: "create an active upload account, printing a generated token",
+		Flags:     uploaderCreateFlags,
+		Exec: func(ctx context.Context, args []string) error {
+			if len(args) != 2 {
+				return fmt.Errorf("uploader create GAME EMAIL: %w", ErrUsage)
+			}
+			code, err := gameCode(args[0])
+			if err != nil {
+				return err
+			}
+			email, err := emailAddress(args[1])
+			if err != nil {
+				return err
+			}
+			generated := token == ""
+			if generated {
+				token = uuid.NewString()
+			} else if !headerWord(token) {
+				return ErrToken // never echo the token
+			}
+			pepper, err := cli.Pepper()
+			if err != nil {
+				return err
+			}
+			return withDatabase(ctx, path, func(s *store.Store) error {
+				if err := s.CreateUploader(ctx, store.NewUploader{
+					GameCode: code,
+					Email:    email,
+					CredentialHash: func(gameID int64) []byte {
+						return credential.Hash(pepper, email, gameID, token)
+					},
+				}); err != nil {
+					return err
+				}
+				fmt.Fprintf(stdout, "created uploader %s in game %s\n", email, code)
+				if generated {
+					fmt.Fprintf(stdout, "token: %s\n", token)
+				}
+				return nil
+			})
+		},
+	}
+	uploader := &ff.Command{
+		Name:        "uploader",
+		Usage:       "fuingo [--db PATH] uploader <create>",
+		ShortHelp:   "manage upload accounts",
+		Flags:       ff.NewFlagSet("uploader").SetParent(rootFlags),
+		Subcommands: []*ff.Command{uploaderCreate},
+		Exec: func(ctx context.Context, args []string) error {
+			return ff.ErrHelp
+		},
+	}
+
+	var generatePassword bool
+	accountCreateFlags := ff.NewFlagSet("account create").SetParent(rootFlags)
+	accountCreateFlags.BoolVar(&generatePassword, 0, "generate-password", "generate and print a password instead of reading one from standard input (command line only)")
+	accountCreate := &ff.Command{
+		Name:      "create",
+		Usage:     "fuingo [--db PATH] account create [--generate-password] EMAIL",
+		ShortHelp: "create an API account",
+		Flags:     accountCreateFlags,
+		Exec: func(ctx context.Context, args []string) error {
+			if len(args) != 1 {
+				return fmt.Errorf("account create EMAIL: %w", ErrUsage)
+			}
+			email, err := emailAddress(args[0])
+			if err != nil {
+				return err
+			}
+			var password string
+			if generatePassword {
+				password = rand.Text()
+			} else if password, err = readPassword(stdin); err != nil {
+				return err
+			}
+			hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.MinCost)
+			if err != nil {
+				return err
+			}
+			return withDatabase(ctx, path, func(s *store.Store) error {
+				id, err := s.CreateAccount(ctx, store.NewAccount{Email: email, PasswordHash: hash})
+				if err != nil {
+					return err
+				}
+				fmt.Fprintf(stdout, "created account %s (id %d)\n", email, id)
+				if generatePassword {
+					fmt.Fprintf(stdout, "password: %s\n", password)
+				}
+				return nil
+			})
+		},
+	}
+	account := &ff.Command{
+		Name:        "account",
+		Usage:       "fuingo [--db PATH] account <create>",
+		ShortHelp:   "manage API accounts",
+		Flags:       ff.NewFlagSet("account").SetParent(rootFlags),
+		Subcommands: []*ff.Command{accountCreate},
+		Exec: func(ctx context.Context, args []string) error {
+			return ff.ErrHelp
+		},
+	}
+
 	root := &ff.Command{
 		Name:        "fuingo",
-		Usage:       "fuingo [--env ENV] [--db PATH] <version|game>",
+		Usage:       "fuingo [--env ENV] [--db PATH] <version|game|uploader|account>",
 		LongHelp:    "fuingo " + fuingo.Version().String(),
 		Flags:       rootFlags,
-		Subcommands: []*ff.Command{version, game},
+		Subcommands: []*ff.Command{version, game, uploader, account},
 		Exec: func(ctx context.Context, args []string) error {
 			return ff.ErrHelp
 		},
@@ -154,7 +283,7 @@ func parse(root *ff.Command, args []string, env *string, needsNoEnvironment func
 	if err := root.Reset(); err != nil {
 		return err
 	}
-	return cli.Parse(root, args, env)
+	return cli.Parse(root, args, env, "schema", "token", "generate-password")
 }
 
 // withDatabase opens the database at path, which must already be at the
@@ -174,16 +303,48 @@ func withDatabase(ctx context.Context, path string, fn func(*store.Store) error)
 	return fn(s)
 }
 
-// gameCode lowercases code and checks that it can appear as the first word of
-// a turn file's header line.
+// gameCode lowercases code and checks that it can appear in a turn file's
+// header line.
 func gameCode(code string) (string, error) {
-	if code == "" {
-		return "", ErrGameCode
+	if !headerWord(code) {
+		return "", fmt.Errorf("%q: %w", code, ErrGameCode)
 	}
-	for i := 0; i < len(code); i++ {
-		if code[i] < 0x21 || code[i] > 0x7e {
-			return "", fmt.Errorf("%q: %w", code, ErrGameCode)
+	return credential.NormalizeGameCode(code), nil
+}
+
+// emailAddress lowercases email and checks that it can appear in a turn
+// file's header line.
+func emailAddress(email string) (string, error) {
+	if !headerWord(email) {
+		return "", fmt.Errorf("%q: %w", email, ErrEmail)
+	}
+	return credential.NormalizeEmail(email), nil
+}
+
+// headerWord reports whether s is one or more bytes in 0x21-0x7E, as every
+// word of a turn file's header line must be.
+func headerWord(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < 0x21 || s[i] > 0x7e {
+			return false
 		}
 	}
-	return strings.ToLower(code), nil
+	return true
+}
+
+// readPassword returns the first line of r, without its LF or CRLF ending.
+// bcrypt refuses passwords over 72 bytes, so reading stops well past that.
+func readPassword(r io.Reader) (string, error) {
+	line, err := bufio.NewReader(io.LimitReader(r, 1024)).ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return "", err
+	}
+	line = strings.TrimSuffix(strings.TrimSuffix(line, "\n"), "\r")
+	if line == "" {
+		return "", ErrMissingPassword
+	}
+	return line, nil
 }

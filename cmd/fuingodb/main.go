@@ -12,7 +12,8 @@
 //	--db   FUINGO_DB   path to the database file (required; :memory: is refused)
 //
 // create also requires FUINGO_PEPPER. In development and agent, it seeds the
-// new database with the default games and upload accounts in TESTING.md.
+// new database with the default games, upload accounts, and API accounts in
+// TESTING.md.
 package main
 
 import (

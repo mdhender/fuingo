@@ -11,6 +11,7 @@ import (
 	"github.com/mdhender/fuingo/internal/credential"
 	"github.com/mdhender/fuingo/internal/devdata"
 	"github.com/mdhender/fuingo/internal/store"
+	"golang.org/x/crypto/bcrypt"
 )
 
 const pepper = "test-pepper"
@@ -39,6 +40,19 @@ func TestSeed(t *testing.T) {
 			}
 			if _, ok, _ := s.FindUploader(t.Context(), credential.Hash("other", u.Email, gameIDOf(t, s, u.Game), u.Token)); ok {
 				t.Errorf("%s: %s found under another pepper", env, u.Email)
+			}
+		}
+		for _, a := range devdata.Accounts {
+			got, ok, err := s.FindAccount(t.Context(), a.Email)
+			if err != nil || !ok {
+				t.Errorf("%s: account %s not found: %v", env, a.Email, err)
+				continue
+			}
+			if err := bcrypt.CompareHashAndPassword(got.PasswordHash, []byte(a.Password)); err != nil {
+				t.Errorf("%s: account %s: password does not match: %v", env, a.Email, err)
+			}
+			if cost, err := bcrypt.Cost(got.PasswordHash); err != nil || cost != bcrypt.MinCost {
+				t.Errorf("%s: account %s: bcrypt cost %d, %v; want MinCost", env, a.Email, cost, err)
 			}
 		}
 		// Seeding never runs twice.

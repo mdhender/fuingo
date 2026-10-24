@@ -464,3 +464,35 @@ func TestSchemaVersion(t *testing.T) {
 		t.Errorf("SchemaVersion = %d, CurrentSchemaVersion = %d, want %d", got, want, len(migrations))
 	}
 }
+
+// TestMigrateKeepsVersion1Data migrates a database made by migration 1 alone.
+func TestMigrateKeepsVersion1Data(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "v1.db")
+	conn, err := sqlite.OpenConn(path, sqlite.OpenReadWrite|sqlite.OpenCreate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := "PRAGMA application_id = " + strconv.Itoa(int(applicationID)) + ";\n" +
+		migrations[0] + "INSERT INTO games (code) VALUES ('game01');\nPRAGMA user_version = 1;\n"
+	if err := sqlitex.ExecuteScript(conn, script, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := Migrate(t.Context(), path); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	s, err := Open(t.Context(), path)
+	if err != nil {
+		t.Fatalf("Open after Migrate: %v", err)
+	}
+	defer s.Close()
+	if games, err := s.Games(t.Context()); err != nil || len(games) != 1 || games[0] != "game01" {
+		t.Errorf("Games = %v, %v; want [game01]", games, err)
+	}
+	if _, err := s.CreateAccount(t.Context(), NewAccount{Email: "a@example.com", PasswordHash: []byte("x")}); err != nil {
+		t.Errorf("CreateAccount after Migrate: %v", err)
+	}
+}

@@ -26,9 +26,11 @@ There are two kinds of account, and neither can act as the other:
   `game_managers` lists the games each one manages. They authenticate to `/api/`
   with the `Authorization` header and never use the web pages.
 
-API accounts belong to the future `/api/` phase described in
-[AGENTS.md](AGENTS.md). Do not implement the `accounts` and `game_managers`
-tables, their default rows, or their helpers until that phase starts.
+The `accounts` table and its default rows exist, and `fuingo account create`
+adds API accounts, but nothing authenticates them until the future `/api/`
+phase described in [AGENTS.md](AGENTS.md). Do not implement the
+`game_managers` table or the API account helpers below until that phase
+starts.
 
 ## Default accounts
 
@@ -65,9 +67,11 @@ All are active.
 | `game01` | `spoonbill@example.com` | `942a563c-c911-4c84-848b-fe4e96122d8c` |
 | `game02` | `caracara@example.com` | `12fc952a-2b17-49e5-ba31-329a3ba474e4` |
 
-### Default API accounts (future `/api/` phase)
+### Default API accounts
 
-The Games column lists the games each account manages.
+The Games column lists the games each account will manage once the
+`game_managers` table exists in the `/api/` phase; until then, no account
+manages a game.
 
 | Email | Password | Games |
 | --- | --- | --- |
@@ -102,7 +106,8 @@ not CSRF bypasses.
 
 These helpers and the default accounts are the explicit development/agent-only
 exceptions to account creation. Otherwise, both kinds of account are created
-only by the `cmd/fuingo` operators' CLI, which cannot create them yet.
+only by the `cmd/fuingo` operators' CLI: `fuingo uploader create` and
+`fuingo account create`.
 
 ### Create an upload account
 
@@ -176,10 +181,10 @@ Go tests use two kinds of database: private in-memory databases and files in
 - **Store, server, and other package tests** that hold a `*store.Store` for the
   whole test use `store.OpenPrivateMemory`, named after the test. They are fast,
   and parallel tests stay isolated.
-- **Command tests** (`cmd/fuingodb`) call the command functions with the same
+- **Command tests** (`cmd/fuingodb`, `cmd/fuingo`) call the command functions with the same
   `--env` and `--db` flags a user types, so they need a database file in
   `t.TempDir()`:
-  - `fuingodb` rejects `--db :memory:`.
+  - `fuingodb` and `fuingo` reject `--db :memory:`.
   - Each command opens and closes its own connection. A private in-memory
     database would disappear when that connection closes. A file survives
     between the test's setup, the command, and the test's checks.

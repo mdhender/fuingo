@@ -9,7 +9,6 @@
 //	fuingo [--env ENV] [--db PATH] game create CODE
 //	fuingo [--env ENV] [--db PATH] game add --manager EMAIL --code CODE
 //	fuingo [--env ENV] [--db PATH] game add --uploader EMAIL --code CODE [--token TOKEN]
-//	fuingo [--env ENV] [--db PATH] uploader create [--token TOKEN] GAME EMAIL
 //	fuingo [--env ENV] [--db PATH] account create [--generate-password] EMAIL
 //
 // Every flag can also be set with a FUINGO_ environment variable:
@@ -19,11 +18,11 @@
 //	--db    FUINGO_DB    path to the database file (required by commands that use it;
 //	                     :memory: is refused)
 //
-// uploader create and game add --uploader also require FUINGO_PEPPER.
+// game add --uploader also requires FUINGO_PEPPER.
 //
 // --schema, --token, --generate-password, --manager, --uploader, and --code
-// are honored only on the command line; their FUINGO_ variables are ignored. version reads no environment
-// unless --schema is on the command line.
+// are honored only on the command line; their FUINGO_ variables are ignored.
+// version reads no environment unless --schema is on the command line.
 //
 // Commands that use the database only open one that is already at the schema
 // version this program expects. fuingo never creates a database file or
@@ -34,10 +33,9 @@
 // bytes in 0x21-0x7E. New games and uploaders are active.
 //
 // game add --manager makes an existing API account a manager of an existing
-// game. game add --uploader is the same as uploader create.
-//
-// uploader create generates a random UUID for the token unless --token is
-// given, and prints a generated token once; only its hash is stored.
+// game. game add --uploader creates an upload account in it, generating a
+// random UUID for the token unless --token is given, and prints a generated
+// token once; only its hash is stored.
 // account create reads the password from the first line of standard input,
 // or, with --generate-password, generates one and prints it once. Passwords
 // are hashed with bcrypt at bcrypt.MinCost and are at most 72 bytes.
@@ -164,7 +162,7 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 				return ErrMissingCode
 			}
 			if addUploader != "" {
-				return createUploader(ctx, stdout, path, addCode, addUploader, addToken, "added uploader %s to game %s\n")
+				return createUploader(ctx, stdout, path, addCode, addUploader, addToken)
 			}
 			code, err := gameCode(addCode)
 			if err != nil {
@@ -189,32 +187,6 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		ShortHelp:   "manage games",
 		Flags:       ff.NewFlagSet("game").SetParent(rootFlags),
 		Subcommands: []*ff.Command{gameCreate, gameAdd},
-		Exec: func(ctx context.Context, args []string) error {
-			return ff.ErrHelp
-		},
-	}
-
-	var token string
-	uploaderCreateFlags := ff.NewFlagSet("uploader create").SetParent(rootFlags)
-	uploaderCreateFlags.StringVar(&token, 0, "token", "", "upload token; a random UUID if omitted (command line only)")
-	uploaderCreate := &ff.Command{
-		Name:      "create",
-		Usage:     "fuingo [--db PATH] uploader create [--token TOKEN] GAME EMAIL",
-		ShortHelp: "create an active upload account, printing a generated token",
-		Flags:     uploaderCreateFlags,
-		Exec: func(ctx context.Context, args []string) error {
-			if len(args) != 2 {
-				return fmt.Errorf("uploader create GAME EMAIL: %w", ErrUsage)
-			}
-			return createUploader(ctx, stdout, path, args[0], args[1], token, "created uploader %s in game %s\n")
-		},
-	}
-	uploader := &ff.Command{
-		Name:        "uploader",
-		Usage:       "fuingo [--db PATH] uploader <create>",
-		ShortHelp:   "manage upload accounts",
-		Flags:       ff.NewFlagSet("uploader").SetParent(rootFlags),
-		Subcommands: []*ff.Command{uploaderCreate},
 		Exec: func(ctx context.Context, args []string) error {
 			return ff.ErrHelp
 		},
@@ -272,10 +244,10 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 
 	root := &ff.Command{
 		Name:        "fuingo",
-		Usage:       "fuingo [--env ENV] [--db PATH] <version|game|uploader|account>",
+		Usage:       "fuingo [--env ENV] [--db PATH] <version|game|account>",
 		LongHelp:    "fuingo " + fuingo.Version().String(),
 		Flags:       rootFlags,
-		Subcommands: []*ff.Command{version, game, uploader, account},
+		Subcommands: []*ff.Command{version, game, account},
 		Exec: func(ctx context.Context, args []string) error {
 			return ff.ErrHelp
 		},
@@ -323,9 +295,9 @@ func withDatabase(ctx context.Context, path string, fn func(*store.Store) error)
 }
 
 // createUploader creates an active upload account in the game, generating a
-// UUID token if token is empty, and prints done with the email and game code.
-// It prints a generated token once and never prints a given one.
-func createUploader(ctx context.Context, stdout io.Writer, path, gameArg, emailArg, token, done string) error {
+// UUID token if token is empty. It prints a generated token once and never
+// prints a given one.
+func createUploader(ctx context.Context, stdout io.Writer, path, gameArg, emailArg, token string) error {
 	code, err := gameCode(gameArg)
 	if err != nil {
 		return err
@@ -354,7 +326,7 @@ func createUploader(ctx context.Context, stdout io.Writer, path, gameArg, emailA
 		}); err != nil {
 			return err
 		}
-		fmt.Fprintf(stdout, done, email, code)
+		fmt.Fprintf(stdout, "added uploader %s to game %s\n", email, code)
 		if generated {
 			fmt.Fprintf(stdout, "token: %s\n", token)
 		}

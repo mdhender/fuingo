@@ -313,107 +313,6 @@ func account(t *testing.T, path, email string) (store.Account, bool) {
 	return a, ok
 }
 
-func TestUploaderCreateGeneratesToken(t *testing.T) {
-	clearEnv(t)
-	t.Setenv("FUINGO_PEPPER", pepper)
-	path := createDatabaseWithGames(t, "game01")
-	out, err := runCommand(t, "--env", "test", "--db", path, "uploader", "create", "GAME01", "CatBird@Example.com")
-	if err != nil {
-		t.Fatalf("uploader create: %v\n%s", err, out)
-	}
-	first, token, ok := strings.Cut(out, "token: ")
-	if want := "created uploader catbird@example.com in game game01\n"; !ok || first != want {
-		t.Fatalf("uploader create printed %q, want %q and a token", out, want)
-	}
-	token = strings.TrimSuffix(token, "\n")
-	if _, err := uuid.Parse(token); err != nil {
-		t.Errorf("generated token %q is not a UUID: %v", token, err)
-	}
-	if !uploaderExists(t, path, "game01", "catbird@example.com", token) {
-		t.Error("the generated token does not authorize the uploader")
-	}
-}
-
-func TestUploaderCreateWithToken(t *testing.T) {
-	clearEnv(t)
-	t.Setenv("FUINGO_PEPPER", pepper)
-	path := createDatabaseWithGames(t, "game01", "game02")
-	const token = "my-chosen-token"
-	// The same email and token may be used in two games.
-	for _, game := range []string{"game01", "game02"} {
-		out, err := runCommand(t, "--env", "test", "--db", path, "uploader", "create", "--token", token, game, "catbird@example.com")
-		if err != nil {
-			t.Fatalf("uploader create %s: %v\n%s", game, err, out)
-		}
-		if strings.Contains(out, token) {
-			t.Errorf("uploader create echoed the token: %q", out)
-		}
-		if !uploaderExists(t, path, game, "catbird@example.com", token) {
-			t.Errorf("%s: the token does not authorize the uploader", game)
-		}
-	}
-}
-
-func TestUploaderCreateRefusals(t *testing.T) {
-	clearEnv(t)
-	t.Setenv("FUINGO_PEPPER", pepper)
-	path := createDatabaseWithGames(t, "game01")
-	const token = "secret-token"
-	if out, err := runCommand(t, "--env", "test", "--db", path, "uploader", "create", "--token", token, "game01", "catbird@example.com"); err != nil {
-		t.Fatalf("uploader create: %v\n%s", err, out)
-	}
-	for _, tc := range []struct {
-		args []string
-		want error
-	}{
-		{[]string{"--token", "other-token", "game01", "CATBIRD@example.com"}, store.ErrUploaderExists},
-		{[]string{"--token", token, "game99", "spoonbill@example.com"}, store.ErrUnknownGame},
-		{[]string{"--token", "secret token", "game01", "spoonbill@example.com"}, ErrToken},
-		{[]string{"--token", "secret\x7ftoken", "game01", "spoonbill@example.com"}, ErrToken},
-		{[]string{"game01", "spoon bill@example.com"}, ErrEmail},
-		{[]string{"game01", "spoonbill@exämple.com"}, ErrEmail},
-		{[]string{"game 01", "spoonbill@example.com"}, ErrGameCode},
-		{[]string{"game01"}, ErrUsage},
-		{[]string{"game01", "spoonbill@example.com", "extra"}, ErrUsage},
-	} {
-		out, err := runCommand(t, append([]string{"--env", "test", "--db", path, "uploader", "create"}, tc.args...)...)
-		if !errors.Is(err, tc.want) {
-			t.Errorf("uploader create %q: err = %v, want %v\n%s", tc.args, err, tc.want, out)
-		}
-		if strings.Contains(out, "secret") || (err != nil && strings.Contains(err.Error(), "secret")) {
-			t.Errorf("uploader create %q revealed the token: %v\n%s", tc.args, err, out)
-		}
-	}
-}
-
-func TestUploaderCreateRequiresPepper(t *testing.T) {
-	clearEnv(t)
-	t.Setenv("FUINGO_PEPPER", pepper)
-	path := createDatabaseWithGames(t, "game01")
-	os.Unsetenv("FUINGO_PEPPER")
-	out, err := runCommand(t, "--env", "test", "--db", path, "uploader", "create", "game01", "catbird@example.com")
-	if !errors.Is(err, cli.ErrMissingPepper) {
-		t.Errorf("err = %v, want ErrMissingPepper\n%s", err, out)
-	}
-}
-
-func TestUploaderCreateIgnoresTokenEnvironmentVariable(t *testing.T) {
-	clearEnv(t)
-	t.Setenv("FUINGO_PEPPER", pepper)
-	t.Setenv("FUINGO_TOKEN", "from-the-environment")
-	path := createDatabaseWithGames(t, "game01")
-	out, err := runCommand(t, "--env", "test", "--db", path, "uploader", "create", "game01", "catbird@example.com")
-	if err != nil {
-		t.Fatalf("uploader create: %v\n%s", err, out)
-	}
-	if !strings.Contains(out, "token: ") {
-		t.Errorf("uploader create did not generate a token: %q", out)
-	}
-	if uploaderExists(t, path, "game01", "catbird@example.com", "from-the-environment") {
-		t.Error("uploader create used FUINGO_TOKEN")
-	}
-}
-
 func TestAccountCreateReadsPassword(t *testing.T) {
 	clearEnv(t)
 	path := createDatabase(t)
@@ -640,16 +539,19 @@ func TestGameAddUploader(t *testing.T) {
 		t.Error("the generated token does not authorize the uploader")
 	}
 
+	// The same email and a given token may be used in two games.
 	const chosen = "my-chosen-token"
-	out, err = runCommand(t, "--env", "test", "--db", path, "game", "add", "--token", chosen, "--code", "game02", "--uploader", "catbird@example.com")
-	if err != nil {
-		t.Fatalf("game add --uploader --token: %v\n%s", err, out)
-	}
-	if want := "added uploader catbird@example.com to game game02\n"; out != want {
-		t.Errorf("game add --uploader --token printed %q, want %q", out, want)
-	}
-	if !uploaderExists(t, path, "game02", "catbird@example.com", chosen) {
-		t.Error("the given token does not authorize the uploader")
+	for _, game := range []string{"game01", "game02"} {
+		out, err = runCommand(t, "--env", "test", "--db", path, "game", "add", "--token", chosen, "--code", game, "--uploader", "spoonbill@example.com")
+		if err != nil {
+			t.Fatalf("game add --uploader --token in %s: %v\n%s", game, err, out)
+		}
+		if want := "added uploader spoonbill@example.com to game " + game + "\n"; out != want {
+			t.Errorf("game add --uploader --token printed %q, want %q", out, want)
+		}
+		if !uploaderExists(t, path, game, "spoonbill@example.com", chosen) {
+			t.Errorf("%s: the given token does not authorize the uploader", game)
+		}
 	}
 }
 
@@ -667,7 +569,11 @@ func TestGameAddUploaderRefusals(t *testing.T) {
 		{[]string{"--uploader", "CATBIRD@example.com", "--code", "game01"}, store.ErrUploaderExists},
 		{[]string{"--uploader", "tern@example.com", "--code", "game99"}, store.ErrUnknownGame},
 		{[]string{"--uploader", "tern@example.com", "--code", "game01", "--token", "secret token"}, ErrToken},
+		{[]string{"--uploader", "tern@example.com", "--code", "game01", "--token", "secret\x7ftoken"}, ErrToken},
 		{[]string{"--uploader", "tern @example.com", "--code", "game01"}, ErrEmail},
+		{[]string{"--uploader", "tern@exämple.com", "--code", "game01"}, ErrEmail},
+		{[]string{"--uploader", "tern@example.com", "--code", "game 01"}, ErrGameCode},
+		{[]string{"--uploader", "tern@example.com", "--code", "game01", "extra"}, ErrUsage},
 		{[]string{"--uploader", "tern@example.com"}, ErrMissingCode},
 	} {
 		out, err := runCommand(t, append([]string{"--env", "test", "--db", path, "game", "add"}, tc.args...)...)

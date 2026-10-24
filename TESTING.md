@@ -104,7 +104,7 @@ not CSRF bypasses.
 
 These helpers and the default accounts are the explicit development/agent-only
 exceptions to account creation. Otherwise, both kinds of account are created
-only by the `cmd/fuingo` operators' CLI: `fuingo uploader create` and
+only by the `cmd/fuingo` operators' CLI: `fuingo game add --uploader` and
 `fuingo account create`.
 
 ### Create an upload account

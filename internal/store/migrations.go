@@ -65,4 +65,8 @@ CREATE INDEX game_managers_by_account ON game_managers (account_id);
 	`
 ALTER TABLE game_managers ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1));
 `,
+	// 5: API accounts can be disabled.
+	`
+ALTER TABLE accounts ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1));
+`,
 }

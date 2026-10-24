@@ -36,6 +36,7 @@ or migrates a database file; use `fuingodb` for that.
 | `fuingo game disable --uploader EMAIL --code CODE` | Disables an uploader in a game: their uploads are refused. `game enable` reverses it. |
 | `fuingo game disable --manager EMAIL --code CODE` | Stops an API account managing a game. `game enable` reverses it. |
 | `fuingo account create [--generate-password] EMAIL` | Adds an API account. Reads the password from the first line of standard input (`printf '%s\n' "$PW" \| fuingo ... account create EMAIL`), or with `--generate-password` generates one and prints it once. At most 72 bytes. |
+| `fuingo account disable EMAIL` | Disables an API account: it manages no games and cannot authenticate. `account enable` reverses it. |
 
 Game codes and emails are lowercased, like the ones in uploaded files. Game
 codes, emails, and tokens must be one or more printable ASCII bytes with no

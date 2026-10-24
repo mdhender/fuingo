@@ -383,3 +383,44 @@ func TestSetManagerActive(t *testing.T) {
 		}
 	}
 }
+
+func TestSetAccountActive(t *testing.T) {
+	t.Parallel()
+	s, err := OpenPrivateMemory(t.Context(), t.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.CreateRows(t.Context(), Rows{
+		Games:    []string{"game01"},
+		Accounts: []NewAccount{{Email: "a@example.com", PasswordHash: []byte("x")}, {Email: "b@example.com", PasswordHash: []byte("y")}},
+		Managers: []NewManager{{GameCode: "game01", Email: "a@example.com"}, {GameCode: "game01", Email: "b@example.com"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	check := func(wantActive bool, wantManagers string) {
+		t.Helper()
+		a, ok, err := s.FindAccount(t.Context(), "a@example.com")
+		if err != nil || !ok || a.Active != wantActive {
+			t.Errorf("FindAccount = %+v, %v, %v; want Active %v", a, ok, err, wantActive)
+		}
+		got, err := s.Managers(t.Context(), "game01")
+		if err != nil || strings.Join(got, ",") != wantManagers {
+			t.Errorf("Managers = %v, %v; want %s", got, err, wantManagers)
+		}
+	}
+	check(true, "a@example.com,b@example.com")
+	for range 2 { // disabling twice succeeds
+		if err := s.SetAccountActive(t.Context(), "a@example.com", false); err != nil {
+			t.Fatalf("SetAccountActive(false): %v", err)
+		}
+	}
+	check(false, "b@example.com")
+	if err := s.SetAccountActive(t.Context(), "a@example.com", true); err != nil {
+		t.Fatalf("SetAccountActive(true): %v", err)
+	}
+	check(true, "a@example.com,b@example.com")
+	if err := s.SetAccountActive(t.Context(), "missing@example.com", false); !errors.Is(err, ErrUnknownAccount) {
+		t.Errorf("SetAccountActive of a missing account = %v, want ErrUnknownAccount", err)
+	}
+}

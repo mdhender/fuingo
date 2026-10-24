@@ -749,3 +749,52 @@ func TestGameDisableIgnoresEnvironmentVariables(t *testing.T) {
 		t.Error("game disable used FUINGO_UPLOADER")
 	}
 }
+
+func TestAccountDisableEnable(t *testing.T) {
+	clearEnv(t)
+	path := toggleFixture(t)
+	base := []string{"--env", "test", "--db", path, "account"}
+	for range 2 { // disabling twice succeeds
+		mustRun(t, "disabled account acct01@example.com\n", append(base, "disable", "ACCT01@example.com")...)
+	}
+	if a, _ := account(t, path, "acct01@example.com"); a.Active {
+		t.Error("a disabled account is active")
+	}
+	for _, game := range []string{"game01", "game02"} {
+		if got := managers(t, path, game); len(got) != 0 {
+			t.Errorf("a disabled account still manages %s: %v", game, got)
+		}
+	}
+	mustRun(t, "enabled account acct01@example.com\n", append(base, "enable", "acct01@example.com")...)
+	if a, _ := account(t, path, "acct01@example.com"); !a.Active {
+		t.Error("a re-enabled account is inactive")
+	}
+	if got := managers(t, path, "game01"); len(got) != 1 {
+		t.Errorf("a re-enabled account does not manage game01: %v", got)
+	}
+}
+
+func TestAccountDisableEnableRefusals(t *testing.T) {
+	clearEnv(t)
+	path := toggleFixture(t)
+	for _, verb := range []string{"disable", "enable"} {
+		for _, tc := range []struct {
+			args []string
+			want error
+		}{
+			{[]string{"missing@example.com"}, store.ErrUnknownAccount},
+			{[]string{"catbird@example.com"}, store.ErrUnknownAccount},
+			{[]string{"acct 01@example.com"}, ErrEmail},
+			{[]string{}, ErrUsage},
+			{[]string{"acct01@example.com", "extra"}, ErrUsage},
+		} {
+			args := append([]string{"--env", "test", "--db", path, "account", verb}, tc.args...)
+			if out, err := runCommand(t, args...); !errors.Is(err, tc.want) {
+				t.Errorf("%q: err = %v, want %v\n%s", args, err, tc.want, out)
+			}
+		}
+	}
+	if a, _ := account(t, path, "acct01@example.com"); !a.Active {
+		t.Error("a refused command disabled acct01@example.com")
+	}
+}

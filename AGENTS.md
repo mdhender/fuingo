@@ -93,7 +93,8 @@ at the schema version the program expects. `fuingo` has `version`,
 `game add --manager EMAIL --code CODE`,
 `game add --uploader EMAIL --code CODE [--token TOKEN]`,
 `game (disable|enable) [--uploader EMAIL | --manager EMAIL] --code CODE`, and
-`account create [--generate-password] EMAIL` so far; add further commands only
+`account create [--generate-password] EMAIL`, and
+`account (disable|enable) EMAIL` so far; add further commands only
 as the user asks for them.
 
 - Game codes, emails, and tokens given to `fuingo` must be valid header words
@@ -114,6 +115,9 @@ as the user asks for them.
   with `--uploader` or `--manager`, on that row of `game_uploaders` or
   `game_managers`. They never delete rows, and repeating one succeeds. They
   take at most one of `--uploader` and `--manager`, and require `--code`.
+- `account disable` and `account enable` clear or set `is_active` on an API
+  account. An inactive account manages no games, whatever its `game_managers`
+  rows say.
 
 | Command | Purpose |
 | --- | --- |
@@ -139,7 +143,7 @@ never be reused.
 | `game_uploaders` | `game_id`, `email`, `credential_hash`, `is_active` | PK `(game_id, email)`; `credential_hash` unique; FK `game_id` → `games` |
 | `upload_blobs` | `content_hash`, `contents`, `created_at` | PK `content_hash` |
 | `uploads` | `id`, `game_id`, `email`, `turn_no`, `content_hash`, `uploaded_at` | PK `id`; FK `(game_id, email)` → `game_uploaders`; FK `content_hash` → `upload_blobs` |
-| `accounts` | `id`, `email`, `password_hash` | PK `id`; `email` unique |
+| `accounts` | `id`, `email`, `password_hash`, `is_active` | PK `id`; `email` unique |
 | `game_managers` | `game_id`, `account_id`, `is_active` | PK `(game_id, account_id)`; FKs to `games` and `accounts` |
 
 - `games.code` is stored lowercased, like emails.
@@ -284,15 +288,16 @@ The server handles each upload in this order:
 Do not implement these until the user starts the phase.
 
 - Smarter clients will submit files through `/api/` routes without the web form.
-- `/api/` requests authenticate with the `Authorization` header.
+- `/api/` requests authenticate with the `Authorization` header. An inactive
+  account fails authentication like a wrong password.
 - `/api/` routes accept only API accounts, which never use the web pages. Upload
   accounts never authenticate to `/api/`. Keep the two kinds separate; see
   [TESTING.md](TESTING.md).
 - API account passwords are hashed with bcrypt at `bcrypt.MinCost`. This is an
   accepted risk; do not raise the cost or propose doing so.
 - The API adds listing and management of uploaded files. An API account may act
-  only on the games it manages in `game_managers`, and only while that row is
-  active.
+  only on the games it manages in `game_managers`, and only while the account
+  and that row are active.
 
 ## Verification
 

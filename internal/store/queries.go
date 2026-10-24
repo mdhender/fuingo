@@ -52,6 +52,7 @@ type Account struct {
 	ID           int64
 	Email        string
 	PasswordHash []byte
+	Active       bool
 }
 
 // NewManager makes an API account a manager of a game. GameCode and Email
@@ -161,8 +162,8 @@ func addManager(conn *sqlite.Conn, m NewManager) (err error) {
 	return err
 }
 
-// Managers returns the emails of the game's active managers, in account ID
-// order.
+// Managers returns the emails of the game's active managers whose accounts
+// are also active, in account ID order.
 func (s *Store) Managers(ctx context.Context, gameCode string) ([]string, error) {
 	conn, err := s.take(ctx)
 	if err != nil {
@@ -174,7 +175,7 @@ func (s *Store) Managers(ctx context.Context, gameCode string) ([]string, error)
 SELECT accounts.email FROM game_managers
 JOIN games ON games.id = game_managers.game_id
 JOIN accounts ON accounts.id = game_managers.account_id
-WHERE games.code = ? AND game_managers.is_active = 1
+WHERE games.code = ? AND game_managers.is_active = 1 AND accounts.is_active = 1
 ORDER BY accounts.id;`, &sqlitex.ExecOptions{
 		Args: []any{gameCode},
 		ResultFunc: func(stmt *sqlite.Stmt) error {
@@ -200,7 +201,7 @@ func createAccount(conn *sqlite.Conn, a NewAccount) (int64, error) {
 	if a.Email != strings.ToLower(a.Email) {
 		return 0, fmt.Errorf("%s: %w", a.Email, ErrEmailCase)
 	}
-	err := sqlitex.Execute(conn, "INSERT INTO accounts (email, password_hash) VALUES (?, ?);", &sqlitex.ExecOptions{
+	err := sqlitex.Execute(conn, "INSERT INTO accounts (email, password_hash, is_active) VALUES (?, ?, 1);", &sqlitex.ExecOptions{
 		Args: []any{a.Email, string(a.PasswordHash)},
 	})
 	if sqlite.ErrCode(err) == sqlite.ResultConstraintUnique {
@@ -211,7 +212,8 @@ func createAccount(conn *sqlite.Conn, a NewAccount) (int64, error) {
 	return conn.LastInsertRowID(), nil
 }
 
-// FindAccount returns the API account with the given lowercased email.
+// FindAccount returns the API account with the given lowercased email,
+// active or not.
 func (s *Store) FindAccount(ctx context.Context, email string) (Account, bool, error) {
 	conn, err := s.take(ctx)
 	if err != nil {
@@ -220,10 +222,10 @@ func (s *Store) FindAccount(ctx context.Context, email string) (Account, bool, e
 	defer s.pool.Put(conn)
 	var a Account
 	var found bool
-	err = sqlitex.Execute(conn, "SELECT id, email, password_hash FROM accounts WHERE email = ?;", &sqlitex.ExecOptions{
+	err = sqlitex.Execute(conn, "SELECT id, email, password_hash, is_active FROM accounts WHERE email = ?;", &sqlitex.ExecOptions{
 		Args: []any{email},
 		ResultFunc: func(stmt *sqlite.Stmt) error {
-			a = Account{ID: stmt.ColumnInt64(0), Email: stmt.ColumnText(1), PasswordHash: []byte(stmt.ColumnText(2))}
+			a = Account{ID: stmt.ColumnInt64(0), Email: stmt.ColumnText(1), PasswordHash: []byte(stmt.ColumnText(2)), Active: stmt.ColumnBool(3)}
 			found = true
 			return nil
 		},
@@ -505,6 +507,25 @@ WHERE game_id = (SELECT id FROM games WHERE code = ?)
 	}
 	if conn.Changes() == 0 {
 		return fmt.Errorf("%s %s: %w", gameCode, email, ErrUnknownManager)
+	}
+	return nil
+}
+
+// SetAccountActive sets whether an API account may authenticate and act on
+// the games it manages.
+func (s *Store) SetAccountActive(ctx context.Context, email string, active bool) error {
+	conn, err := s.take(ctx)
+	if err != nil {
+		return err
+	}
+	defer s.pool.Put(conn)
+	if err := sqlitex.Execute(conn, "UPDATE accounts SET is_active = ? WHERE email = ?;", &sqlitex.ExecOptions{
+		Args: []any{active, email},
+	}); err != nil {
+		return err
+	}
+	if conn.Changes() == 0 {
+		return fmt.Errorf("%s: %w", email, ErrUnknownAccount)
 	}
 	return nil
 }

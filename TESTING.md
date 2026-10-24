@@ -69,7 +69,7 @@ All are active.
 
 ### Default API accounts
 
-The Games column lists the games each account manages.
+All are active. The Games column lists the games each account manages.
 
 | Email | Password | Games |
 | --- | --- | --- |

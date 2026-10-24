@@ -11,6 +11,7 @@
 //	fuingo [--env ENV] [--db PATH] game add --uploader EMAIL --code CODE [--token TOKEN]
 //	fuingo [--env ENV] [--db PATH] game (disable|enable) [--uploader EMAIL | --manager EMAIL] --code CODE
 //	fuingo [--env ENV] [--db PATH] account create [--generate-password] EMAIL
+//	fuingo [--env ENV] [--db PATH] account (disable|enable) EMAIL
 //
 // Every flag can also be set with a FUINGO_ environment variable:
 //
@@ -40,7 +41,9 @@
 //
 // game disable and game enable clear or set is_active on the game, or with
 // --uploader or --manager, on that uploader or manager of the game. Rows are
-// never deleted. An inactive game or uploader refuses uploads.
+// never deleted. An inactive game or uploader refuses uploads. account disable
+// and account enable clear or set is_active on an API account; an inactive
+// account manages no games.
 // account create reads the password from the first line of standard input,
 // or, with --generate-password, generates one and prints it once. Passwords
 // are hashed with bcrypt at bcrypt.MinCost and are at most 72 bytes.
@@ -293,12 +296,38 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 			})
 		},
 	}
+	// accountToggle builds account disable (active false) and account enable
+	// (active true).
+	accountToggle := func(name string, active bool) *ff.Command {
+		return &ff.Command{
+			Name:      name,
+			Usage:     "fuingo [--db PATH] account " + name + " EMAIL",
+			ShortHelp: name + " an API account",
+			Flags:     ff.NewFlagSet("account " + name).SetParent(rootFlags),
+			Exec: func(ctx context.Context, args []string) error {
+				if len(args) != 1 {
+					return fmt.Errorf("account %s EMAIL: %w", name, ErrUsage)
+				}
+				email, err := emailAddress(args[0])
+				if err != nil {
+					return err
+				}
+				return withDatabase(ctx, path, func(s *store.Store) error {
+					if err := s.SetAccountActive(ctx, email, active); err != nil {
+						return err
+					}
+					fmt.Fprintf(stdout, "%sd account %s\n", name, email)
+					return nil
+				})
+			},
+		}
+	}
 	account := &ff.Command{
 		Name:        "account",
-		Usage:       "fuingo [--db PATH] account <create>",
+		Usage:       "fuingo [--db PATH] account <create|disable|enable>",
 		ShortHelp:   "manage API accounts",
 		Flags:       ff.NewFlagSet("account").SetParent(rootFlags),
-		Subcommands: []*ff.Command{accountCreate},
+		Subcommands: []*ff.Command{accountCreate, accountToggle("disable", false), accountToggle("enable", true)},
 		Exec: func(ctx context.Context, args []string) error {
 			return ff.ErrHelp
 		},

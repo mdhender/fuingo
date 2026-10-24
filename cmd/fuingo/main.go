@@ -7,6 +7,7 @@
 //	fuingo version
 //	fuingo [--env ENV] [--db PATH] version --schema
 //	fuingo [--env ENV] [--db PATH] game create CODE
+//	fuingo [--env ENV] [--db PATH] game add --manager EMAIL --code CODE
 //	fuingo [--env ENV] [--db PATH] uploader create [--token TOKEN] GAME EMAIL
 //	fuingo [--env ENV] [--db PATH] account create [--generate-password] EMAIL
 //
@@ -19,8 +20,8 @@
 //
 // uploader create also requires FUINGO_PEPPER.
 //
-// --schema, --token, and --generate-password are honored only on the command
-// line; their FUINGO_ variables are ignored. version reads no environment
+// --schema, --token, --generate-password, --manager, and --code are honored
+// only on the command line; their FUINGO_ variables are ignored. version reads no environment
 // unless --schema is on the command line.
 //
 // Commands that use the database only open one that is already at the schema
@@ -30,6 +31,9 @@
 // Game codes and emails are lowercased with strings.ToLower, as uploads are.
 // Game codes, emails, and tokens must be valid header words: one or more
 // bytes in 0x21-0x7E. New games and uploaders are active.
+//
+// game add --manager makes an existing API account a manager of an existing
+// game.
 //
 // uploader create generates a random UUID for the token unless --token is
 // given, and prints a generated token once; only its hash is stored.
@@ -64,6 +68,8 @@ const (
 	ErrMemoryDatabase  = cerrs.Error("fuingo requires a database file, not :memory:")
 	ErrEmail           = cerrs.Error("email must be one or more printable ASCII bytes with no spaces")
 	ErrGameCode        = cerrs.Error("game code must be one or more printable ASCII bytes with no spaces")
+	ErrMissingCode     = cerrs.Error("--code is required")
+	ErrMissingManager  = cerrs.Error("--manager is required")
 	ErrMissingPassword = cerrs.Error("no password on standard input; pipe one in or use --generate-password")
 	ErrToken           = cerrs.Error("token must be one or more printable ASCII bytes with no spaces")
 	ErrUsage           = cerrs.Error("wrong number of arguments")
@@ -131,12 +137,48 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 			})
 		},
 	}
+	var manager, addCode string
+	gameAddFlags := ff.NewFlagSet("game add").SetParent(rootFlags)
+	gameAddFlags.StringVar(&manager, 0, "manager", "", "email of the API account to make a manager (command line only)")
+	gameAddFlags.StringVar(&addCode, 0, "code", "", "code of the game (command line only)")
+	gameAdd := &ff.Command{
+		Name:      "add",
+		Usage:     "fuingo [--db PATH] game add --manager EMAIL --code CODE",
+		ShortHelp: "make an API account a manager of a game",
+		Flags:     gameAddFlags,
+		Exec: func(ctx context.Context, args []string) error {
+			if len(args) != 0 {
+				return fmt.Errorf("game add takes no arguments: %w", ErrUsage)
+			}
+			if manager == "" {
+				return ErrMissingManager
+			}
+			if addCode == "" {
+				return ErrMissingCode
+			}
+			code, err := gameCode(addCode)
+			if err != nil {
+				return err
+			}
+			email, err := emailAddress(manager)
+			if err != nil {
+				return err
+			}
+			return withDatabase(ctx, path, func(s *store.Store) error {
+				if err := s.AddManager(ctx, store.NewManager{GameCode: code, Email: email}); err != nil {
+					return err
+				}
+				fmt.Fprintf(stdout, "added manager %s to game %s\n", email, code)
+				return nil
+			})
+		},
+	}
 	game := &ff.Command{
 		Name:        "game",
-		Usage:       "fuingo [--db PATH] game <create>",
+		Usage:       "fuingo [--db PATH] game <create|add>",
 		ShortHelp:   "manage games",
 		Flags:       ff.NewFlagSet("game").SetParent(rootFlags),
-		Subcommands: []*ff.Command{gameCreate},
+		Subcommands: []*ff.Command{gameCreate, gameAdd},
 		Exec: func(ctx context.Context, args []string) error {
 			return ff.ErrHelp
 		},
@@ -283,7 +325,7 @@ func parse(root *ff.Command, args []string, env *string, needsNoEnvironment func
 	if err := root.Reset(); err != nil {
 		return err
 	}
-	return cli.Parse(root, args, env, "schema", "token", "generate-password")
+	return cli.Parse(root, args, env, "schema", "token", "generate-password", "manager", "code")
 }
 
 // withDatabase opens the database at path, which must already be at the

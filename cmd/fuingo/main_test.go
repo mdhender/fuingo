@@ -26,7 +26,7 @@ import (
 // clearEnv keeps the developer's environment out of the test.
 func clearEnv(t *testing.T) {
 	t.Helper()
-	for _, key := range []string{"FUINGO_ENV", "FUINGO_DB", "FUINGO_PEPPER", "FUINGO_SCHEMA", "FUINGO_TOKEN", "FUINGO_GENERATE_PASSWORD"} {
+	for _, key := range []string{"FUINGO_ENV", "FUINGO_DB", "FUINGO_PEPPER", "FUINGO_SCHEMA", "FUINGO_TOKEN", "FUINGO_GENERATE_PASSWORD", "FUINGO_MANAGER", "FUINGO_CODE"} {
 		t.Setenv(key, "")
 		os.Unsetenv(key)
 	}
@@ -516,5 +516,103 @@ func TestSchemaVersionIgnoresEnvironmentVariable(t *testing.T) {
 	}
 	if want := fuingo.Version().String() + "\n"; out != want {
 		t.Errorf("version printed %q, want %q", out, want)
+	}
+}
+
+// managers returns the emails of the game's managers.
+func managers(t *testing.T, path, game string) []string {
+	t.Helper()
+	s, err := store.Open(t.Context(), path)
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	defer s.Close()
+	emails, err := s.Managers(t.Context(), game)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return emails
+}
+
+// createDatabaseWithAccounts makes a current database holding game01, game02,
+// and the given API accounts.
+func createDatabaseWithAccounts(t *testing.T, emails ...string) string {
+	t.Helper()
+	path := createDatabaseWithGames(t, "game01", "game02")
+	for _, email := range emails {
+		if out, err := runCommand(t, "--env", "test", "--db", path, "account", "create", "--generate-password", email); err != nil {
+			t.Fatalf("account create %s: %v\n%s", email, err, out)
+		}
+	}
+	return path
+}
+
+func TestGameAddManager(t *testing.T) {
+	clearEnv(t)
+	path := createDatabaseWithAccounts(t, "acct01@example.com", "acct02@example.com")
+	for _, args := range [][]string{
+		{"game", "add", "--manager", "Acct01@Example.com", "--code", "GAME01"},
+		{"game", "add", "--code", "game01", "--manager", "acct02@example.com"},
+		{"game", "add", "--manager", "acct01@example.com", "--code", "game02"},
+	} {
+		out, err := runCommand(t, append([]string{"--env", "test", "--db", path}, args...)...)
+		if err != nil {
+			t.Fatalf("%q: %v\n%s", args, err, out)
+		}
+		if !strings.HasPrefix(out, "added manager acct0") {
+			t.Errorf("%q printed %q", args, out)
+		}
+	}
+	for game, want := range map[string]string{
+		"game01": "acct01@example.com,acct02@example.com",
+		"game02": "acct01@example.com",
+	} {
+		if got := strings.Join(managers(t, path, game), ","); got != want {
+			t.Errorf("managers of %s = %s, want %s", game, got, want)
+		}
+	}
+}
+
+func TestGameAddManagerRefusals(t *testing.T) {
+	clearEnv(t)
+	path := createDatabaseWithAccounts(t, "acct01@example.com")
+	if out, err := runCommand(t, "--env", "test", "--db", path, "game", "add", "--manager", "acct01@example.com", "--code", "game01"); err != nil {
+		t.Fatalf("game add: %v\n%s", err, out)
+	}
+	for _, tc := range []struct {
+		args []string
+		want error
+	}{
+		{[]string{"--manager", "ACCT01@example.com", "--code", "game01"}, store.ErrManagerExists},
+		{[]string{"--manager", "acct01@example.com", "--code", "game99"}, store.ErrUnknownGame},
+		{[]string{"--manager", "missing@example.com", "--code", "game02"}, store.ErrUnknownAccount},
+		{[]string{"--manager", "catbird@example.com", "--code", "game02"}, store.ErrUnknownAccount},
+		{[]string{"--manager", "acct 01@example.com", "--code", "game02"}, ErrEmail},
+		{[]string{"--manager", "acct01@example.com", "--code", "game 02"}, ErrGameCode},
+		{[]string{"--code", "game02"}, ErrMissingManager},
+		{[]string{"--manager", "acct01@example.com"}, ErrMissingCode},
+		{[]string{"--manager", "acct01@example.com", "--code", "game02", "extra"}, ErrUsage},
+	} {
+		out, err := runCommand(t, append([]string{"--env", "test", "--db", path, "game", "add"}, tc.args...)...)
+		if !errors.Is(err, tc.want) {
+			t.Errorf("game add %q: err = %v, want %v\n%s", tc.args, err, tc.want, out)
+		}
+	}
+	if got := managers(t, path, "game02"); len(got) != 0 {
+		t.Errorf("managers of game02 = %v, want none", got)
+	}
+}
+
+func TestGameAddIgnoresEnvironmentVariables(t *testing.T) {
+	clearEnv(t)
+	path := createDatabaseWithAccounts(t, "acct01@example.com")
+	t.Setenv("FUINGO_MANAGER", "acct01@example.com")
+	t.Setenv("FUINGO_CODE", "game01")
+	out, err := runCommand(t, "--env", "test", "--db", path, "game", "add")
+	if !errors.Is(err, ErrMissingManager) {
+		t.Errorf("err = %v, want ErrMissingManager\n%s", err, out)
+	}
+	if got := managers(t, path, "game01"); len(got) != 0 {
+		t.Errorf("managers of game01 = %v, want none", got)
 	}
 }

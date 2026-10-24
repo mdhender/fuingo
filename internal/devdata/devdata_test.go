@@ -55,6 +55,17 @@ func TestSeed(t *testing.T) {
 				t.Errorf("%s: account %s: bcrypt cost %d, %v; want MinCost", env, a.Email, cost, err)
 			}
 		}
+		for _, game := range devdata.Games {
+			var want []string
+			for _, a := range devdata.Accounts {
+				if slices.Contains(a.Games, game) {
+					want = append(want, a.Email)
+				}
+			}
+			if got, err := s.Managers(t.Context(), game); err != nil || !slices.Equal(got, want) {
+				t.Errorf("%s: managers of %s = %v, %v; want %v", env, game, got, err, want)
+			}
+		}
 		// Seeding never runs twice.
 		if err := devdata.Seed(t.Context(), s, env, pepper); err == nil {
 			t.Errorf("%s: second Seed succeeded", env)

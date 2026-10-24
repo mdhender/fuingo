@@ -1,8 +1,8 @@
 // Copyright (c) 2026 Michael D Henderson.
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-// Package devdata defines the default games, upload accounts, and API
-// accounts that seed new databases in the development and agent environments.
+// Package devdata defines the default games, upload accounts, API accounts,
+// and game managers that seed new databases in the development and agent environments.
 //
 // The tokens and passwords are fixed, public test values, not secrets. Keep TESTING.md in
 // sync with this file.
@@ -39,17 +39,17 @@ var Uploaders = []Uploader{
 	{Game: "game02", Email: "caracara@example.com", Token: "12fc952a-2b17-49e5-ba31-329a3ba474e4"},
 }
 
-// Account is a default API account.
+// Account is a default API account and the games it manages.
 type Account struct {
 	Email    string
 	Password string
+	Games    []string
 }
 
-// Accounts lists the default API accounts. The games each one manages wait
-// for the game_managers table.
+// Accounts lists the default API accounts.
 var Accounts = []Account{
-	{Email: "acct01@example.com", Password: "worser-choices-2001"},
-	{Email: "acct02@example.com", Password: "worser-choices-2002"},
+	{Email: "acct01@example.com", Password: "worser-choices-2001", Games: []string{"game01"}},
+	{Email: "acct02@example.com", Password: "worser-choices-2002", Games: []string{"game02"}},
 }
 
 // Allowed reports whether env may have default accounts and helpers.
@@ -57,8 +57,8 @@ func Allowed(env string) bool {
 	return env == "development" || env == "agent"
 }
 
-// Seed inserts the default games, upload accounts, and API accounts into a
-// new database, hashing the tokens with pepper and the passwords with bcrypt
+// Seed inserts the default games, upload accounts, API accounts, and game
+// managers into a new database, hashing the tokens with pepper and the passwords with bcrypt
 // at bcrypt.MinCost. It refuses environments other than
 // development and agent, and fails without changes if any default already
 // exists, so it never re-seeds a database.
@@ -80,12 +80,16 @@ func Seed(ctx context.Context, s *store.Store, env, pepper string) error {
 		})
 	}
 	var accounts []store.NewAccount
+	var managers []store.NewManager
 	for _, a := range Accounts {
+		for _, game := range a.Games {
+			managers = append(managers, store.NewManager{GameCode: game, Email: credential.NormalizeEmail(a.Email)})
+		}
 		hash, err := bcrypt.GenerateFromPassword([]byte(a.Password), bcrypt.MinCost)
 		if err != nil {
 			return err
 		}
 		accounts = append(accounts, store.NewAccount{Email: credential.NormalizeEmail(a.Email), PasswordHash: hash})
 	}
-	return s.CreateRows(ctx, store.Rows{Games: Games, Uploaders: uploaders, Accounts: accounts})
+	return s.CreateRows(ctx, store.Rows{Games: Games, Uploaders: uploaders, Accounts: accounts, Managers: managers})
 }

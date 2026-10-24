@@ -18,6 +18,8 @@ const (
 	ErrAccountExists   = cerrs.Error("account already exists")
 	ErrEmailCase       = cerrs.Error("email must be lowercase")
 	ErrGameExists      = cerrs.Error("game already exists")
+	ErrManagerExists   = cerrs.Error("account already manages the game")
+	ErrUnknownAccount  = cerrs.Error("unknown account")
 	ErrGameCodeCase    = cerrs.Error("game code must be lowercase")
 	ErrUnknownGame     = cerrs.Error("unknown game")
 	ErrUnknownUploader = cerrs.Error("unknown uploader")
@@ -51,11 +53,19 @@ type Account struct {
 	PasswordHash []byte
 }
 
+// NewManager makes an API account a manager of a game. GameCode and Email
+// must already be lowercased.
+type NewManager struct {
+	GameCode string
+	Email    string
+}
+
 // Rows are rows to insert together with CreateRows.
 type Rows struct {
 	Games     []string
 	Uploaders []NewUploader
 	Accounts  []NewAccount
+	Managers  []NewManager
 }
 
 // Uploader is an active upload account in an active game.
@@ -76,8 +86,9 @@ type Upload struct {
 	UploadedAt  time.Time
 }
 
-// CreateRows inserts active games, active upload accounts, and API accounts
-// in one transaction. It fails, inserting nothing, if any of them exists.
+// CreateRows inserts active games, active upload accounts, API accounts, and
+// game managers in one transaction. It fails, inserting nothing, if any of
+// them exists.
 func (s *Store) CreateRows(ctx context.Context, rows Rows) (err error) {
 	conn, err := s.take(ctx)
 	if err != nil {
@@ -100,7 +111,77 @@ func (s *Store) CreateRows(ctx context.Context, rows Rows) (err error) {
 			return err
 		}
 	}
+	for _, m := range rows.Managers {
+		if err := addManager(conn, m); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+// AddManager makes an existing API account a manager of an existing game,
+// active or not. It fails with ErrManagerExists if the account already
+// manages the game.
+func (s *Store) AddManager(ctx context.Context, m NewManager) error {
+	conn, err := s.take(ctx)
+	if err != nil {
+		return err
+	}
+	defer s.pool.Put(conn)
+	return addManager(conn, m)
+}
+
+func addManager(conn *sqlite.Conn, m NewManager) (err error) {
+	defer sqlitex.Save(conn)(&err)
+	gameID, ok, err := gameID(conn, m.GameCode)
+	if err != nil {
+		return err
+	} else if !ok {
+		return fmt.Errorf("%s: %w", m.GameCode, ErrUnknownGame)
+	}
+	var accountID int64
+	if err := sqlitex.Execute(conn, "SELECT id FROM accounts WHERE email = ?;", &sqlitex.ExecOptions{
+		Args: []any{m.Email},
+		ResultFunc: func(stmt *sqlite.Stmt) error {
+			accountID = stmt.ColumnInt64(0)
+			return nil
+		},
+	}); err != nil {
+		return err
+	} else if accountID == 0 {
+		return fmt.Errorf("%s: %w", m.Email, ErrUnknownAccount)
+	}
+	err = sqlitex.Execute(conn, "INSERT INTO game_managers (game_id, account_id) VALUES (?, ?);", &sqlitex.ExecOptions{
+		Args: []any{gameID, accountID},
+	})
+	if sqlite.ErrCode(err) == sqlite.ResultConstraintPrimaryKey {
+		return fmt.Errorf("%s %s: %w", m.GameCode, m.Email, ErrManagerExists)
+	}
+	return err
+}
+
+// Managers returns the emails of the API accounts that manage the game, in
+// account ID order.
+func (s *Store) Managers(ctx context.Context, gameCode string) ([]string, error) {
+	conn, err := s.take(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer s.pool.Put(conn)
+	var emails []string
+	err = sqlitex.Execute(conn, `
+SELECT accounts.email FROM game_managers
+JOIN games ON games.id = game_managers.game_id
+JOIN accounts ON accounts.id = game_managers.account_id
+WHERE games.code = ?
+ORDER BY accounts.id;`, &sqlitex.ExecOptions{
+		Args: []any{gameCode},
+		ResultFunc: func(stmt *sqlite.Stmt) error {
+			emails = append(emails, stmt.ColumnText(0))
+			return nil
+		},
+	})
+	return emails, err
 }
 
 // CreateAccount inserts an API account and returns its ID. It never modifies

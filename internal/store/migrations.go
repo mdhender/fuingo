@@ -4,7 +4,6 @@
 package store
 
 // migrations are applied in order; never edit one that has been applied.
-// The game_managers table waits for the /api/ phase.
 var migrations = []string{
 	// 1: games, upload credentials, uploaded contents, and the upload history.
 	`
@@ -51,5 +50,15 @@ CREATE TABLE accounts (
 	email         TEXT    NOT NULL UNIQUE CHECK (email = lower(email)),
 	password_hash TEXT    NOT NULL
 );
+`,
+	// 3: the games each API account manages.
+	`
+CREATE TABLE game_managers (
+	game_id    INTEGER NOT NULL REFERENCES games (id) ON DELETE RESTRICT,
+	account_id INTEGER NOT NULL REFERENCES accounts (id) ON DELETE RESTRICT,
+	PRIMARY KEY (game_id, account_id)
+);
+
+CREATE INDEX game_managers_by_account ON game_managers (account_id);
 `,
 }

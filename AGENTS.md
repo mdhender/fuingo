@@ -58,14 +58,15 @@ variable `FUINGO_NAME`; secrets such as `FUINGO_PEPPER` have no flag. The one
 secret with a flag is `fuingo uploader create --token`, which is command-line
 only (below) so that no environment file can give every uploader one token.
 
-The exception is a flag that changes what a command does rather than
-configuring it, such as `fuingo version --schema`, which prints the database's
-schema version instead of the program's version. `--token` and
-`--generate-password` are the others. Pass their names to `cli.Parse`, which
-removes their environment variables before applying the environment. Such a flag is honored only
-on the command line, never from the environment: set in an environment file, it
-would silently change the command for every later run. Document each one in the
-command's help and package comment.
+The exception is a flag that changes what a command does, or names what it
+acts on, rather than configuring it. `fuingo version --schema` prints the
+database's schema version instead of the program's version; `--token` and
+`--generate-password` choose a new credential; `game add --manager` and
+`--code` name the account and game to change. Such a flag is honored only on
+the command line, never from the environment: set in an environment file, it
+would silently change the command for every later run. Pass its name to
+`cli.Parse`, which removes its environment variable before applying the
+environment, and document it in the command's help and package comment.
 
 Each program owns one area. Put a new command in the program that owns what
 it manages, even when another program could reach the same thing:
@@ -89,6 +90,7 @@ and `fuingo <noun> --help` lists them. `--db` is a root flag, as in
 database. Commands that use it open it with `store.Open` and fail unless it is
 at the schema version the program expects. `fuingo` has `version`,
 `version --schema` (the database's schema version), `game create CODE`,
+`game add --manager EMAIL --code CODE`,
 `uploader create [--token TOKEN] GAME EMAIL`, and
 `account create [--generate-password] EMAIL` so far; add further commands only
 as the user asks for them.
@@ -103,6 +105,8 @@ as the user asks for them.
   without its LF or CRLF, or generates one with `--generate-password` and
   prints it once. Passwords are hashed with bcrypt at `bcrypt.MinCost` and are
   at most 72 bytes.
+- `game add --manager` makes an existing API account a manager of an existing
+  game, active or not, and refuses an account that already manages it.
 
 | Command | Purpose |
 | --- | --- |
@@ -129,7 +133,7 @@ never be reused.
 | `upload_blobs` | `content_hash`, `contents`, `created_at` | PK `content_hash` |
 | `uploads` | `id`, `game_id`, `email`, `turn_no`, `content_hash`, `uploaded_at` | PK `id`; FK `(game_id, email)` → `game_uploaders`; FK `content_hash` → `upload_blobs` |
 | `accounts` | `id`, `email`, `password_hash` | PK `id`; `email` unique |
-| `game_managers` | `game_id`, `account_id` | PK `(game_id, account_id)`; FKs to `games` and `accounts` (future `/api/` phase) |
+| `game_managers` | `game_id`, `account_id` | PK `(game_id, account_id)`; FKs to `games` and `accounts` |
 
 - `games.code` is stored lowercased, like emails.
 - `game_uploaders` holds the upload credentials. `email` is stored lowercased.
@@ -154,10 +158,10 @@ never be reused.
 - Every foreign key is `ON DELETE RESTRICT`: deleting a row that others refer to
   fails instead of removing history. Revoke access by clearing `is_active`.
 
-Rows in `games`, `game_uploaders`, and `accounts` come from `fuingo`, the
-default data, and the development/agent helpers in [TESTING.md](TESTING.md).
-The `accounts` table exists, but the `/api/` routes that use it do not yet;
-`game_managers` waits for that phase.
+Rows in `games`, `game_uploaders`, `accounts`, and `game_managers` come from
+`fuingo`, the default data, and the development/agent helpers in
+[TESTING.md](TESTING.md). The tables exist in preparation for the `/api/`
+phase; the routes that use them do not yet.
 
 ## Upload requirements
 

@@ -26,11 +26,11 @@ There are two kinds of account, and neither can act as the other:
   `game_managers` lists the games each one manages. They authenticate to `/api/`
   with the `Authorization` header and never use the web pages.
 
-The `accounts` table and its default rows exist, and `fuingo account create`
-adds API accounts, but nothing authenticates them until the future `/api/`
-phase described in [AGENTS.md](AGENTS.md). Do not implement the
-`game_managers` table or the API account helpers below until that phase
-starts.
+The `accounts` and `game_managers` tables and their default rows exist, and
+`fuingo account create` and `fuingo game add --manager` add to them, but
+nothing authenticates API accounts until the future `/api/` phase described in
+[AGENTS.md](AGENTS.md). Do not implement the API account helpers below until
+that phase starts.
 
 ## Default accounts
 
@@ -69,9 +69,7 @@ All are active.
 
 ### Default API accounts
 
-The Games column lists the games each account will manage once the
-`game_managers` table exists in the `/api/` phase; until then, no account
-manages a game.
+The Games column lists the games each account manages.
 
 | Email | Password | Games |
 | --- | --- | --- |

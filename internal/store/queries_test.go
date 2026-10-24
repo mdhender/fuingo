@@ -261,3 +261,72 @@ func TestCreateRowsIsAtomic(t *testing.T) {
 		t.Error("CreateRows kept an account after failing")
 	}
 }
+
+func TestAddManager(t *testing.T) {
+	t.Parallel()
+	s, err := OpenPrivateMemory(t.Context(), t.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.CreateRows(t.Context(), Rows{
+		Games:    []string{"game01", "game02"},
+		Accounts: []NewAccount{{Email: "a@example.com", PasswordHash: []byte("x")}, {Email: "b@example.com", PasswordHash: []byte("y")}},
+		Managers: []NewManager{{GameCode: "game01", Email: "b@example.com"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AddManager(t.Context(), NewManager{GameCode: "game01", Email: "a@example.com"}); err != nil {
+		t.Fatalf("AddManager: %v", err)
+	}
+	if err := s.AddManager(t.Context(), NewManager{GameCode: "game02", Email: "a@example.com"}); err != nil {
+		t.Fatalf("AddManager to a second game: %v", err)
+	}
+	for _, tc := range []struct {
+		m    NewManager
+		want error
+	}{
+		{NewManager{GameCode: "game01", Email: "a@example.com"}, ErrManagerExists},
+		{NewManager{GameCode: "game99", Email: "a@example.com"}, ErrUnknownGame},
+		{NewManager{GameCode: "game01", Email: "missing@example.com"}, ErrUnknownAccount},
+	} {
+		if err := s.AddManager(t.Context(), tc.m); !errors.Is(err, tc.want) {
+			t.Errorf("AddManager(%+v) = %v, want %v", tc.m, err, tc.want)
+		}
+	}
+	for game, want := range map[string][]string{
+		"game01": {"a@example.com", "b@example.com"},
+		"game02": {"a@example.com"},
+	} {
+		got, err := s.Managers(t.Context(), game)
+		if err != nil || strings.Join(got, ",") != strings.Join(want, ",") {
+			t.Errorf("Managers(%s) = %v, %v; want %v", game, got, err, want)
+		}
+	}
+}
+
+func TestManagedRowsCannotBeDeleted(t *testing.T) {
+	t.Parallel()
+	s, err := OpenPrivateMemory(t.Context(), t.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.CreateRows(t.Context(), Rows{
+		Games:    []string{"game01"},
+		Accounts: []NewAccount{{Email: "a@example.com", PasswordHash: []byte("x")}},
+		Managers: []NewManager{{GameCode: "game01", Email: "a@example.com"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	conn, err := s.take(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.pool.Put(conn)
+	for _, stmt := range []string{"DELETE FROM games;", "DELETE FROM accounts;"} {
+		if err := sqlitex.ExecuteTransient(conn, stmt, nil); !isForeignKeyError(err) {
+			t.Errorf("%s = %v, want a foreign key error", stmt, err)
+		}
+	}
+}

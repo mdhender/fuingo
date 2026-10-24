@@ -26,7 +26,7 @@ import (
 // clearEnv keeps the developer's environment out of the test.
 func clearEnv(t *testing.T) {
 	t.Helper()
-	for _, key := range []string{"FUINGO_ENV", "FUINGO_DB", "FUINGO_PEPPER", "FUINGO_SCHEMA", "FUINGO_TOKEN", "FUINGO_GENERATE_PASSWORD", "FUINGO_MANAGER", "FUINGO_CODE"} {
+	for _, key := range []string{"FUINGO_ENV", "FUINGO_DB", "FUINGO_PEPPER", "FUINGO_SCHEMA", "FUINGO_TOKEN", "FUINGO_GENERATE_PASSWORD", "FUINGO_MANAGER", "FUINGO_UPLOADER", "FUINGO_CODE"} {
 		t.Setenv(key, "")
 		os.Unsetenv(key)
 	}
@@ -589,7 +589,9 @@ func TestGameAddManagerRefusals(t *testing.T) {
 		{[]string{"--manager", "catbird@example.com", "--code", "game02"}, store.ErrUnknownAccount},
 		{[]string{"--manager", "acct 01@example.com", "--code", "game02"}, ErrEmail},
 		{[]string{"--manager", "acct01@example.com", "--code", "game 02"}, ErrGameCode},
-		{[]string{"--code", "game02"}, ErrMissingManager},
+		{[]string{"--code", "game02"}, ErrAddWhat},
+		{[]string{"--manager", "acct01@example.com", "--uploader", "catbird@example.com", "--code", "game02"}, ErrAddWhat},
+		{[]string{"--manager", "acct01@example.com", "--code", "game02", "--token", "t"}, ErrTokenNeedsUploader},
 		{[]string{"--manager", "acct01@example.com"}, ErrMissingCode},
 		{[]string{"--manager", "acct01@example.com", "--code", "game02", "extra"}, ErrUsage},
 	} {
@@ -609,10 +611,95 @@ func TestGameAddIgnoresEnvironmentVariables(t *testing.T) {
 	t.Setenv("FUINGO_MANAGER", "acct01@example.com")
 	t.Setenv("FUINGO_CODE", "game01")
 	out, err := runCommand(t, "--env", "test", "--db", path, "game", "add")
-	if !errors.Is(err, ErrMissingManager) {
-		t.Errorf("err = %v, want ErrMissingManager\n%s", err, out)
+	if !errors.Is(err, ErrAddWhat) {
+		t.Errorf("err = %v, want ErrAddWhat\n%s", err, out)
 	}
 	if got := managers(t, path, "game01"); len(got) != 0 {
 		t.Errorf("managers of game01 = %v, want none", got)
+	}
+}
+
+func TestGameAddUploader(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("FUINGO_PEPPER", pepper)
+	path := createDatabaseWithGames(t, "game01", "game02")
+
+	out, err := runCommand(t, "--env", "test", "--db", path, "game", "add", "--uploader", "CatBird@Example.com", "--code", "GAME01")
+	if err != nil {
+		t.Fatalf("game add --uploader: %v\n%s", err, out)
+	}
+	first, token, ok := strings.Cut(out, "token: ")
+	if want := "added uploader catbird@example.com to game game01\n"; !ok || first != want {
+		t.Fatalf("game add --uploader printed %q, want %q and a token", out, want)
+	}
+	token = strings.TrimSuffix(token, "\n")
+	if _, err := uuid.Parse(token); err != nil {
+		t.Errorf("generated token %q is not a UUID: %v", token, err)
+	}
+	if !uploaderExists(t, path, "game01", "catbird@example.com", token) {
+		t.Error("the generated token does not authorize the uploader")
+	}
+
+	const chosen = "my-chosen-token"
+	out, err = runCommand(t, "--env", "test", "--db", path, "game", "add", "--token", chosen, "--code", "game02", "--uploader", "catbird@example.com")
+	if err != nil {
+		t.Fatalf("game add --uploader --token: %v\n%s", err, out)
+	}
+	if want := "added uploader catbird@example.com to game game02\n"; out != want {
+		t.Errorf("game add --uploader --token printed %q, want %q", out, want)
+	}
+	if !uploaderExists(t, path, "game02", "catbird@example.com", chosen) {
+		t.Error("the given token does not authorize the uploader")
+	}
+}
+
+func TestGameAddUploaderRefusals(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("FUINGO_PEPPER", pepper)
+	path := createDatabaseWithGames(t, "game01")
+	if out, err := runCommand(t, "--env", "test", "--db", path, "game", "add", "--uploader", "catbird@example.com", "--code", "game01"); err != nil {
+		t.Fatalf("game add --uploader: %v\n%s", err, out)
+	}
+	for _, tc := range []struct {
+		args []string
+		want error
+	}{
+		{[]string{"--uploader", "CATBIRD@example.com", "--code", "game01"}, store.ErrUploaderExists},
+		{[]string{"--uploader", "tern@example.com", "--code", "game99"}, store.ErrUnknownGame},
+		{[]string{"--uploader", "tern@example.com", "--code", "game01", "--token", "secret token"}, ErrToken},
+		{[]string{"--uploader", "tern @example.com", "--code", "game01"}, ErrEmail},
+		{[]string{"--uploader", "tern@example.com"}, ErrMissingCode},
+	} {
+		out, err := runCommand(t, append([]string{"--env", "test", "--db", path, "game", "add"}, tc.args...)...)
+		if !errors.Is(err, tc.want) {
+			t.Errorf("game add %q: err = %v, want %v\n%s", tc.args, err, tc.want, out)
+		}
+		if strings.Contains(out, "secret") || (err != nil && strings.Contains(err.Error(), "secret")) {
+			t.Errorf("game add %q revealed the token: %v\n%s", tc.args, err, out)
+		}
+	}
+	os.Unsetenv("FUINGO_PEPPER")
+	out, err := runCommand(t, "--env", "test", "--db", path, "game", "add", "--uploader", "tern@example.com", "--code", "game01")
+	if !errors.Is(err, cli.ErrMissingPepper) {
+		t.Errorf("without a pepper: err = %v, want ErrMissingPepper\n%s", err, out)
+	}
+}
+
+func TestGameAddUploaderIgnoresEnvironmentVariables(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("FUINGO_PEPPER", pepper)
+	path := createDatabaseWithGames(t, "game01")
+	t.Setenv("FUINGO_UPLOADER", "catbird@example.com")
+	t.Setenv("FUINGO_TOKEN", "from-the-environment")
+	out, err := runCommand(t, "--env", "test", "--db", path, "game", "add", "--code", "game01")
+	if !errors.Is(err, ErrAddWhat) {
+		t.Errorf("err = %v, want ErrAddWhat\n%s", err, out)
+	}
+	out, err = runCommand(t, "--env", "test", "--db", path, "game", "add", "--uploader", "tern@example.com", "--code", "game01")
+	if err != nil {
+		t.Fatalf("game add --uploader: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "token: ") || uploaderExists(t, path, "game01", "tern@example.com", "from-the-environment") {
+		t.Errorf("game add --uploader used FUINGO_TOKEN: %q", out)
 	}
 }

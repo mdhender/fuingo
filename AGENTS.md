@@ -55,14 +55,14 @@ Use `github.com/peterbourgon/ff/v4` for flags and `internal/dotenv` for
 environment files, through `internal/cli`. Explicit flags override environment
 values, which override defaults. Every flag `--name` has an environment
 variable `FUINGO_NAME`; secrets such as `FUINGO_PEPPER` have no flag. The one
-secret with a flag is `fuingo uploader create --token`, which is command-line
-only (below) so that no environment file can give every uploader one token.
+secret with a flag is `--token` on `fuingo uploader create` and
+`fuingo game add --uploader`, which is command-line only (below) so that no environment file can give every uploader one token.
 
 The exception is a flag that changes what a command does, or names what it
 acts on, rather than configuring it. `fuingo version --schema` prints the
 database's schema version instead of the program's version; `--token` and
-`--generate-password` choose a new credential; `game add --manager` and
-`--code` name the account and game to change. Such a flag is honored only on
+`--generate-password` choose a new credential; `game add --manager`,
+`--uploader`, and `--code` name the account and game to change. Such a flag is honored only on
 the command line, never from the environment: set in an environment file, it
 would silently change the command for every later run. Pass its name to
 `cli.Parse`, which removes its environment variable before applying the
@@ -91,6 +91,7 @@ database. Commands that use it open it with `store.Open` and fail unless it is
 at the schema version the program expects. `fuingo` has `version`,
 `version --schema` (the database's schema version), `game create CODE`,
 `game add --manager EMAIL --code CODE`,
+`game add --uploader EMAIL --code CODE [--token TOKEN]`,
 `uploader create [--token TOKEN] GAME EMAIL`, and
 `account create [--generate-password] EMAIL` so far; add further commands only
 as the user asks for them.
@@ -98,15 +99,18 @@ as the user asks for them.
 - Game codes, emails, and tokens given to `fuingo` must be valid header words
   (one or more bytes in `0x21`–`0x7E`), so that an upload can name them. Codes
   and emails are lowercased with `strings.ToLower`.
-- `uploader create` generates a random UUID token unless `--token` is given,
+- `uploader create` and `game add --uploader` do the same thing and share
+  their code. They generate a random UUID token unless `--token` is given,
   prints a generated token once, and never prints a given one. It requires
   `FUINGO_PEPPER`.
 - `account create` reads the password from the first line of standard input,
   without its LF or CRLF, or generates one with `--generate-password` and
   prints it once. Passwords are hashed with bcrypt at `bcrypt.MinCost` and are
   at most 72 bytes.
-- `game add --manager` makes an existing API account a manager of an existing
-  game, active or not, and refuses an account that already manages it.
+- `game add` takes exactly one of `--manager` and `--uploader`, and `--token`
+  only with `--uploader`. `game add --manager` makes an existing API account a
+  manager of an existing game, active or not, and refuses an account that
+  already manages it.
 
 | Command | Purpose |
 | --- | --- |
@@ -242,8 +246,8 @@ The server handles each upload in this order:
 - The pepper comes from `FUINGO_PEPPER`, never from the database, source
   control, or a shared `.env` file. Keep it in the process environment or an
   ignored `.local` file. `fuingod` refuses to start, `fuingodb` refuses to
-  create or seed a database, and `fuingo uploader create` refuses to run, if it
-  is missing or empty.
+  create or seed a database, and `fuingo uploader create` and
+  `fuingo game add --uploader` refuse to run, if it is missing or empty.
 - Changing the pepper invalidates every stored credential hash. Do not rotate it
   without a plan agreed with the user.
 - Never log tokens, passwords, the pepper, or file contents. `fuingo` prints a

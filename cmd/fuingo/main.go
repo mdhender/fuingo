@@ -8,6 +8,7 @@
 //	fuingo [--env ENV] [--db PATH] version --schema
 //	fuingo [--env ENV] [--db PATH] game create CODE
 //	fuingo [--env ENV] [--db PATH] game add --manager EMAIL --code CODE
+//	fuingo [--env ENV] [--db PATH] game add --uploader EMAIL --code CODE [--token TOKEN]
 //	fuingo [--env ENV] [--db PATH] uploader create [--token TOKEN] GAME EMAIL
 //	fuingo [--env ENV] [--db PATH] account create [--generate-password] EMAIL
 //
@@ -18,10 +19,10 @@
 //	--db    FUINGO_DB    path to the database file (required by commands that use it;
 //	                     :memory: is refused)
 //
-// uploader create also requires FUINGO_PEPPER.
+// uploader create and game add --uploader also require FUINGO_PEPPER.
 //
-// --schema, --token, --generate-password, --manager, and --code are honored
-// only on the command line; their FUINGO_ variables are ignored. version reads no environment
+// --schema, --token, --generate-password, --manager, --uploader, and --code
+// are honored only on the command line; their FUINGO_ variables are ignored. version reads no environment
 // unless --schema is on the command line.
 //
 // Commands that use the database only open one that is already at the schema
@@ -33,7 +34,7 @@
 // bytes in 0x21-0x7E. New games and uploaders are active.
 //
 // game add --manager makes an existing API account a manager of an existing
-// game.
+// game. game add --uploader is the same as uploader create.
 //
 // uploader create generates a random UUID for the token unless --token is
 // given, and prints a generated token once; only its hash is stored.
@@ -64,15 +65,16 @@ import (
 )
 
 const (
-	ErrMissingDatabase = cerrs.Error("--db (FUINGO_DB) is required")
-	ErrMemoryDatabase  = cerrs.Error("fuingo requires a database file, not :memory:")
-	ErrEmail           = cerrs.Error("email must be one or more printable ASCII bytes with no spaces")
-	ErrGameCode        = cerrs.Error("game code must be one or more printable ASCII bytes with no spaces")
-	ErrMissingCode     = cerrs.Error("--code is required")
-	ErrMissingManager  = cerrs.Error("--manager is required")
-	ErrMissingPassword = cerrs.Error("no password on standard input; pipe one in or use --generate-password")
-	ErrToken           = cerrs.Error("token must be one or more printable ASCII bytes with no spaces")
-	ErrUsage           = cerrs.Error("wrong number of arguments")
+	ErrMissingDatabase    = cerrs.Error("--db (FUINGO_DB) is required")
+	ErrMemoryDatabase     = cerrs.Error("fuingo requires a database file, not :memory:")
+	ErrEmail              = cerrs.Error("email must be one or more printable ASCII bytes with no spaces")
+	ErrGameCode           = cerrs.Error("game code must be one or more printable ASCII bytes with no spaces")
+	ErrMissingCode        = cerrs.Error("--code is required")
+	ErrAddWhat            = cerrs.Error("game add needs exactly one of --manager and --uploader")
+	ErrTokenNeedsUploader = cerrs.Error("--token is allowed only with --uploader")
+	ErrMissingPassword    = cerrs.Error("no password on standard input; pipe one in or use --generate-password")
+	ErrToken              = cerrs.Error("token must be one or more printable ASCII bytes with no spaces")
+	ErrUsage              = cerrs.Error("wrong number of arguments")
 )
 
 func main() {
@@ -137,24 +139,32 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 			})
 		},
 	}
-	var manager, addCode string
+	var manager, addUploader, addCode, addToken string
 	gameAddFlags := ff.NewFlagSet("game add").SetParent(rootFlags)
 	gameAddFlags.StringVar(&manager, 0, "manager", "", "email of the API account to make a manager (command line only)")
+	gameAddFlags.StringVar(&addUploader, 0, "uploader", "", "email of the upload account to create (command line only)")
 	gameAddFlags.StringVar(&addCode, 0, "code", "", "code of the game (command line only)")
+	gameAddFlags.StringVar(&addToken, 0, "token", "", "with --uploader, the upload token; a random UUID if omitted (command line only)")
 	gameAdd := &ff.Command{
 		Name:      "add",
-		Usage:     "fuingo [--db PATH] game add --manager EMAIL --code CODE",
-		ShortHelp: "make an API account a manager of a game",
+		Usage:     "fuingo [--db PATH] game add (--manager EMAIL | --uploader EMAIL [--token TOKEN]) --code CODE",
+		ShortHelp: "make an API account a manager of a game, or create an upload account in it",
 		Flags:     gameAddFlags,
 		Exec: func(ctx context.Context, args []string) error {
 			if len(args) != 0 {
 				return fmt.Errorf("game add takes no arguments: %w", ErrUsage)
 			}
-			if manager == "" {
-				return ErrMissingManager
+			if (manager == "") == (addUploader == "") {
+				return ErrAddWhat
+			}
+			if addToken != "" && addUploader == "" {
+				return ErrTokenNeedsUploader
 			}
 			if addCode == "" {
 				return ErrMissingCode
+			}
+			if addUploader != "" {
+				return createUploader(ctx, stdout, path, addCode, addUploader, addToken, "added uploader %s to game %s\n")
 			}
 			code, err := gameCode(addCode)
 			if err != nil {
@@ -196,40 +206,7 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 			if len(args) != 2 {
 				return fmt.Errorf("uploader create GAME EMAIL: %w", ErrUsage)
 			}
-			code, err := gameCode(args[0])
-			if err != nil {
-				return err
-			}
-			email, err := emailAddress(args[1])
-			if err != nil {
-				return err
-			}
-			generated := token == ""
-			if generated {
-				token = uuid.NewString()
-			} else if !headerWord(token) {
-				return ErrToken // never echo the token
-			}
-			pepper, err := cli.Pepper()
-			if err != nil {
-				return err
-			}
-			return withDatabase(ctx, path, func(s *store.Store) error {
-				if err := s.CreateUploader(ctx, store.NewUploader{
-					GameCode: code,
-					Email:    email,
-					CredentialHash: func(gameID int64) []byte {
-						return credential.Hash(pepper, email, gameID, token)
-					},
-				}); err != nil {
-					return err
-				}
-				fmt.Fprintf(stdout, "created uploader %s in game %s\n", email, code)
-				if generated {
-					fmt.Fprintf(stdout, "token: %s\n", token)
-				}
-				return nil
-			})
+			return createUploader(ctx, stdout, path, args[0], args[1], token, "created uploader %s in game %s\n")
 		},
 	}
 	uploader := &ff.Command{
@@ -325,7 +302,7 @@ func parse(root *ff.Command, args []string, env *string, needsNoEnvironment func
 	if err := root.Reset(); err != nil {
 		return err
 	}
-	return cli.Parse(root, args, env, "schema", "token", "generate-password", "manager", "code")
+	return cli.Parse(root, args, env, "schema", "token", "generate-password", "manager", "uploader", "code")
 }
 
 // withDatabase opens the database at path, which must already be at the
@@ -343,6 +320,46 @@ func withDatabase(ctx context.Context, path string, fn func(*store.Store) error)
 	}
 	defer func() { err = errors.Join(err, s.Close()) }()
 	return fn(s)
+}
+
+// createUploader creates an active upload account in the game, generating a
+// UUID token if token is empty, and prints done with the email and game code.
+// It prints a generated token once and never prints a given one.
+func createUploader(ctx context.Context, stdout io.Writer, path, gameArg, emailArg, token, done string) error {
+	code, err := gameCode(gameArg)
+	if err != nil {
+		return err
+	}
+	email, err := emailAddress(emailArg)
+	if err != nil {
+		return err
+	}
+	generated := token == ""
+	if generated {
+		token = uuid.NewString()
+	} else if !headerWord(token) {
+		return ErrToken // never echo the token
+	}
+	pepper, err := cli.Pepper()
+	if err != nil {
+		return err
+	}
+	return withDatabase(ctx, path, func(s *store.Store) error {
+		if err := s.CreateUploader(ctx, store.NewUploader{
+			GameCode: code,
+			Email:    email,
+			CredentialHash: func(gameID int64) []byte {
+				return credential.Hash(pepper, email, gameID, token)
+			},
+		}); err != nil {
+			return err
+		}
+		fmt.Fprintf(stdout, done, email, code)
+		if generated {
+			fmt.Fprintf(stdout, "token: %s\n", token)
+		}
+		return nil
+	})
 }
 
 // gameCode lowercases code and checks that it can appear in a turn file's

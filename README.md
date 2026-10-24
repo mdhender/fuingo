@@ -32,6 +32,7 @@ or migrates a database file; use `fuingodb` for that.
 | `fuingo game create CODE` | Adds an active game. |
 | `fuingo uploader create [--token TOKEN] GAME EMAIL` | Adds an active upload account to a game. Without `--token`, generates a random UUID token and prints it once; send it to the uploader, because it cannot be recovered. A given token is never printed. |
 | `fuingo game add --manager EMAIL --code CODE` | Makes an existing API account a manager of an existing game. |
+| `fuingo game add --uploader EMAIL --code CODE [--token TOKEN]` | The same as `fuingo uploader create [--token TOKEN] CODE EMAIL`. |
 | `fuingo account create [--generate-password] EMAIL` | Adds an API account. Reads the password from the first line of standard input (`printf '%s\n' "$PW" \| fuingo ... account create EMAIL`), or with `--generate-password` generates one and prints it once. At most 72 bytes. |
 
 Game codes and emails are lowercased, like the ones in uploaded files. Game
@@ -50,10 +51,10 @@ override environment variables, which override the defaults.
 | `--addr` | `FUINGO_ADDR` | `fuingod` | Backend listen address, `host:port`. Default `127.0.0.1:18443`. |
 | `--trusted-proxies` | `FUINGO_TRUSTED_PROXIES` | `fuingod` | Comma-separated addresses and CIDR prefixes of the reverse proxies whose `X-Forwarded-For` header is trusted. Default `127.0.0.0/8,::1` (loopback); empty trusts none. |
 | `--schema` | (none) | `fuingo version` | Print the database's schema version. Command line only. |
-| `--token` | (none) | `fuingo uploader create` | The new uploader's token. Command line only. |
+| `--token` | (none) | `fuingo uploader create`, `fuingo game add --uploader` | The new uploader's token. Command line only. |
 | `--generate-password` | (none) | `fuingo account create` | Generate the password instead of reading it. Command line only. |
-| `--manager`, `--code` | (none) | `fuingo game add` | The API account's email and the game's code. Required. Command line only. |
-| (none) | `FUINGO_PEPPER` | `fuingod`, `fuingodb create`, `fuingo uploader create` | Key for the upload credential hashes. Required. |
+| `--manager`, `--uploader`, `--code` | (none) | `fuingo game add` | The API account's or uploader's email, and the game's code. `--code` and exactly one of the others are required. Command line only. |
+| (none) | `FUINGO_PEPPER` | `fuingod`, `fuingodb create`, `fuingo uploader create`, `fuingo game add --uploader` | Key for the upload credential hashes. Required. |
 
 - The environment is read from `--env` or the process's `FUINGO_ENV`. The
   commands then load that environment's files from the working directory, in

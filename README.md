@@ -145,10 +145,12 @@ gets `FUINGO_PEPPER` from `/etc/fuingo/fuingod.env`.
    ```
 
 3. Create the database as the `fuingo` user, so it owns the file. In
-   production it starts empty: no default games or accounts.
+   production it starts empty: no default games or accounts. The commands
+   look for `.env` files in the current directory and fail if they cannot
+   read it, so run them from `/var/lib/fuingo`.
 
    ```sh
-   sudo -u fuingo sh -c 'set -a; . /etc/fuingo/fuingod.env; exec fuingodb --env production create --db /var/lib/fuingo/fuingo.db'
+   sudo -u fuingo sh -c 'cd /var/lib/fuingo; set -a; . /etc/fuingo/fuingod.env; exec fuingodb --env production create --db /var/lib/fuingo/fuingo.db'
    ```
 
 4. Install and start the service:
@@ -171,7 +173,7 @@ gets `FUINGO_PEPPER` from `/etc/fuingo/fuingod.env`.
 Run `fuingo` as the `fuingo` user with the same environment, for example:
 
 ```sh
-sudo -u fuingo sh -c 'set -a; . /etc/fuingo/fuingod.env; exec fuingo --env production --db /var/lib/fuingo/fuingo.db game create game01'
+sudo -u fuingo sh -c 'cd /var/lib/fuingo; set -a; . /etc/fuingo/fuingod.env; exec fuingo --env production --db /var/lib/fuingo/fuingo.db game create game01'
 ```
 
 On `systemctl stop` or `restart`, systemd sends SIGTERM. `fuingod` stops

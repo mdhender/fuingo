@@ -2,6 +2,7 @@
 *.db
 *.db-*
 *.pdf
+*.swp
 .idea/
 /tmp/
 

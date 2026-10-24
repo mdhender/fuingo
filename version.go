@@ -12,7 +12,7 @@ var (
 		Major:      0,
 		Minor:      28,
 		Patch:      1,
-		PreRelease: "alpha",
+		PreRelease: "beta",
 	}
 )
 

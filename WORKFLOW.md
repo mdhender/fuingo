@@ -27,9 +27,9 @@ Both must pass before committing.
 - **Every commit that changes code must bump the version in `version.go`.**
   Documentation-only commits are encouraged to bump it but are not required to.
 - Choose the bump by the change: patch for fixes, minor for new features or any breaking change while below v1.0.0.
-  Keep `PreRelease: "alpha"` until told otherwise.
+  Keep `PreRelease: "beta"` until told otherwise.
 - Do not create git tags.
-  Versions will be tagged on GitHub once the project leaves alpha.
+  Versions are tagged on GitHub by the user.
 
 ## Git workflow
 

@@ -91,7 +91,8 @@ database. Commands that use it open it with `store.Open` and fail unless it is
 at the schema version the program expects. `fuingo` has `version`,
 `version --schema` (the database's schema version), `game create CODE`,
 `game add --manager EMAIL --code CODE`,
-`game add --uploader EMAIL --code CODE [--token TOKEN]`, and
+`game add --uploader EMAIL --code CODE [--token TOKEN]`,
+`game (disable|enable) [--uploader EMAIL | --manager EMAIL] --code CODE`, and
 `account create [--generate-password] EMAIL` so far; add further commands only
 as the user asks for them.
 
@@ -108,7 +109,11 @@ as the user asks for them.
 - `game add` takes exactly one of `--manager` and `--uploader`, and `--token`
   only with `--uploader`. `game add --manager` makes an existing API account a
   manager of an existing game, active or not, and refuses an account that
-  already manages it.
+  already manages it, even as a disabled manager.
+- `game disable` and `game enable` clear or set `is_active` on the game, or,
+  with `--uploader` or `--manager`, on that row of `game_uploaders` or
+  `game_managers`. They never delete rows, and repeating one succeeds. They
+  take at most one of `--uploader` and `--manager`, and require `--code`.
 
 | Command | Purpose |
 | --- | --- |
@@ -135,7 +140,7 @@ never be reused.
 | `upload_blobs` | `content_hash`, `contents`, `created_at` | PK `content_hash` |
 | `uploads` | `id`, `game_id`, `email`, `turn_no`, `content_hash`, `uploaded_at` | PK `id`; FK `(game_id, email)` → `game_uploaders`; FK `content_hash` → `upload_blobs` |
 | `accounts` | `id`, `email`, `password_hash` | PK `id`; `email` unique |
-| `game_managers` | `game_id`, `account_id` | PK `(game_id, account_id)`; FKs to `games` and `accounts` |
+| `game_managers` | `game_id`, `account_id`, `is_active` | PK `(game_id, account_id)`; FKs to `games` and `accounts` |
 
 - `games.code` is stored lowercased, like emails.
 - `game_uploaders` holds the upload credentials. `email` is stored lowercased.
@@ -286,7 +291,8 @@ Do not implement these until the user starts the phase.
 - API account passwords are hashed with bcrypt at `bcrypt.MinCost`. This is an
   accepted risk; do not raise the cost or propose doing so.
 - The API adds listing and management of uploaded files. An API account may act
-  only on the games it manages in `game_managers`.
+  only on the games it manages in `game_managers`, and only while that row is
+  active.
 
 ## Verification
 

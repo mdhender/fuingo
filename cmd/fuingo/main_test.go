@@ -609,3 +609,143 @@ func TestGameAddUploaderIgnoresEnvironmentVariables(t *testing.T) {
 		t.Errorf("game add --uploader used FUINGO_TOKEN: %q", out)
 	}
 }
+
+// toggleFixture makes a database with game01 and game02, uploaders catbird and
+// spoonbill in game01 (tokens "token-c" and "token-s"), and API account
+// acct01 managing both games.
+func toggleFixture(t *testing.T) string {
+	t.Helper()
+	t.Setenv("FUINGO_PEPPER", pepper)
+	path := createDatabaseWithAccounts(t, "acct01@example.com")
+	for _, args := range [][]string{
+		{"game", "add", "--uploader", "catbird@example.com", "--token", "token-c", "--code", "game01"},
+		{"game", "add", "--uploader", "spoonbill@example.com", "--token", "token-s", "--code", "game01"},
+		{"game", "add", "--manager", "acct01@example.com", "--code", "game01"},
+		{"game", "add", "--manager", "acct01@example.com", "--code", "game02"},
+	} {
+		if out, err := runCommand(t, append([]string{"--env", "test", "--db", path}, args...)...); err != nil {
+			t.Fatalf("%q: %v\n%s", args, err, out)
+		}
+	}
+	return path
+}
+
+// mustRun runs the command and checks what it printed.
+func mustRun(t *testing.T, want string, args ...string) {
+	t.Helper()
+	out, err := runCommand(t, args...)
+	if err != nil {
+		t.Fatalf("%q: %v\n%s", args, err, out)
+	}
+	if out != want {
+		t.Errorf("%q printed %q, want %q", args, out, want)
+	}
+}
+
+func TestGameDisableEnableGame(t *testing.T) {
+	clearEnv(t)
+	path := toggleFixture(t)
+	base := []string{"--env", "test", "--db", path, "game"}
+	for range 2 { // disabling twice succeeds
+		mustRun(t, "disabled game game01\n", append(base, "disable", "--code", "GAME01")...)
+	}
+	if uploaderExists(t, path, "game01", "catbird@example.com", "token-c") {
+		t.Error("an uploader in a disabled game is still accepted")
+	}
+	mustRun(t, "enabled game game01\n", append(base, "enable", "--code", "game01")...)
+	if !uploaderExists(t, path, "game01", "catbird@example.com", "token-c") {
+		t.Error("an uploader in a re-enabled game is refused")
+	}
+}
+
+func TestGameDisableEnableUploader(t *testing.T) {
+	clearEnv(t)
+	path := toggleFixture(t)
+	base := []string{"--env", "test", "--db", path, "game"}
+	mustRun(t, "disabled uploader catbird@example.com in game game01\n", append(base, "disable", "--uploader", "CatBird@Example.com", "--code", "game01")...)
+	if uploaderExists(t, path, "game01", "catbird@example.com", "token-c") {
+		t.Error("a disabled uploader is still accepted")
+	}
+	if !uploaderExists(t, path, "game01", "spoonbill@example.com", "token-s") {
+		t.Error("disabling one uploader refused another")
+	}
+	mustRun(t, "enabled uploader catbird@example.com in game game01\n", append(base, "enable", "--code", "game01", "--uploader", "catbird@example.com")...)
+	if !uploaderExists(t, path, "game01", "catbird@example.com", "token-c") {
+		t.Error("a re-enabled uploader is refused")
+	}
+}
+
+func TestGameDisableEnableManager(t *testing.T) {
+	clearEnv(t)
+	path := toggleFixture(t)
+	base := []string{"--env", "test", "--db", path, "game"}
+	mustRun(t, "disabled manager acct01@example.com of game game01\n", append(base, "disable", "--manager", "ACCT01@example.com", "--code", "game01")...)
+	if got := managers(t, path, "game01"); len(got) != 0 {
+		t.Errorf("managers of game01 = %v, want none", got)
+	}
+	if got := managers(t, path, "game02"); len(got) != 1 {
+		t.Errorf("managers of game02 = %v, want acct01@example.com", got)
+	}
+	out, err := runCommand(t, append(base, "add", "--manager", "acct01@example.com", "--code", "game01")...)
+	if !errors.Is(err, store.ErrManagerExists) {
+		t.Errorf("game add of a disabled manager: err = %v, want ErrManagerExists\n%s", err, out)
+	}
+	mustRun(t, "enabled manager acct01@example.com of game game01\n", append(base, "enable", "--manager", "acct01@example.com", "--code", "game01")...)
+	if got := managers(t, path, "game01"); len(got) != 1 {
+		t.Errorf("managers of game01 = %v, want acct01@example.com", got)
+	}
+}
+
+func TestGameDisableEnableRefusals(t *testing.T) {
+	clearEnv(t)
+	path := toggleFixture(t)
+	for _, verb := range []string{"disable", "enable"} {
+		for _, tc := range []struct {
+			args []string
+			want error
+		}{
+			{[]string{"--code", "game99"}, store.ErrUnknownGame},
+			{[]string{"--uploader", "catbird@example.com", "--code", "game02"}, store.ErrUnknownUploader},
+			{[]string{"--uploader", "acct01@example.com", "--code", "game01"}, store.ErrUnknownUploader},
+			{[]string{"--manager", "catbird@example.com", "--code", "game01"}, store.ErrUnknownManager},
+			{[]string{"--manager", "acct01@example.com", "--code", "game99"}, store.ErrUnknownManager},
+			{[]string{"--manager", "acct01@example.com", "--uploader", "catbird@example.com", "--code", "game01"}, ErrToggleWhat},
+			{[]string{"--uploader", "catbird@example.com"}, ErrMissingCode},
+			{[]string{}, ErrMissingCode},
+			{[]string{"--uploader", "cat bird@example.com", "--code", "game01"}, ErrEmail},
+			{[]string{"--code", "game 01"}, ErrGameCode},
+			{[]string{"--code", "game01", "extra"}, ErrUsage},
+			{[]string{"--code", "game01", "--token", "t"}, nil},
+		} {
+			args := append([]string{"--env", "test", "--db", path, "game", verb}, tc.args...)
+			out, err := runCommand(t, args...)
+			if tc.want == nil {
+				if err == nil {
+					t.Errorf("%q succeeded\n%s", args, out)
+				}
+			} else if !errors.Is(err, tc.want) {
+				t.Errorf("%q: err = %v, want %v\n%s", args, err, tc.want, out)
+			}
+		}
+	}
+	if !uploaderExists(t, path, "game01", "catbird@example.com", "token-c") {
+		t.Error("a refused command disabled something")
+	}
+	if got := managers(t, path, "game01"); len(got) != 1 {
+		t.Errorf("a refused command changed the managers of game01: %v", got)
+	}
+}
+
+func TestGameDisableIgnoresEnvironmentVariables(t *testing.T) {
+	clearEnv(t)
+	path := toggleFixture(t)
+	t.Setenv("FUINGO_UPLOADER", "catbird@example.com")
+	t.Setenv("FUINGO_MANAGER", "acct01@example.com")
+	mustRun(t, "disabled game game02\n", "--env", "test", "--db", path, "game", "disable", "--code", "game02")
+	if got := managers(t, path, "game02"); len(got) != 1 {
+		t.Errorf("game disable used FUINGO_MANAGER: managers of game02 = %v", got)
+	}
+	if !uploaderExists(t, path, "game01", "catbird@example.com", "token-c") {
+		t.Error("game disable used FUINGO_UPLOADER")
+	}
+}

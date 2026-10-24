@@ -22,6 +22,7 @@ const (
 	ErrUnknownAccount  = cerrs.Error("unknown account")
 	ErrGameCodeCase    = cerrs.Error("game code must be lowercase")
 	ErrUnknownGame     = cerrs.Error("unknown game")
+	ErrUnknownManager  = cerrs.Error("account does not manage the game")
 	ErrUnknownUploader = cerrs.Error("unknown uploader")
 	ErrUploaderExists  = cerrs.Error("uploader already exists or credential is in use")
 )
@@ -119,9 +120,9 @@ func (s *Store) CreateRows(ctx context.Context, rows Rows) (err error) {
 	return nil
 }
 
-// AddManager makes an existing API account a manager of an existing game,
-// active or not. It fails with ErrManagerExists if the account already
-// manages the game.
+// AddManager makes an existing API account an active manager of an existing
+// game, active or not. It fails with ErrManagerExists if the account already
+// manages the game, even as an inactive manager.
 func (s *Store) AddManager(ctx context.Context, m NewManager) error {
 	conn, err := s.take(ctx)
 	if err != nil {
@@ -151,7 +152,7 @@ func addManager(conn *sqlite.Conn, m NewManager) (err error) {
 	} else if accountID == 0 {
 		return fmt.Errorf("%s: %w", m.Email, ErrUnknownAccount)
 	}
-	err = sqlitex.Execute(conn, "INSERT INTO game_managers (game_id, account_id) VALUES (?, ?);", &sqlitex.ExecOptions{
+	err = sqlitex.Execute(conn, "INSERT INTO game_managers (game_id, account_id, is_active) VALUES (?, ?, 1);", &sqlitex.ExecOptions{
 		Args: []any{gameID, accountID},
 	})
 	if sqlite.ErrCode(err) == sqlite.ResultConstraintPrimaryKey {
@@ -160,8 +161,8 @@ func addManager(conn *sqlite.Conn, m NewManager) (err error) {
 	return err
 }
 
-// Managers returns the emails of the API accounts that manage the game, in
-// account ID order.
+// Managers returns the emails of the game's active managers, in account ID
+// order.
 func (s *Store) Managers(ctx context.Context, gameCode string) ([]string, error) {
 	conn, err := s.take(ctx)
 	if err != nil {
@@ -173,7 +174,7 @@ func (s *Store) Managers(ctx context.Context, gameCode string) ([]string, error)
 SELECT accounts.email FROM game_managers
 JOIN games ON games.id = game_managers.game_id
 JOIN accounts ON accounts.id = game_managers.account_id
-WHERE games.code = ?
+WHERE games.code = ? AND game_managers.is_active = 1
 ORDER BY accounts.id;`, &sqlitex.ExecOptions{
 		Args: []any{gameCode},
 		ResultFunc: func(stmt *sqlite.Stmt) error {
@@ -482,6 +483,28 @@ WHERE email = ? AND game_id = (SELECT id FROM games WHERE code = ?);`, &sqlitex.
 	}
 	if conn.Changes() == 0 {
 		return fmt.Errorf("%s %s: %w", gameCode, email, ErrUnknownUploader)
+	}
+	return nil
+}
+
+// SetManagerActive sets whether an API account manages a game. It fails with
+// ErrUnknownManager if the account was never made a manager of the game.
+func (s *Store) SetManagerActive(ctx context.Context, gameCode, email string, active bool) error {
+	conn, err := s.take(ctx)
+	if err != nil {
+		return err
+	}
+	defer s.pool.Put(conn)
+	if err := sqlitex.Execute(conn, `
+UPDATE game_managers SET is_active = ?
+WHERE game_id = (SELECT id FROM games WHERE code = ?)
+  AND account_id = (SELECT id FROM accounts WHERE email = ?);`, &sqlitex.ExecOptions{
+		Args: []any{active, gameCode, email},
+	}); err != nil {
+		return err
+	}
+	if conn.Changes() == 0 {
+		return fmt.Errorf("%s %s: %w", gameCode, email, ErrUnknownManager)
 	}
 	return nil
 }

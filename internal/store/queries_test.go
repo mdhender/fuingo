@@ -330,3 +330,56 @@ func TestManagedRowsCannotBeDeleted(t *testing.T) {
 		}
 	}
 }
+
+func TestSetManagerActive(t *testing.T) {
+	t.Parallel()
+	s, err := OpenPrivateMemory(t.Context(), t.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.CreateRows(t.Context(), Rows{
+		Games:    []string{"game01", "game02"},
+		Accounts: []NewAccount{{Email: "a@example.com", PasswordHash: []byte("x")}, {Email: "b@example.com", PasswordHash: []byte("y")}},
+		Managers: []NewManager{{GameCode: "game01", Email: "a@example.com"}, {GameCode: "game01", Email: "b@example.com"}, {GameCode: "game02", Email: "a@example.com"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	managers := func(game string) string {
+		t.Helper()
+		got, err := s.Managers(t.Context(), game)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return strings.Join(got, ",")
+	}
+	for range 2 { // disabling twice succeeds
+		if err := s.SetManagerActive(t.Context(), "game01", "a@example.com", false); err != nil {
+			t.Fatalf("SetManagerActive(false): %v", err)
+		}
+	}
+	if got := managers("game01"); got != "b@example.com" {
+		t.Errorf("managers of game01 = %s, want only b@example.com", got)
+	}
+	if got := managers("game02"); got != "a@example.com" {
+		t.Errorf("managers of game02 = %s, want a@example.com", got)
+	}
+	if err := s.AddManager(t.Context(), NewManager{GameCode: "game01", Email: "a@example.com"}); !errors.Is(err, ErrManagerExists) {
+		t.Errorf("AddManager of an inactive manager = %v, want ErrManagerExists", err)
+	}
+	if err := s.SetManagerActive(t.Context(), "game01", "a@example.com", true); err != nil {
+		t.Fatalf("SetManagerActive(true): %v", err)
+	}
+	if got := managers("game01"); got != "a@example.com,b@example.com" {
+		t.Errorf("managers of game01 = %s, want both", got)
+	}
+	for _, tc := range []struct{ game, email string }{
+		{"game02", "b@example.com"},
+		{"game99", "a@example.com"},
+		{"game01", "missing@example.com"},
+	} {
+		if err := s.SetManagerActive(t.Context(), tc.game, tc.email, false); !errors.Is(err, ErrUnknownManager) {
+			t.Errorf("SetManagerActive(%s, %s) = %v, want ErrUnknownManager", tc.game, tc.email, err)
+		}
+	}
+}

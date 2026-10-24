@@ -9,6 +9,7 @@
 //	fuingo [--env ENV] [--db PATH] game create CODE
 //	fuingo [--env ENV] [--db PATH] game add --manager EMAIL --code CODE
 //	fuingo [--env ENV] [--db PATH] game add --uploader EMAIL --code CODE [--token TOKEN]
+//	fuingo [--env ENV] [--db PATH] game (disable|enable) [--uploader EMAIL | --manager EMAIL] --code CODE
 //	fuingo [--env ENV] [--db PATH] account create [--generate-password] EMAIL
 //
 // Every flag can also be set with a FUINGO_ environment variable:
@@ -36,6 +37,10 @@
 // game. game add --uploader creates an upload account in it, generating a
 // random UUID for the token unless --token is given, and prints a generated
 // token once; only its hash is stored.
+//
+// game disable and game enable clear or set is_active on the game, or with
+// --uploader or --manager, on that uploader or manager of the game. Rows are
+// never deleted. An inactive game or uploader refuses uploads.
 // account create reads the password from the first line of standard input,
 // or, with --generate-password, generates one and prints it once. Passwords
 // are hashed with bcrypt at bcrypt.MinCost and are at most 72 bytes.
@@ -69,6 +74,7 @@ const (
 	ErrGameCode           = cerrs.Error("game code must be one or more printable ASCII bytes with no spaces")
 	ErrMissingCode        = cerrs.Error("--code is required")
 	ErrAddWhat            = cerrs.Error("game add needs exactly one of --manager and --uploader")
+	ErrToggleWhat         = cerrs.Error("give at most one of --manager and --uploader")
 	ErrTokenNeedsUploader = cerrs.Error("--token is allowed only with --uploader")
 	ErrMissingPassword    = cerrs.Error("no password on standard input; pipe one in or use --generate-password")
 	ErrToken              = cerrs.Error("token must be one or more printable ASCII bytes with no spaces")
@@ -181,12 +187,68 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 			})
 		},
 	}
+	// toggle builds game disable (active false) and game enable (active true).
+	toggle := func(name string, active bool) *ff.Command {
+		var manager, uploader, codeArg string
+		flags := ff.NewFlagSet("game " + name).SetParent(rootFlags)
+		flags.StringVar(&uploader, 0, "uploader", "", "email of the upload account to "+name+" (command line only)")
+		flags.StringVar(&manager, 0, "manager", "", "email of the manager to "+name+" (command line only)")
+		flags.StringVar(&codeArg, 0, "code", "", "code of the game (command line only)")
+		return &ff.Command{
+			Name:      name,
+			Usage:     "fuingo [--db PATH] game " + name + " [--uploader EMAIL | --manager EMAIL] --code CODE",
+			ShortHelp: name + " a game, or an uploader or manager of it",
+			Flags:     flags,
+			Exec: func(ctx context.Context, args []string) error {
+				if len(args) != 0 {
+					return fmt.Errorf("game %s takes no arguments: %w", name, ErrUsage)
+				}
+				if manager != "" && uploader != "" {
+					return ErrToggleWhat
+				}
+				if codeArg == "" {
+					return ErrMissingCode
+				}
+				code, err := gameCode(codeArg)
+				if err != nil {
+					return err
+				}
+				var email string
+				if manager != "" || uploader != "" {
+					if email, err = emailAddress(manager + uploader); err != nil {
+						return err
+					}
+				}
+				return withDatabase(ctx, path, func(s *store.Store) error {
+					switch {
+					case uploader != "":
+						if err := s.SetUploaderActive(ctx, code, email, active); err != nil {
+							return err
+						}
+						fmt.Fprintf(stdout, "%sd uploader %s in game %s\n", name, email, code)
+					case manager != "":
+						if err := s.SetManagerActive(ctx, code, email, active); err != nil {
+							return err
+						}
+						fmt.Fprintf(stdout, "%sd manager %s of game %s\n", name, email, code)
+					default:
+						if err := s.SetGameActive(ctx, code, active); err != nil {
+							return err
+						}
+						fmt.Fprintf(stdout, "%sd game %s\n", name, code)
+					}
+					return nil
+				})
+			},
+		}
+	}
+
 	game := &ff.Command{
 		Name:        "game",
-		Usage:       "fuingo [--db PATH] game <create|add>",
+		Usage:       "fuingo [--db PATH] game <create|add|disable|enable>",
 		ShortHelp:   "manage games",
 		Flags:       ff.NewFlagSet("game").SetParent(rootFlags),
-		Subcommands: []*ff.Command{gameCreate, gameAdd},
+		Subcommands: []*ff.Command{gameCreate, gameAdd, toggle("disable", false), toggle("enable", true)},
 		Exec: func(ctx context.Context, args []string) error {
 			return ff.ErrHelp
 		},

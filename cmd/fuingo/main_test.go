@@ -406,6 +406,78 @@ func TestAccountCreateIgnoresGeneratePasswordEnvironmentVariable(t *testing.T) {
 	}
 }
 
+// TestAccountSetPassword sets a password on an account made for an uploader,
+// then replaces it with a generated one.
+func TestAccountSetPassword(t *testing.T) {
+	clearEnv(t)
+	path := toggleFixture(t)
+	out, err := runWithInput(t, "a pass phrase\r\n", "--env", "test", "--db", path, "account", "set-password", "CATBIRD@example.com")
+	if err != nil {
+		t.Fatalf("account set-password: %v\n%s", err, out)
+	}
+	if out != "set the password of account catbird@example.com\n" {
+		t.Errorf("account set-password printed %q", out)
+	}
+	a, _ := account(t, path, "catbird@example.com")
+	if err := bcrypt.CompareHashAndPassword(a.HashedSecret, []byte("a pass phrase")); err != nil {
+		t.Errorf("the password does not match: %v", err)
+	}
+	if cost, err := bcrypt.Cost(a.HashedSecret); err != nil || cost != bcrypt.MinCost {
+		t.Errorf("bcrypt cost %d, %v; want MinCost", cost, err)
+	}
+	if !uploaderExists(t, path, "game01", "catbird@example.com", "token-c") {
+		t.Error("setting the password stopped catbird's uploads")
+	}
+
+	out, err = runWithInput(t, "ignored\n", "--env", "test", "--db", path, "account", "set-password", "--generate-password", "catbird@example.com")
+	if err != nil {
+		t.Fatalf("account set-password --generate-password: %v\n%s", err, out)
+	}
+	first, password, ok := strings.Cut(out, "password: ")
+	if !ok || first != "set the password of account catbird@example.com\n" {
+		t.Fatalf("account set-password printed %q, want the account and a password", out)
+	}
+	a, _ = account(t, path, "catbird@example.com")
+	if err := bcrypt.CompareHashAndPassword(a.HashedSecret, []byte(strings.TrimSuffix(password, "\n"))); err != nil {
+		t.Errorf("the generated password does not match: %v", err)
+	}
+	for _, old := range []string{"a pass phrase", "ignored"} {
+		if bcrypt.CompareHashAndPassword(a.HashedSecret, []byte(old)) == nil {
+			t.Errorf("the generated password did not replace %q", old)
+		}
+	}
+}
+
+func TestAccountSetPasswordRefusals(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("FUINGO_GENERATE_PASSWORD", "true")
+	path := toggleFixture(t)
+	for _, tc := range []struct {
+		input string
+		args  []string
+		want  error
+	}{
+		{"pw\n", []string{"missing@example.com"}, store.ErrUnknownAccount},
+		{"", []string{"catbird@example.com"}, ErrMissingPassword},
+		{"\n", []string{"catbird@example.com"}, ErrMissingPassword},
+		{strings.Repeat("x", 73) + "\n", []string{"catbird@example.com"}, bcrypt.ErrPasswordTooLong},
+		{"pw\n", []string{"cat bird@example.com"}, ErrEmail},
+		{"pw\n", []string{}, ErrUsage},
+		{"pw\n", []string{"a@example.com", "b@example.com"}, ErrUsage},
+	} {
+		out, err := runWithInput(t, tc.input, append([]string{"--env", "test", "--db", path, "account", "set-password"}, tc.args...)...)
+		if !errors.Is(err, tc.want) {
+			t.Errorf("account set-password %q: err = %v, want %v\n%s", tc.args, err, tc.want, out)
+		}
+	}
+	if a, _ := account(t, path, "catbird@example.com"); a.HashedSecret != nil {
+		t.Error("a refused account set-password set catbird's password")
+	}
+	if _, ok := account(t, path, "missing@example.com"); ok {
+		t.Error("account set-password made missing@example.com")
+	}
+}
+
 func TestSchemaVersionIgnoresEnvironmentVariable(t *testing.T) {
 	clearEnv(t)
 	t.Setenv("FUINGO_SCHEMA", "true")

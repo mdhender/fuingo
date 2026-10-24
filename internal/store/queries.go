@@ -560,3 +560,23 @@ func (s *Store) SetAccountActive(ctx context.Context, email string, active bool)
 	}
 	return nil
 }
+
+// SetAccountSecret replaces an account's hashed secret, a bcrypt hash, so it
+// can use the API. The account may be one made for an uploader, without a
+// secret, and may be active or not.
+func (s *Store) SetAccountSecret(ctx context.Context, email string, hashedSecret []byte) error {
+	conn, err := s.take(ctx)
+	if err != nil {
+		return err
+	}
+	defer s.pool.Put(conn)
+	if err := sqlitex.Execute(conn, "UPDATE accounts SET hashed_secret = ? WHERE email = ?;", &sqlitex.ExecOptions{
+		Args: []any{string(hashedSecret), email},
+	}); err != nil {
+		return err
+	}
+	if conn.Changes() == 0 {
+		return fmt.Errorf("%s: %w", email, ErrUnknownAccount)
+	}
+	return nil
+}

@@ -93,7 +93,8 @@ at the schema version the program expects. `fuingo` has `version`,
 `game add --manager EMAIL --code CODE`,
 `game add --uploader EMAIL --code CODE [--token TOKEN]`,
 `game (disable|enable) [--uploader EMAIL | --manager EMAIL] --code CODE`, and
-`account create [--generate-password] EMAIL`, and
+`account create [--generate-password] EMAIL`,
+`account set-password [--generate-password] EMAIL`, and
 `account (disable|enable) EMAIL` so far; add further commands only
 as the user asks for them.
 
@@ -106,9 +107,11 @@ as the user asks for them.
   generated token once, and never prints a given one. It requires
   `FUINGO_PEPPER`.
 - `account create` creates an account with a `hashed_secret`, and fails if
-  the email already has an account. It reads the password from the first line of standard input,
-  without its LF or CRLF, or generates one with `--generate-password` and
-  prints it once. Passwords are hashed with bcrypt at `bcrypt.MinCost` and are
+  the email already has an account. `account set-password` sets or replaces
+  the `hashed_secret` of an existing account, active or not, including one
+  made by `game add --uploader`; it never creates an account. Each reads the
+  password from the first line of standard input, without its LF or CRLF, or
+  generates one with `--generate-password` and prints it once. Passwords are hashed with bcrypt at `bcrypt.MinCost` and are
   at most 72 bytes.
 - `game add` takes exactly one of `--manager` and `--uploader`, and `--token`
   only with `--uploader`. `game add --manager` makes an existing account a

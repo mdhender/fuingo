@@ -35,7 +35,8 @@ or migrates a database file; use `fuingodb` for that.
 | `fuingo game disable --code CODE` | Disables a game: it refuses every upload. `game enable` reverses it. |
 | `fuingo game disable --uploader EMAIL --code CODE` | Disables an uploader in a game: their uploads are refused. `game enable` reverses it. |
 | `fuingo game disable --manager EMAIL --code CODE` | Stops an account managing a game. `game enable` reverses it. |
-| `fuingo account create [--generate-password] EMAIL` | Adds an account with a password, which the API requires. Fails if the email already has an account, including one made by `game add --uploader`. Reads the password from the first line of standard input (`printf '%s\n' "$PW" \| fuingo ... account create EMAIL`), or with `--generate-password` generates one and prints it once. At most 72 bytes. |
+| `fuingo account create [--generate-password] EMAIL` | Adds an account with a password, which the API requires. Fails if the email already has an account, including one made by `game add --uploader`; give that one a password with `account set-password`. Reads the password from the first line of standard input (`printf '%s\n' "$PW" \| fuingo ... account create EMAIL`), or with `--generate-password` generates one and prints it once. At most 72 bytes. |
+| `fuingo account set-password [--generate-password] EMAIL` | Sets or replaces the password of an existing account, such as one made by `game add --uploader`. Reads or generates the password like `account create`. |
 | `fuingo account disable EMAIL` | Disables an account: it manages no games, cannot authenticate, and cannot upload in any game. `account enable` reverses it. |
 
 Game codes and emails are lowercased, like the ones in uploaded files. Game
@@ -55,7 +56,7 @@ override environment variables, which override the defaults.
 | `--trusted-proxies` | `FUINGO_TRUSTED_PROXIES` | `fuingod` | Comma-separated addresses and CIDR prefixes of the reverse proxies whose `X-Forwarded-For` header is trusted. Default `127.0.0.0/8,::1` (loopback); empty trusts none. |
 | `--schema` | (none) | `fuingo version` | Print the database's schema version. Command line only. |
 | `--token` | (none) | `fuingo game add --uploader` | The new uploader's token. Command line only. |
-| `--generate-password` | (none) | `fuingo account create` | Generate the password instead of reading it. Command line only. |
+| `--generate-password` | (none) | `fuingo account create`, `set-password` | Generate the password instead of reading it. Command line only. |
 | `--manager`, `--uploader`, `--code` | (none) | `fuingo game add`, `disable`, `enable` | The manager's or uploader's email, and the game's code. `--code` is required; `game add` needs exactly one of the others, and `disable` and `enable` at most one. Command line only. |
 | (none) | `FUINGO_PEPPER` | `fuingod`, `fuingodb create`, `fuingo game add --uploader` | Key for the upload credential hashes. Required. |
 

@@ -477,3 +477,33 @@ func TestUploadersHaveAccounts(t *testing.T) {
 		t.Errorf("Managers = %v, want a@example.com", got)
 	}
 }
+
+func TestSetAccountSecret(t *testing.T) {
+	t.Parallel()
+	s, err := OpenPrivateMemory(t.Context(), t.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.CreateRows(t.Context(), Rows{
+		Games:     []string{"game01"},
+		Accounts:  []NewAccount{{Email: "a@example.com", HashedSecret: []byte("x")}},
+		Uploaders: []NewUploader{{GameCode: "game01", Email: "u@example.com", HashedCredentials: fixedHash(1)}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, email := range []string{"a@example.com", "u@example.com"} {
+		if err := s.SetAccountSecret(t.Context(), email, []byte("new")); err != nil {
+			t.Fatalf("SetAccountSecret(%s): %v", email, err)
+		}
+		if a, _, _ := s.FindAccount(t.Context(), email); string(a.HashedSecret) != "new" {
+			t.Errorf("%s: secret = %q, want new", email, a.HashedSecret)
+		}
+	}
+	if _, ok, _ := s.FindUploader(t.Context(), []byte{1}); !ok {
+		t.Error("setting the secret stopped u@example.com's uploads")
+	}
+	if err := s.SetAccountSecret(t.Context(), "missing@example.com", []byte("new")); !errors.Is(err, ErrUnknownAccount) {
+		t.Errorf("SetAccountSecret of a missing account = %v, want ErrUnknownAccount", err)
+	}
+}

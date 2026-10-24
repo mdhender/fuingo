@@ -29,10 +29,11 @@ the other:
   password never authorizes an upload. `game_managers` lists the games each
   account manages.
 
-The tables and their default rows exist, and `fuingo account create` and
-`fuingo game add --manager` add to them, but nothing authenticates to the API
-until the future `/api/` phase described in [AGENTS.md](AGENTS.md). Do not
-implement the API account helpers below until that phase starts.
+The tables and their default rows exist, and `fuingo account create`,
+`fuingo account set-password`, and `fuingo game add --manager` add to them,
+but nothing authenticates to the API until the future `/api/` phase described
+in [AGENTS.md](AGENTS.md). Do not implement the API account helpers below
+until that phase starts.
 
 ## Default accounts
 

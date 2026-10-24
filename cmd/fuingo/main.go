@@ -11,6 +11,7 @@
 //	fuingo [--env ENV] [--db PATH] game add --uploader EMAIL --code CODE [--token TOKEN]
 //	fuingo [--env ENV] [--db PATH] game (disable|enable) [--uploader EMAIL | --manager EMAIL] --code CODE
 //	fuingo [--env ENV] [--db PATH] account create [--generate-password] EMAIL
+//	fuingo [--env ENV] [--db PATH] account set-password [--generate-password] EMAIL
 //	fuingo [--env ENV] [--db PATH] account (disable|enable) EMAIL
 //
 // Every flag can also be set with a FUINGO_ environment variable:
@@ -46,10 +47,12 @@
 // never deleted. An inactive game or uploader refuses uploads. account disable
 // and account enable clear or set is_active on an account; an inactive
 // account manages no games and refuses uploads in every game.
-// account create makes an account with a password, which the API requires.
-// It reads the password from the first line of standard input,
-// or, with --generate-password, generates one and prints it once. Passwords
-// are hashed with bcrypt at bcrypt.MinCost and are at most 72 bytes.
+// account create makes an account with a password, which the API requires,
+// and account set-password sets or replaces the password of an existing
+// account, such as one made by game add --uploader. Each reads the password
+// from the first line of standard input, or, with --generate-password,
+// generates one and prints it once. Passwords are hashed with bcrypt at
+// bcrypt.MinCost and are at most 72 bytes.
 package main
 
 import (
@@ -276,13 +279,7 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 			if err != nil {
 				return err
 			}
-			var password string
-			if generatePassword {
-				password = rand.Text()
-			} else if password, err = readPassword(stdin); err != nil {
-				return err
-			}
-			hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.MinCost)
+			password, hash, err := newPassword(stdin, generatePassword)
 			if err != nil {
 				return err
 			}
@@ -293,6 +290,38 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 				}
 				fmt.Fprintf(stdout, "created account %s (id %d)\n", email, id)
 				if generatePassword {
+					fmt.Fprintf(stdout, "password: %s\n", password)
+				}
+				return nil
+			})
+		},
+	}
+	var setGeneratePassword bool
+	accountSetPasswordFlags := ff.NewFlagSet("account set-password").SetParent(rootFlags)
+	accountSetPasswordFlags.BoolVar(&setGeneratePassword, 0, "generate-password", "generate and print a password instead of reading one from standard input (command line only)")
+	accountSetPassword := &ff.Command{
+		Name:      "set-password",
+		Usage:     "fuingo [--db PATH] account set-password [--generate-password] EMAIL",
+		ShortHelp: "set or replace an account's password for the API",
+		Flags:     accountSetPasswordFlags,
+		Exec: func(ctx context.Context, args []string) error {
+			if len(args) != 1 {
+				return fmt.Errorf("account set-password EMAIL: %w", ErrUsage)
+			}
+			email, err := emailAddress(args[0])
+			if err != nil {
+				return err
+			}
+			password, hash, err := newPassword(stdin, setGeneratePassword)
+			if err != nil {
+				return err
+			}
+			return withDatabase(ctx, path, func(s *store.Store) error {
+				if err := s.SetAccountSecret(ctx, email, hash); err != nil {
+					return err
+				}
+				fmt.Fprintf(stdout, "set the password of account %s\n", email)
+				if setGeneratePassword {
 					fmt.Fprintf(stdout, "password: %s\n", password)
 				}
 				return nil
@@ -327,10 +356,10 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	}
 	account := &ff.Command{
 		Name:        "account",
-		Usage:       "fuingo [--db PATH] account <create|disable|enable>",
+		Usage:       "fuingo [--db PATH] account <create|set-password|disable|enable>",
 		ShortHelp:   "manage accounts",
 		Flags:       ff.NewFlagSet("account").SetParent(rootFlags),
-		Subcommands: []*ff.Command{accountCreate, accountToggle("disable", false), accountToggle("enable", true)},
+		Subcommands: []*ff.Command{accountCreate, accountSetPassword, accountToggle("disable", false), accountToggle("enable", true)},
 		Exec: func(ctx context.Context, args []string) error {
 			return ff.ErrHelp
 		},
@@ -458,6 +487,21 @@ func headerWord(s string) bool {
 		}
 	}
 	return true
+}
+
+// newPassword generates a password, or reads one from stdin, and returns it
+// with its bcrypt hash at bcrypt.MinCost.
+func newPassword(stdin io.Reader, generate bool) (password string, hash []byte, err error) {
+	if generate {
+		password = rand.Text()
+	} else if password, err = readPassword(stdin); err != nil {
+		return "", nil, err
+	}
+	hash, err = bcrypt.GenerateFromPassword([]byte(password), bcrypt.MinCost)
+	if err != nil {
+		return "", nil, err
+	}
+	return password, hash, nil
 }
 
 // readPassword returns the first line of r, without its LF or CRLF ending.

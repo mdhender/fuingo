@@ -53,11 +53,12 @@ CREATE TABLE upload_blobs (
 	created_at   TEXT NOT NULL
 );
 
--- email is the uploader's email when the upload arrived.
+-- email is the uploader's email when the upload arrived, lowercased like
+-- every stored email.
 CREATE TABLE uploads (
 	id           INTEGER PRIMARY KEY AUTOINCREMENT,
 	uploader_id  INTEGER NOT NULL REFERENCES game_uploaders (id) ON DELETE RESTRICT,
-	email        TEXT    NOT NULL,
+	email        TEXT    NOT NULL CHECK (email = lower(email)),
 	turn_no      TEXT    NOT NULL,
 	content_hash TEXT    NOT NULL REFERENCES upload_blobs (content_hash) ON DELETE RESTRICT,
 	uploaded_at  TEXT    NOT NULL

@@ -85,6 +85,28 @@ func TestConcurrentRecordUpload(t *testing.T) {
 	}
 }
 
+// TestUploadEmailsAreLowercase checks that the history refuses an email that
+// is not lowercase, storing nothing.
+func TestUploadEmailsAreLowercase(t *testing.T) {
+	t.Parallel()
+	s, err := OpenPrivateMemory(t.Context(), t.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	a, _, _ := seedUploaders(t, s)
+	contents := []byte("orders\n")
+	if err := s.RecordUpload(t.Context(), a, "A@example.com", "1", sha(contents), contents, time.Now()); err == nil {
+		t.Fatal("RecordUpload with an uppercase email succeeded")
+	}
+	if uploads, _ := s.Uploads(t.Context()); len(uploads) != 0 {
+		t.Errorf("uploads = %+v, want none", uploads)
+	}
+	if blobs, _ := s.Blobs(t.Context()); len(blobs) != 0 {
+		t.Errorf("blob stored without an upload row: %+v", blobs)
+	}
+}
+
 // TestRecordUploadIsAtomic checks that a failed row insert stores no blob.
 func TestRecordUploadIsAtomic(t *testing.T) {
 	t.Parallel()

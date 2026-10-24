@@ -24,6 +24,12 @@
 // connection is from a trusted proxy.
 // With --db :memory:, it runs against a fresh private in-memory database seeded
 // with the default accounts, discarded when the server stops.
+//
+// On SIGTERM or an interrupt, fuingod stops accepting connections, gives
+// in-flight requests 10 seconds to finish, cancels and cuts off any still
+// running, closes the database, and exits, non-zero if it cut requests off.
+// A second signal stops it at once. contrib/systemd/fuingod.service runs it
+// as a systemd service.
 package main
 
 import (
@@ -54,6 +60,7 @@ import (
 
 const (
 	ErrInvalidAddress  = cerrs.Error("invalid listen address")
+	ErrShutdownTimeout = cerrs.Error("requests still running at the shutdown deadline were cut off")
 	ErrMemoryDatabase  = cerrs.Error(":memory: is allowed only in development and agent")
 	ErrMissingDatabase = cerrs.Error("--db (FUINGO_DB) is required")
 )
@@ -64,9 +71,20 @@ const (
 	defaultTrustedProxies = "127.0.0.0/8,::1"
 )
 
+// shutdownTimeout is how long in-flight requests may run after a stop
+// signal. Service managers must wait longer than this before killing the
+// process. Tests shorten it.
+var shutdownTimeout = 10 * time.Second
+
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	// After the first signal starts the shutdown, restore the default
+	// handling so a second one stops the process at once.
+	go func() {
+		<-ctx.Done()
+		stop()
+	}()
 	if err := run(ctx, os.Args[1:], os.Stderr, nil); err != nil {
 		if !errors.Is(err, ff.ErrHelp) {
 			fmt.Fprintf(os.Stderr, "fuingod: %v\n", err)
@@ -172,8 +190,14 @@ func run(ctx context.Context, args []string, stderr io.Writer, ready func(net.Ad
 	if err != nil {
 		return fmt.Errorf("listen on %s: %w", cfg.addr, err)
 	}
+	// Requests get a context that is canceled if they outlast the shutdown
+	// deadline, which interrupts their SQLite statements and their waits for
+	// a database connection.
+	baseCtx, cancelRequests := context.WithCancel(context.Background())
+	defer cancelRequests()
 	srv := &http.Server{
 		Handler:           handler,
+		BaseContext:       func(net.Listener) context.Context { return baseCtx },
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       time.Minute,
 		WriteTimeout:      time.Minute,
@@ -195,10 +219,19 @@ func run(ctx context.Context, args []string, stderr io.Writer, ready func(net.Ad
 		return err
 	case <-ctx.Done():
 	}
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	// Stop accepting connections and let in-flight requests finish. Requests
+	// still running at the deadline are canceled and their connections
+	// closed. The deferred s.Close then waits for their database connections
+	// and closes the database.
+	logger.Info("fuingod stopping", "timeout", shutdownTimeout.String())
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
-		return err
+		cancelRequests()
+		if errors.Is(err, context.DeadlineExceeded) {
+			err = ErrShutdownTimeout
+		}
+		return errors.Join(err, srv.Close())
 	}
 	logger.Info("fuingod stopped")
 	return nil

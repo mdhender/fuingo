@@ -1,0 +1,56 @@
+# fuingod as a systemd service. See "Running as a systemd service" in
+# README.md for the user, directories, environment file, and database it
+# expects. Install as /etc/systemd/system/fuingod.service.
+
+[Unit]
+Description=fuingo turn-file upload server
+Documentation=https://github.com/mdhender/fuingo
+After=network.target
+
+[Service]
+Type=exec
+User=fuingo
+Group=fuingo
+UMask=0027
+
+# The database and its WAL files live in /var/lib/fuingo, the only writable
+# path. No .env files belong there: the settings come from this unit and the
+# environment file.
+StateDirectory=fuingo
+StateDirectoryMode=0750
+WorkingDirectory=/var/lib/fuingo
+Environment=FUINGO_ENV=production
+Environment=FUINGO_DB=/var/lib/fuingo/fuingo.db
+Environment=FUINGO_ADDR=127.0.0.1:18443
+# FUINGO_PEPPER=... and nothing else secret; root:fuingo, mode 0640.
+EnvironmentFile=/etc/fuingo/fuingod.env
+
+# Bring the schema up to date before each start. fuingod itself never
+# migrates. Remove this line to migrate by hand when deploying.
+ExecStartPre=/usr/local/bin/fuingodb migrate
+ExecStart=/usr/local/bin/fuingod
+
+# On SIGTERM, fuingod gives in-flight requests 10 seconds, cuts off the rest,
+# and closes the database. Wait longer than that before killing it.
+KillSignal=SIGTERM
+TimeoutStopSec=30
+Restart=on-failure
+RestartSec=2
+
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

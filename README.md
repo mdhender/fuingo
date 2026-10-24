@@ -115,3 +115,73 @@ for each deployment:
   are ignored.
 - **Keep the backend unreachable except through the proxy.** Anyone who can
   connect from a trusted address can claim any client address.
+
+## Running as a systemd service
+
+[contrib/systemd/fuingod.service](contrib/systemd/fuingod.service) runs
+`fuingod` as the `fuingo` user, behind Caddy on the same host. It reads the
+database from `/var/lib/fuingo/fuingo.db`, listens on `127.0.0.1:18443`, and
+gets `FUINGO_PEPPER` from `/etc/fuingo/fuingod.env`.
+
+1. Build the binaries. The SQLite driver is pure Go, so they cross-compile:
+
+   ```sh
+   CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o tmp/linux/ ./cmd/fuingod ./cmd/fuingodb ./cmd/fuingo
+   ```
+
+   Copy them to `/usr/local/bin` on the server.
+
+2. Create the user, the database directory, and the environment file. The
+   pepper must never change once uploaders have tokens; keep a copy somewhere
+   safe.
+
+   ```sh
+   sudo useradd --system --home-dir /var/lib/fuingo --shell /usr/sbin/nologin fuingo
+   sudo install -d -o fuingo -g fuingo -m 0750 /var/lib/fuingo
+   sudo install -d -m 0755 /etc/fuingo
+   printf 'FUINGO_PEPPER=%s\n' "$(openssl rand -hex 32)" | sudo tee /etc/fuingo/fuingod.env >/dev/null
+   sudo chown root:fuingo /etc/fuingo/fuingod.env
+   sudo chmod 0640 /etc/fuingo/fuingod.env
+   ```
+
+3. Create the database as the `fuingo` user, so it owns the file. In
+   production it starts empty: no default games or accounts.
+
+   ```sh
+   sudo -u fuingo sh -c 'set -a; . /etc/fuingo/fuingod.env; exec fuingodb --env production create --db /var/lib/fuingo/fuingo.db'
+   ```
+
+4. Install and start the service:
+
+   ```sh
+   sudo cp contrib/systemd/fuingod.service /etc/systemd/system/
+   sudo systemctl daemon-reload
+   sudo systemctl enable --now fuingod
+   journalctl -u fuingod -f
+   ```
+
+5. Point Caddy at it. Caddy obtains the certificate for the domain itself:
+
+   ```caddyfile
+   uploads.example.com {
+   	reverse_proxy 127.0.0.1:18443
+   }
+   ```
+
+Run `fuingo` as the `fuingo` user with the same environment, for example:
+
+```sh
+sudo -u fuingo sh -c 'set -a; . /etc/fuingo/fuingod.env; exec fuingo --env production --db /var/lib/fuingo/fuingo.db game create game01'
+```
+
+On `systemctl stop` or `restart`, systemd sends SIGTERM. `fuingod` stops
+accepting connections, gives in-flight requests 10 seconds to finish, cuts off
+any still running, closes the database, and exits; it exits non-zero if it
+had to cut requests off. A second SIGTERM or Ctrl-C stops it at once. The
+unit waits 30 seconds before killing it. Even a killed server loses no
+completed upload: each one is committed before its response is sent.
+
+Each start runs `fuingodb migrate` first, so deploying a new version is
+copying the binaries and `sudo systemctl restart fuingod`. Back up the live
+database with `sqlite3 /var/lib/fuingo/fuingo.db ".backup /path/to/backup.db"`
+or `VACUUM INTO`, never by copying the file while the server runs.

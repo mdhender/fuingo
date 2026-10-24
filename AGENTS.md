@@ -44,6 +44,9 @@ upload files over HTTPS instead of mailing them.
   the vendored HTMX under `/static/`, `POST /upload`, and the
   development/agent helper) behind `http.NewCrossOriginProtection`. HTMX
   2.0.11 is vendored as `internal/server/static/htmx-2.0.11.min.js`.
+- `contrib/systemd/fuingod.service` runs `fuingod` as a systemd service;
+  README.md documents its setup. Keep the two in sync, and keep the unit's
+  `TimeoutStopSec` longer than `fuingod`'s shutdown timeout.
 - `cmd/fuingod`, `cmd/fuingodb`, and `cmd/fuingo` exist; [README.md](README.md)
   documents their flags and environment variables. Keep it current when adding
   any of them. The `/api/` routes do not exist yet; do not document them as

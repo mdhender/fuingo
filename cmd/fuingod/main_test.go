@@ -4,6 +4,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
@@ -16,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -271,5 +273,139 @@ func TestServeLimitsFailuresPerForwardedClient(t *testing.T) {
 	}
 	if code, body := postUpload(t, base, u.Email, u.Game, u.Token, "turn\n", "X-Forwarded-For", "203.0.113.2"); code != http.StatusOK {
 		t.Errorf("another client: %d %s, want 200", code, body)
+	}
+}
+
+// startStoppable runs fuingod on a free port with the given shutdown timeout
+// and returns its address, a function that sends the stop signal, and the
+// channel that receives run's result.
+func startStoppable(t *testing.T, timeout time.Duration, args ...string) (string, context.CancelFunc, <-chan error) {
+	t.Helper()
+	old := shutdownTimeout
+	shutdownTimeout = timeout
+	t.Cleanup(func() { shutdownTimeout = old })
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+	addrc := make(chan net.Addr, 1)
+	errc := make(chan error, 1)
+	go func() {
+		errc <- run(ctx, append([]string{"--addr", "127.0.0.1:0"}, args...), io.Discard, func(a net.Addr) { addrc <- a })
+	}()
+	select {
+	case a := <-addrc:
+		return a.String(), cancel, errc
+	case err := <-errc:
+		t.Fatalf("run: %v", err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("server did not start")
+	}
+	return "", nil, nil
+}
+
+// startUpload opens a connection and sends an upload request with only part
+// of its body, returning the connection, its reader, and the rest of the
+// body.
+func startUpload(t *testing.T, addr string) (net.Conn, *bufio.Reader, []byte) {
+	t.Helper()
+	u := devdata.Uploaders[0]
+	var body bytes.Buffer
+	mw := multipart.NewWriter(&body)
+	fw, _ := mw.CreateFormFile("file", "turn.txt")
+	io.WriteString(fw, u.Game+" 1 "+u.Email+" "+u.Token+"\nturn\n")
+	mw.Close()
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	// A connection can be dialed before the server accepts it. Finish one
+	// request on it first, so the server is serving it.
+	br := bufio.NewReader(conn)
+	if _, err := io.WriteString(conn, "GET / HTTP/1.1\r\nHost: "+addr+"\r\n\r\n"); err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.ReadResponse(br, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	head := "POST /upload HTTP/1.1\r\nHost: " + addr + "\r\nSec-Fetch-Site: same-origin\r\n" +
+		"Content-Type: " + mw.FormDataContentType() + "\r\nContent-Length: " + strconv.Itoa(body.Len()) + "\r\n\r\n"
+	half := body.Len() / 2
+	if _, err := conn.Write(append([]byte(head), body.Bytes()[:half]...)); err != nil {
+		t.Fatal(err)
+	}
+	// Give the server time to read the headers and start the handler, which
+	// then waits for the rest of the body.
+	time.Sleep(100 * time.Millisecond)
+	return conn, br, body.Bytes()[half:]
+}
+
+// waitStopped waits until the server refuses new connections, which it does
+// as soon as the shutdown starts.
+func waitStopped(t *testing.T, addr string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		conn, err := net.Dial("tcp", addr)
+		if err != nil {
+			return
+		}
+		conn.Close()
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("the server still accepts connections after the stop signal")
+}
+
+// TestShutdownFinishesInFlightRequests stops the server while an upload is
+// being sent; the upload completes and run reports a clean stop.
+func TestShutdownFinishesInFlightRequests(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("FUINGO_PEPPER", pepper)
+	addr, stop, errc := startStoppable(t, 5*time.Second, "--env", "development", "--db", ":memory:")
+	conn, br, rest := startUpload(t, addr)
+	stop()
+	waitStopped(t, addr)
+	if _, err := conn.Write(rest); err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.ReadResponse(br, nil)
+	if err != nil {
+		t.Fatalf("reading the response: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("in-flight upload: %d, want 200", resp.StatusCode)
+	}
+	select {
+	case err := <-errc:
+		if err != nil {
+			t.Errorf("run = %v, want a clean stop", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("run did not return")
+	}
+}
+
+// TestShutdownCutsOffStalledRequests stops the server while an upload has
+// stalled; at the deadline its connection is closed and run reports it.
+func TestShutdownCutsOffStalledRequests(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("FUINGO_PEPPER", pepper)
+	addr, stop, errc := startStoppable(t, 100*time.Millisecond, "--env", "development", "--db", ":memory:")
+	conn, br, _ := startUpload(t, addr)
+	stop()
+	select {
+	case err := <-errc:
+		if !errors.Is(err, ErrShutdownTimeout) {
+			t.Errorf("run = %v, want ErrShutdownTimeout", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("run did not return after the shutdown deadline")
+	}
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if n, err := br.Read(make([]byte, 1)); err == nil || errors.Is(err, os.ErrDeadlineExceeded) {
+		t.Errorf("stalled connection: read %d bytes, %v; want it closed", n, err)
 	}
 }

@@ -15,22 +15,24 @@ available only in `development` and `agent`; `test`, `production`, and every
 other environment must never provide it. Do not enable any of it based on
 request headers, hostname, or a query parameter.
 
-## Account kinds
+## Accounts and credentials
 
-There are two kinds of account, and neither can act as the other:
+Every email has one row in the `accounts` table, whether it uploads, manages
+games, or both. It can hold two kinds of credential, and neither can act as
+the other:
 
-- **Upload accounts** are rows in the `game_uploaders` table: a game, an email,
-  and a token. They authorize uploads through the web form and never
-  authenticate to `/api/`.
-- **API accounts** are rows in the `accounts` table: an email and a password.
-  `game_managers` lists the games each one manages. They authenticate to `/api/`
-  with the `Authorization` header and never use the web pages.
+- **Upload credentials** are rows in the `game_uploaders` table: an account,
+  a game, and a token. They authorize uploads through the web form and never
+  authenticate to `/api/`. An account made for an uploader has no password.
+- **API passwords** are the account's `hashed_secret`. Only an account with
+  one can authenticate to `/api/`, with the `Authorization` header; the
+  password never authorizes an upload. `game_managers` lists the games each
+  account manages.
 
-The `accounts` and `game_managers` tables and their default rows exist, and
-`fuingo account create` and `fuingo game add --manager` add to them, but
-nothing authenticates API accounts until the future `/api/` phase described in
-[AGENTS.md](AGENTS.md). Do not implement the API account helpers below until
-that phase starts.
+The tables and their default rows exist, and `fuingo account create` and
+`fuingo game add --manager` add to them, but nothing authenticates to the API
+until the future `/api/` phase described in [AGENTS.md](AGENTS.md). Do not
+implement the API account helpers below until that phase starts.
 
 ## Default accounts
 
@@ -103,9 +105,9 @@ or authorization tokens. Keep normal CSRF protection enabled; these helpers are
 not CSRF bypasses.
 
 These helpers and the default accounts are the explicit development/agent-only
-exceptions to account creation. Otherwise, both kinds of account are created
-only by the `cmd/fuingo` operators' CLI: `fuingo game add --uploader` and
-`fuingo account create`.
+exceptions to account creation. Otherwise, accounts and credentials are
+created only by the `cmd/fuingo` operators' CLI: `fuingo game add --uploader`
+and `fuingo account create`.
 
 ### Create an upload account
 
@@ -117,11 +119,12 @@ POST /__agent/create-account/<game>/<email>/<token>
 - `<game>` is a game code, lowercased like the email. Encode the game, email,
   and token as URL path segments.
 - Require an existing game; return an error rather than creating one.
-- Insert an active row in `game_uploaders` for that game, with the lowercased
-  email and the `credential_hash` described in [AGENTS.md](AGENTS.md). Never log
+- Insert an active row in `game_uploaders` for that game and the account with
+  the lowercased email, creating the account without a password if needed,
+  with the `hashed_credentials` described in [AGENTS.md](AGENTS.md). Never log
   the token.
 - Return an error if the game and email already have a row, or if the
-  `credential_hash` is already in use. Because the hash includes the game's ID,
+  `hashed_credentials` are already in use. Because the hash includes the game's ID,
   the same email and token may be created in another game.
   Never modify an existing row, including when creation requests race.
 
@@ -148,8 +151,8 @@ POST /__agent/log-me-in/<email>
 ```
 
 - Encode the email as a URL path segment.
-- Require an existing API account; return an error rather than creating one.
-  Refuse an upload account.
+- Require an existing account with a password; return an error rather than
+  creating one. Refuse an account without a password.
 - Issue the same authorization token that a normal `/api/` login issues for
   that account, and return it in the response for use in the `Authorization`
   header. Do not set cookies or redirect. Never log the token.
@@ -164,7 +167,7 @@ non-POST requests, duplicate account creation without mutation, and CSRF
 rejection through HTTP tests. Test that a helper-created upload account can
 upload through the web form, and that `create-account` refuses an unknown game
 code. Once the `/api/` phase exists, test that
-`log-me-in` refuses missing and upload accounts, that its token authenticates
+`log-me-in` refuses missing accounts and accounts without a password, that its token authenticates
 `/api/` requests, and that each kind of account is refused by the other's
 routes. Exercise an upload with a
 helper-created account through the public HTTPS origin in a browser as well.

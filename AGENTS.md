@@ -35,7 +35,7 @@ upload files over HTTPS instead of mailing them.
   for files, plus `OpenPrivateMemory`, `CreateSharedMemory`, and
   `OpenSharedMemory`.
 - `internal/credential` computes upload credential hashes; `internal/devdata`
-  holds the default games and upload accounts; `internal/cli` holds the flag
+  holds the default games, accounts, uploaders, and managers; `internal/cli` holds the flag
   and environment-file parsing shared by the commands.
 - `internal/upload` is the upload handler, implementing the requirements
   below. `internal/clientip` finds the client's address behind trusted
@@ -71,8 +71,8 @@ environment, and document it in the command's help and package comment.
 Each program owns one area. Put a new command in the program that owns what
 it manages, even when another program could reach the same thing:
 
-- **`cmd/fuingo` manages the application data**: games, uploaders, API
-  accounts, game managers, and uploads. Every command that creates or changes
+- **`cmd/fuingo` manages the application data**: games, accounts,
+  uploaders, game managers, and uploads. Every command that creates or changes
   rows belongs here, including every `create` verb for application
   data. Outside development and agent, it will be the only way to create
   accounts.
@@ -100,28 +100,31 @@ as the user asks for them.
 - Game codes, emails, and tokens given to `fuingo` must be valid header words
   (one or more bytes in `0x21`–`0x7E`), so that an upload can name them. Codes
   and emails are lowercased with `strings.ToLower`.
-- `game add --uploader` generates a random UUID token unless `--token` is
-  given, prints a generated token once, and never prints a given one. It
-  requires `FUINGO_PEPPER`.
-- `account create` reads the password from the first line of standard input,
+- `game add --uploader` adds a `game_uploaders` row for the account with that
+  email, creating the account without a `hashed_secret` if it does not exist.
+  It generates a random UUID token unless `--token` is given, prints a
+  generated token once, and never prints a given one. It requires
+  `FUINGO_PEPPER`.
+- `account create` creates an account with a `hashed_secret`, and fails if
+  the email already has an account. It reads the password from the first line of standard input,
   without its LF or CRLF, or generates one with `--generate-password` and
   prints it once. Passwords are hashed with bcrypt at `bcrypt.MinCost` and are
   at most 72 bytes.
 - `game add` takes exactly one of `--manager` and `--uploader`, and `--token`
-  only with `--uploader`. `game add --manager` makes an existing API account a
+  only with `--uploader`. `game add --manager` makes an existing account a
   manager of an existing game, active or not, and refuses an account that
   already manages it, even as a disabled manager.
 - `game disable` and `game enable` clear or set `is_active` on the game, or,
   with `--uploader` or `--manager`, on that row of `game_uploaders` or
   `game_managers`. They never delete rows, and repeating one succeeds. They
   take at most one of `--uploader` and `--manager`, and require `--code`.
-- `account disable` and `account enable` clear or set `is_active` on an API
-  account. An inactive account manages no games, whatever its `game_managers`
-  rows say.
+- `account disable` and `account enable` clear or set `is_active` on an
+  account. An inactive account manages no games and uploads to none, whatever
+  its `game_managers` and `game_uploaders` rows say.
 
 | Command | Purpose |
 | --- | --- |
-| `cmd/fuingo` | Application data. The operators' CLI for games, uploaders, API accounts, and game managers. |
+| `cmd/fuingo` | Application data. The operators' CLI for games, accounts, uploaders, and game managers. |
 | `cmd/fuingodb` | The database: `create` and `migrate`. |
 | `cmd/fuingod` | The server. Opens an existing database; never creates or migrates one. |
 
@@ -132,7 +135,7 @@ one. Resetting belongs to `cmd/fuingo` or the `/api/` phase.
 
 ## Data model
 
-Game codes and API account emails can change, so rows are identified by integer
+Game codes and account emails can change, so rows are identified by integer
 IDs, never by those values. Declare these IDs `INTEGER PRIMARY KEY AUTOINCREMENT`:
 without `AUTOINCREMENT`, SQLite may reuse the ID of a deleted row, and IDs must
 never be reused.
@@ -140,32 +143,46 @@ never be reused.
 | Table | Columns | Keys |
 | --- | --- | --- |
 | `games` | `id`, `code`, `is_active` | PK `id`; `code` unique |
-| `game_uploaders` | `game_id`, `email`, `credential_hash`, `is_active` | PK `(game_id, email)`; `credential_hash` unique; FK `game_id` → `games` |
+| `accounts` | `id`, `email`, `hashed_secret`, `is_active` | PK `id`; `email` unique |
+| `game_uploaders` | `id`, `game_id`, `account_id`, `hashed_credentials`, `is_active` | PK `id`; `(game_id, account_id)` unique; `hashed_credentials` unique; FKs to `games` and `accounts` |
+| `game_managers` | `id`, `game_id`, `account_id`, `is_active` | PK `id`; `(game_id, account_id)` unique; FKs to `games` and `accounts` |
 | `upload_blobs` | `content_hash`, `contents`, `created_at` | PK `content_hash` |
-| `uploads` | `id`, `game_id`, `email`, `turn_no`, `content_hash`, `uploaded_at` | PK `id`; FK `(game_id, email)` → `game_uploaders`; FK `content_hash` → `upload_blobs` |
-| `accounts` | `id`, `email`, `password_hash`, `is_active` | PK `id`; `email` unique |
-| `game_managers` | `game_id`, `account_id`, `is_active` | PK `(game_id, account_id)`; FKs to `games` and `accounts` |
+| `uploads` | `id`, `uploader_id`, `email`, `turn_no`, `content_hash`, `uploaded_at` | PK `id`; FK `uploader_id` → `game_uploaders`; FK `content_hash` → `upload_blobs` |
+
+Two views hold the rules for being active, so queries do not repeat them:
+`active_uploaders` lists the `game_uploaders` rows whose row, game, and
+account are all active, with the account's email; `active_managers` lists
+the `game_managers` rows whose row and account are active, for games active
+or not.
 
 - `games.code` is stored lowercased, like emails.
-- `game_uploaders` holds the upload credentials. `email` is stored lowercased.
-  `credential_hash` is the hash described below; the plaintext token is never
+- `accounts` has one row per email, for uploaders and managers alike, with
+  the email stored lowercased. `hashed_secret` is the bcrypt hash of the API
+  password, or `NULL` for an account that has none; an account without one
+  can never authenticate to `/api/`. Whether an account manages a game is
+  recorded only in `game_managers`.
+- `game_uploaders` holds the upload credentials, one per account and game.
+  `hashed_credentials` is the hash described below; the plaintext token is never
   stored. The hash includes the game's ID, so an uploader in several games has
   a separate credential in each, and may even reuse a token across them.
   Because the hash is unique, a match identifies exactly one uploader and game.
+  The hash also includes the email, so changing an account's email
+  invalidates its upload credentials until their tokens are reset.
 - `upload_blobs` holds uploaded file bodies, without the header line, keyed by the lowercase hex
   SHA-256 of the contents. Identical uploads share one blob, across uploaders
   and games, so a blob belongs to no single uploader. `created_at` is when the
   contents first arrived, in UTC.
-- `uploads` records each successful upload by game and uploader, so its history
-  survives a change of the uploader's token. `turn_no` is the turn number from
+- `uploads` records each successful upload by its `game_uploaders` row, so its
+  history survives a change of the uploader's token. `email` is the
+  uploader's lowercased email when the upload arrived, so the history keeps
+  it if the account's email later changes. `turn_no` is the turn number from
   the file's header line, stored as text exactly as written. `uploaded_at` is
   UTC.
 - Uploaded files are stored only in the database, never on the filesystem.
   Games and other clients read them through the future `/api/` routes, which
   enforce access controls.
-- `accounts` holds API accounts only, with lowercased emails. Upload credentials
-  are never stored there. `game_managers` lists the games each API account
-  manages.
+- Upload tokens are never stored in `accounts`, and the API password is never
+  an upload credential. `game_managers` lists the games each account manages.
 - Every foreign key is `ON DELETE RESTRICT`: deleting a row that others refer to
   fails instead of removing history. Revoke access by clearing `is_active`.
 
@@ -214,8 +231,9 @@ The server handles each upload in this order:
    where `game-id` is the integer ID in decimal, and look it up in
    `game_uploaders`. Using the ID, not the code, keeps credentials valid when a
    game's code changes. An unknown game code still computes and looks up a
-   hash, with ID `0`, and fails like a wrong token. Both the matching uploader
-   and its game must be active; an inactive one fails like a missing row. There
+   hash, with ID `0`, and fails like a wrong token. The matching uploader, its
+   game, and its account must all be active; an inactive one fails like a
+   missing row. There
    are no salts. Compare hashes in constant time.
 
    Failed authorizations are limited per client address, never per email or
@@ -290,12 +308,13 @@ Do not implement these until the user starts the phase.
 - Smarter clients will submit files through `/api/` routes without the web form.
 - `/api/` requests authenticate with the `Authorization` header. An inactive
   account fails authentication like a wrong password.
-- `/api/` routes accept only API accounts, which never use the web pages. Upload
-  accounts never authenticate to `/api/`. Keep the two kinds separate; see
+- Only an account with a `hashed_secret` can authenticate to `/api/`. Upload
+  tokens never authenticate to `/api/`, and the API password never authorizes
+  an upload. Keep the two kinds of credential separate; see
   [TESTING.md](TESTING.md).
-- API account passwords are hashed with bcrypt at `bcrypt.MinCost`. This is an
+- API passwords are hashed with bcrypt at `bcrypt.MinCost`. This is an
   accepted risk; do not raise the cost or propose doing so.
-- The API adds listing and management of uploaded files. An API account may act
+- The API adds listing and management of uploaded files. An account may act
   only on the games it manages in `game_managers`, and only while the account
   and that row are active.
 
@@ -314,10 +333,10 @@ Do not implement these until the user starts the phase.
   header with an empty body, and that the stored body has no BOM or header.
 - Cover authorization: email and game code case folding, wrong email, wrong
   game code, unknown game code, wrong token, the same email and token in two
-  games, an inactive uploader, an inactive game, a missing pepper, and
-  identical failure responses for unknown emails, unknown or wrong game codes,
-  and wrong tokens. Check that format errors are reported before authorization
-  and that no response contains the token.
+  games, an inactive uploader, an inactive game, an inactive account, a
+  missing pepper, and identical failure responses for unknown emails,
+  unknown or wrong game codes, and wrong tokens. Check that format errors are
+  reported before authorization and that no response contains the token.
 - For duplicate content, cover uploaders in the same game and in different
   games with identical bodies, concurrent uploads, and that the existing blob
   is not rewritten.

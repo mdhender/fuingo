@@ -192,7 +192,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// row.
 	sum := sha256.Sum256(body)
 	contentHash := hex.EncodeToString(sum[:])
-	if err := h.db.RecordUpload(r.Context(), uploader.GameID, uploader.Email, hdr.turn, contentHash, body, time.Now()); err != nil {
+	if err := h.db.RecordUpload(r.Context(), uploader.ID, uploader.Email, hdr.turn, contentHash, body, time.Now()); err != nil {
 		h.logger.Error("upload: record", "game_id", uploader.GameID, "content_hash", contentHash, "err", err)
 		respond(w, http.StatusInternalServerError, false, msgServerError)
 		return
@@ -315,7 +315,7 @@ func (h *Handler) authorize(r *http.Request, hdr header) (store.Uploader, bool, 
 	if err != nil || !ok {
 		return store.Uploader{}, false, err
 	}
-	if u.GameID != gameID || !credential.Equal(u.CredentialHash, hash) {
+	if u.GameID != gameID || !credential.Equal(u.HashedCredentials, hash) {
 		return store.Uploader{}, false, nil
 	}
 	return u, true, nil

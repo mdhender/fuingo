@@ -30,32 +30,34 @@ const (
 // timeLayout stores UTC timestamps at a fixed width so they sort as text.
 const timeLayout = "2006-01-02T15:04:05.000000000Z"
 
-// NewUploader is an upload account to insert. GameCode and Email must
-// already be lowercased. CredentialHash computes the credential hash (with package
-// credential) from the game's ID, which is looked up in the same transaction
-// as the insert.
+// NewUploader is an upload credential to insert. GameCode and Email must
+// already be lowercased. The account with the email is created, without a
+// hashed secret, if it does not exist. HashedCredentials computes the
+// credential hash (with package credential) from the game's ID, which is
+// looked up in the same transaction as the insert.
 type NewUploader struct {
-	GameCode       string
-	Email          string
-	CredentialHash func(gameID int64) []byte
+	GameCode          string
+	Email             string
+	HashedCredentials func(gameID int64) []byte
 }
 
-// NewAccount is an API account to insert. Email must already be lowercased.
-// PasswordHash is a bcrypt hash.
+// NewAccount is an account to insert. Email must already be lowercased.
+// HashedSecret is a bcrypt hash, or nil for an account that cannot use the
+// API.
 type NewAccount struct {
 	Email        string
-	PasswordHash []byte
+	HashedSecret []byte
 }
 
-// Account is an API account.
+// Account is an account. HashedSecret is nil if it cannot use the API.
 type Account struct {
 	ID           int64
 	Email        string
-	PasswordHash []byte
+	HashedSecret []byte
 	Active       bool
 }
 
-// NewManager makes an API account a manager of a game. GameCode and Email
+// NewManager makes an account a manager of a game. GameCode and Email
 // must already be lowercased.
 type NewManager struct {
 	GameCode string
@@ -70,16 +72,19 @@ type Rows struct {
 	Managers  []NewManager
 }
 
-// Uploader is an active upload account in an active game.
+// Uploader is an active upload credential of an active account in an
+// active game.
 type Uploader struct {
-	GameID         int64
-	Email          string
-	CredentialHash []byte
+	ID                int64
+	GameID            int64
+	Email             string
+	HashedCredentials []byte
 }
 
 // Upload is one row of the upload history.
 type Upload struct {
 	ID          int64
+	UploaderID  int64
 	GameID      int64
 	GameCode    string
 	Email       string
@@ -88,9 +93,10 @@ type Upload struct {
 	UploadedAt  time.Time
 }
 
-// CreateRows inserts active games, active upload accounts, API accounts, and
-// game managers in one transaction. It fails, inserting nothing, if any of
-// them exists.
+// CreateRows inserts active games, accounts, active upload credentials, and
+// game managers in one transaction, in that order, so an uploader uses an
+// account from rows.Accounts with the same email. It fails, inserting
+// nothing, if any of them exists.
 func (s *Store) CreateRows(ctx context.Context, rows Rows) (err error) {
 	conn, err := s.take(ctx)
 	if err != nil {
@@ -103,13 +109,13 @@ func (s *Store) CreateRows(ctx context.Context, rows Rows) (err error) {
 			return err
 		}
 	}
-	for _, u := range rows.Uploaders {
-		if err := createUploader(conn, u); err != nil {
+	for _, a := range rows.Accounts {
+		if _, err := createAccount(conn, a); err != nil {
 			return err
 		}
 	}
-	for _, a := range rows.Accounts {
-		if _, err := createAccount(conn, a); err != nil {
+	for _, u := range rows.Uploaders {
+		if err := createUploader(conn, u); err != nil {
 			return err
 		}
 	}
@@ -121,7 +127,7 @@ func (s *Store) CreateRows(ctx context.Context, rows Rows) (err error) {
 	return nil
 }
 
-// AddManager makes an existing API account an active manager of an existing
+// AddManager makes an existing account an active manager of an existing
 // game, active or not. It fails with ErrManagerExists if the account already
 // manages the game, even as an inactive manager.
 func (s *Store) AddManager(ctx context.Context, m NewManager) error {
@@ -141,22 +147,16 @@ func addManager(conn *sqlite.Conn, m NewManager) (err error) {
 	} else if !ok {
 		return fmt.Errorf("%s: %w", m.GameCode, ErrUnknownGame)
 	}
-	var accountID int64
-	if err := sqlitex.Execute(conn, "SELECT id FROM accounts WHERE email = ?;", &sqlitex.ExecOptions{
-		Args: []any{m.Email},
-		ResultFunc: func(stmt *sqlite.Stmt) error {
-			accountID = stmt.ColumnInt64(0)
-			return nil
-		},
-	}); err != nil {
+	accountID, ok, err := accountID(conn, m.Email)
+	if err != nil {
 		return err
-	} else if accountID == 0 {
+	} else if !ok {
 		return fmt.Errorf("%s: %w", m.Email, ErrUnknownAccount)
 	}
 	err = sqlitex.Execute(conn, "INSERT INTO game_managers (game_id, account_id, is_active) VALUES (?, ?, 1);", &sqlitex.ExecOptions{
 		Args: []any{gameID, accountID},
 	})
-	if sqlite.ErrCode(err) == sqlite.ResultConstraintPrimaryKey {
+	if sqlite.ErrCode(err) == sqlite.ResultConstraintUnique {
 		return fmt.Errorf("%s %s: %w", m.GameCode, m.Email, ErrManagerExists)
 	}
 	return err
@@ -172,11 +172,9 @@ func (s *Store) Managers(ctx context.Context, gameCode string) ([]string, error)
 	defer s.pool.Put(conn)
 	var emails []string
 	err = sqlitex.Execute(conn, `
-SELECT accounts.email FROM game_managers
-JOIN games ON games.id = game_managers.game_id
-JOIN accounts ON accounts.id = game_managers.account_id
-WHERE games.code = ? AND game_managers.is_active = 1 AND accounts.is_active = 1
-ORDER BY accounts.id;`, &sqlitex.ExecOptions{
+SELECT m.email FROM active_managers m JOIN games g ON g.id = m.game_id
+WHERE g.code = ?
+ORDER BY m.account_id;`, &sqlitex.ExecOptions{
 		Args: []any{gameCode},
 		ResultFunc: func(stmt *sqlite.Stmt) error {
 			emails = append(emails, stmt.ColumnText(0))
@@ -186,7 +184,7 @@ ORDER BY accounts.id;`, &sqlitex.ExecOptions{
 	return emails, err
 }
 
-// CreateAccount inserts an API account and returns its ID. It never modifies
+// CreateAccount inserts an account and returns its ID. It never modifies
 // an existing row: a duplicate email fails with ErrAccountExists.
 func (s *Store) CreateAccount(ctx context.Context, a NewAccount) (int64, error) {
 	conn, err := s.take(ctx)
@@ -201,8 +199,12 @@ func createAccount(conn *sqlite.Conn, a NewAccount) (int64, error) {
 	if a.Email != strings.ToLower(a.Email) {
 		return 0, fmt.Errorf("%s: %w", a.Email, ErrEmailCase)
 	}
-	err := sqlitex.Execute(conn, "INSERT INTO accounts (email, password_hash, is_active) VALUES (?, ?, 1);", &sqlitex.ExecOptions{
-		Args: []any{a.Email, string(a.PasswordHash)},
+	var secret any // NULL without a hashed secret
+	if a.HashedSecret != nil {
+		secret = string(a.HashedSecret)
+	}
+	err := sqlitex.Execute(conn, "INSERT INTO accounts (email, hashed_secret, is_active) VALUES (?, ?, 1);", &sqlitex.ExecOptions{
+		Args: []any{a.Email, secret},
 	})
 	if sqlite.ErrCode(err) == sqlite.ResultConstraintUnique {
 		return 0, fmt.Errorf("%s: %w", a.Email, ErrAccountExists)
@@ -212,7 +214,7 @@ func createAccount(conn *sqlite.Conn, a NewAccount) (int64, error) {
 	return conn.LastInsertRowID(), nil
 }
 
-// FindAccount returns the API account with the given lowercased email,
+// FindAccount returns the account with the given lowercased email,
 // active or not.
 func (s *Store) FindAccount(ctx context.Context, email string) (Account, bool, error) {
 	conn, err := s.take(ctx)
@@ -222,10 +224,13 @@ func (s *Store) FindAccount(ctx context.Context, email string) (Account, bool, e
 	defer s.pool.Put(conn)
 	var a Account
 	var found bool
-	err = sqlitex.Execute(conn, "SELECT id, email, password_hash, is_active FROM accounts WHERE email = ?;", &sqlitex.ExecOptions{
+	err = sqlitex.Execute(conn, "SELECT id, email, hashed_secret, is_active FROM accounts WHERE email = ?;", &sqlitex.ExecOptions{
 		Args: []any{email},
 		ResultFunc: func(stmt *sqlite.Stmt) error {
-			a = Account{ID: stmt.ColumnInt64(0), Email: stmt.ColumnText(1), PasswordHash: []byte(stmt.ColumnText(2)), Active: stmt.ColumnBool(3)}
+			a = Account{ID: stmt.ColumnInt64(0), Email: stmt.ColumnText(1), Active: stmt.ColumnBool(3)}
+			if stmt.ColumnType(2) != sqlite.TypeNull {
+				a.HashedSecret = []byte(stmt.ColumnText(2))
+			}
 			found = true
 			return nil
 		},
@@ -245,9 +250,10 @@ func (s *Store) CreateGame(ctx context.Context, code string) (int64, error) {
 	return createGame(conn, code)
 }
 
-// CreateUploader inserts an active upload account for an existing game.
-// It never modifies an existing row: a duplicate game and email, or a
-// credential hash already in use, fails with ErrUploaderExists.
+// CreateUploader inserts an active upload credential for an existing game,
+// creating the account if it does not exist. It never modifies an existing
+// row: a duplicate game and email, or a credential hash already in use,
+// fails with ErrUploaderExists.
 func (s *Store) CreateUploader(ctx context.Context, u NewUploader) error {
 	conn, err := s.take(ctx)
 	if err != nil {
@@ -280,8 +286,16 @@ func createUploader(conn *sqlite.Conn, u NewUploader) (err error) {
 	} else if !ok {
 		return fmt.Errorf("%s: %w", u.GameCode, ErrUnknownGame)
 	}
-	err = sqlitex.Execute(conn, "INSERT INTO game_uploaders (game_id, email, credential_hash, is_active) VALUES (?, ?, ?, 1);", &sqlitex.ExecOptions{
-		Args: []any{gameID, u.Email, u.CredentialHash(gameID)},
+	accountID, ok, err := accountID(conn, u.Email)
+	if err != nil {
+		return err
+	} else if !ok {
+		if accountID, err = createAccount(conn, NewAccount{Email: u.Email}); err != nil {
+			return err
+		}
+	}
+	err = sqlitex.Execute(conn, "INSERT INTO game_uploaders (game_id, account_id, hashed_credentials, is_active) VALUES (?, ?, ?, 1);", &sqlitex.ExecOptions{
+		Args: []any{gameID, accountID, u.HashedCredentials(gameID)},
 	})
 	switch sqlite.ErrCode(err) {
 	case sqlite.ResultConstraintPrimaryKey, sqlite.ResultConstraintUnique:
@@ -300,6 +314,19 @@ func (s *Store) GameID(ctx context.Context, code string) (int64, bool, error) {
 	return gameID(conn, code)
 }
 
+func accountID(conn *sqlite.Conn, email string) (int64, bool, error) {
+	var id int64
+	var found bool
+	err := sqlitex.Execute(conn, "SELECT id FROM accounts WHERE email = ?;", &sqlitex.ExecOptions{
+		Args: []any{email},
+		ResultFunc: func(stmt *sqlite.Stmt) error {
+			id, found = stmt.ColumnInt64(0), true
+			return nil
+		},
+	})
+	return id, found, err
+}
+
 func gameID(conn *sqlite.Conn, code string) (int64, bool, error) {
 	var id int64
 	var found bool
@@ -313,9 +340,9 @@ func gameID(conn *sqlite.Conn, code string) (int64, bool, error) {
 	return id, found, err
 }
 
-// FindUploader returns the upload account with the given credential hash.
-// It reports false if there is none, or if the account or its game is
-// inactive.
+// FindUploader returns the upload credential with the given credential
+// hash. It reports false if there is none, or if it, its account, or its
+// game is inactive.
 func (s *Store) FindUploader(ctx context.Context, credentialHash []byte) (Uploader, bool, error) {
 	conn, err := s.take(ctx)
 	if err != nil {
@@ -325,17 +352,16 @@ func (s *Store) FindUploader(ctx context.Context, credentialHash []byte) (Upload
 	var u Uploader
 	var found bool
 	err = sqlitex.Execute(conn, `
-SELECT u.game_id, u.email, u.credential_hash
-FROM game_uploaders u
-JOIN games g ON g.id = u.game_id
-WHERE u.credential_hash = ? AND u.is_active = 1 AND g.is_active = 1;`, &sqlitex.ExecOptions{
+SELECT id, game_id, email, hashed_credentials FROM active_uploaders
+WHERE hashed_credentials = ?;`, &sqlitex.ExecOptions{
 		Args: []any{credentialHash},
 		ResultFunc: func(stmt *sqlite.Stmt) error {
 			found = true
-			u.GameID = stmt.ColumnInt64(0)
-			u.Email = stmt.ColumnText(1)
-			u.CredentialHash = make([]byte, stmt.ColumnLen(2))
-			stmt.ColumnBytes(2, u.CredentialHash)
+			u.ID = stmt.ColumnInt64(0)
+			u.GameID = stmt.ColumnInt64(1)
+			u.Email = stmt.ColumnText(2)
+			u.HashedCredentials = make([]byte, stmt.ColumnLen(3))
+			stmt.ColumnBytes(3, u.HashedCredentials)
 			return nil
 		},
 	})
@@ -346,9 +372,10 @@ WHERE u.credential_hash = ? AND u.is_active = 1 AND g.is_active = 1;`, &sqlitex.
 }
 
 // RecordUpload stores contents under contentHash and inserts a row in the
-// upload history for the given turn, in one transaction. Contents already stored under that hash
+// upload history for the uploader's turn, recording the email the upload
+// arrived with, in one transaction. Contents already stored under that hash
 // are kept as they are, so every upload of identical bytes shares one blob.
-func (s *Store) RecordUpload(ctx context.Context, gameID int64, email, turnNo, contentHash string, contents []byte, at time.Time) (err error) {
+func (s *Store) RecordUpload(ctx context.Context, uploaderID int64, email, turnNo, contentHash string, contents []byte, at time.Time) (err error) {
 	conn, err := s.take(ctx)
 	if err != nil {
 		return err
@@ -367,8 +394,8 @@ ON CONFLICT (content_hash) DO NOTHING;`, &sqlitex.ExecOptions{
 	}); err != nil {
 		return err
 	}
-	return sqlitex.Execute(conn, "INSERT INTO uploads (game_id, email, turn_no, content_hash, uploaded_at) VALUES (?, ?, ?, ?, ?);", &sqlitex.ExecOptions{
-		Args: []any{gameID, email, turnNo, contentHash, uploadedAt},
+	return sqlitex.Execute(conn, "INSERT INTO uploads (uploader_id, email, turn_no, content_hash, uploaded_at) VALUES (?, ?, ?, ?, ?);", &sqlitex.ExecOptions{
+		Args: []any{uploaderID, email, turnNo, contentHash, uploadedAt},
 	})
 }
 
@@ -411,21 +438,24 @@ func (s *Store) Uploads(ctx context.Context) ([]Upload, error) {
 	defer s.pool.Put(conn)
 	var uploads []Upload
 	err = sqlitex.Execute(conn, `
-SELECT u.id, u.game_id, g.code, u.email, u.turn_no, u.content_hash, u.uploaded_at
-FROM uploads u JOIN games g ON g.id = u.game_id
+SELECT u.id, u.uploader_id, gu.game_id, g.code, u.email, u.turn_no, u.content_hash, u.uploaded_at
+FROM uploads u
+JOIN game_uploaders gu ON gu.id = u.uploader_id
+JOIN games g ON g.id = gu.game_id
 ORDER BY u.id;`, &sqlitex.ExecOptions{
 		ResultFunc: func(stmt *sqlite.Stmt) error {
-			at, err := time.Parse(timeLayout, stmt.ColumnText(6))
+			at, err := time.Parse(timeLayout, stmt.ColumnText(7))
 			if err != nil {
 				return err
 			}
 			uploads = append(uploads, Upload{
 				ID:          stmt.ColumnInt64(0),
-				GameID:      stmt.ColumnInt64(1),
-				GameCode:    stmt.ColumnText(2),
-				Email:       stmt.ColumnText(3),
-				TurnNo:      stmt.ColumnText(4),
-				ContentHash: stmt.ColumnText(5),
+				UploaderID:  stmt.ColumnInt64(1),
+				GameID:      stmt.ColumnInt64(2),
+				GameCode:    stmt.ColumnText(3),
+				Email:       stmt.ColumnText(4),
+				TurnNo:      stmt.ColumnText(5),
+				ContentHash: stmt.ColumnText(6),
 				UploadedAt:  at,
 			})
 			return nil
@@ -469,7 +499,7 @@ func (s *Store) SetGameActive(ctx context.Context, code string, active bool) err
 	return nil
 }
 
-// SetUploaderActive sets whether an upload account may upload.
+// SetUploaderActive sets whether an upload credential may upload.
 func (s *Store) SetUploaderActive(ctx context.Context, gameCode, email string, active bool) error {
 	conn, err := s.take(ctx)
 	if err != nil {
@@ -478,7 +508,8 @@ func (s *Store) SetUploaderActive(ctx context.Context, gameCode, email string, a
 	defer s.pool.Put(conn)
 	if err := sqlitex.Execute(conn, `
 UPDATE game_uploaders SET is_active = ?
-WHERE email = ? AND game_id = (SELECT id FROM games WHERE code = ?);`, &sqlitex.ExecOptions{
+WHERE account_id = (SELECT id FROM accounts WHERE email = ?)
+  AND game_id = (SELECT id FROM games WHERE code = ?);`, &sqlitex.ExecOptions{
 		Args: []any{active, email, gameCode},
 	}); err != nil {
 		return err
@@ -489,7 +520,7 @@ WHERE email = ? AND game_id = (SELECT id FROM games WHERE code = ?);`, &sqlitex.
 	return nil
 }
 
-// SetManagerActive sets whether an API account manages a game. It fails with
+// SetManagerActive sets whether an account manages a game. It fails with
 // ErrUnknownManager if the account was never made a manager of the game.
 func (s *Store) SetManagerActive(ctx context.Context, gameCode, email string, active bool) error {
 	conn, err := s.take(ctx)
@@ -511,8 +542,8 @@ WHERE game_id = (SELECT id FROM games WHERE code = ?)
 	return nil
 }
 
-// SetAccountActive sets whether an API account may authenticate and act on
-// the games it manages.
+// SetAccountActive sets whether an account may authenticate, act on the
+// games it manages, and upload.
 func (s *Store) SetAccountActive(ctx context.Context, email string, active bool) error {
 	conn, err := s.take(ctx)
 	if err != nil {

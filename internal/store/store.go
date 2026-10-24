@@ -50,6 +50,8 @@ const persistentFlags = sqlite.OpenReadWrite
 var schema = sqlitemigration.Schema{
 	AppID:      applicationID,
 	Migrations: migrations,
+
+	MigrationOptions: migrationOptions,
 }
 
 // Store is a handle to an initialized database.

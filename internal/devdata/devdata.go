@@ -74,7 +74,7 @@ func Seed(ctx context.Context, s *store.Store, env, pepper string) error {
 		uploaders = append(uploaders, store.NewUploader{
 			GameCode: u.Game,
 			Email:    credential.NormalizeEmail(u.Email),
-			CredentialHash: func(gameID int64) []byte {
+			HashedCredentials: func(gameID int64) []byte {
 				return credential.Hash(pepper, u.Email, gameID, u.Token)
 			},
 		})
@@ -89,7 +89,7 @@ func Seed(ctx context.Context, s *store.Store, env, pepper string) error {
 		if err != nil {
 			return err
 		}
-		accounts = append(accounts, store.NewAccount{Email: credential.NormalizeEmail(a.Email), PasswordHash: hash})
+		accounts = append(accounts, store.NewAccount{Email: credential.NormalizeEmail(a.Email), HashedSecret: hash})
 	}
 	return s.CreateRows(ctx, store.Rows{Games: Games, Uploaders: uploaders, Accounts: accounts, Managers: managers})
 }

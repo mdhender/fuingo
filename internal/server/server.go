@@ -90,7 +90,7 @@ func (h *helpers) createAccount(w http.ResponseWriter, r *http.Request) {
 	err := h.store.CreateUploader(r.Context(), store.NewUploader{
 		GameCode: game,
 		Email:    email,
-		CredentialHash: func(gameID int64) []byte {
+		HashedCredentials: func(gameID int64) []byte {
 			return credential.Hash(h.pepper, email, gameID, token)
 		},
 	})

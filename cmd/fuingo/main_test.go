@@ -333,10 +333,10 @@ func TestAccountCreateReadsPassword(t *testing.T) {
 		if !ok {
 			t.Fatalf("account %s not found", email)
 		}
-		if err := bcrypt.CompareHashAndPassword(a.PasswordHash, []byte(tc.password)); err != nil {
+		if err := bcrypt.CompareHashAndPassword(a.HashedSecret, []byte(tc.password)); err != nil {
 			t.Errorf("%s: password %q does not match: %v", email, tc.password, err)
 		}
-		if cost, err := bcrypt.Cost(a.PasswordHash); err != nil || cost != bcrypt.MinCost {
+		if cost, err := bcrypt.Cost(a.HashedSecret); err != nil || cost != bcrypt.MinCost {
 			t.Errorf("%s: bcrypt cost %d, %v; want MinCost", email, cost, err)
 		}
 	}
@@ -355,10 +355,10 @@ func TestAccountCreateGeneratesPassword(t *testing.T) {
 	}
 	password = strings.TrimSuffix(password, "\n")
 	a, _ := account(t, path, "acct01@example.com")
-	if err := bcrypt.CompareHashAndPassword(a.PasswordHash, []byte(password)); err != nil {
+	if err := bcrypt.CompareHashAndPassword(a.HashedSecret, []byte(password)); err != nil {
 		t.Errorf("the generated password does not match: %v", err)
 	}
-	if bcrypt.CompareHashAndPassword(a.PasswordHash, []byte("ignored")) == nil {
+	if bcrypt.CompareHashAndPassword(a.HashedSecret, []byte("ignored")) == nil {
 		t.Error("account create used standard input with --generate-password")
 	}
 }
@@ -388,7 +388,7 @@ func TestAccountCreateRefusals(t *testing.T) {
 		}
 	}
 	a, _ := account(t, path, "acct01@example.com")
-	if err := bcrypt.CompareHashAndPassword(a.PasswordHash, []byte("first")); err != nil {
+	if err := bcrypt.CompareHashAndPassword(a.HashedSecret, []byte("first")); err != nil {
 		t.Errorf("a refused account create changed the password: %v", err)
 	}
 	if _, ok := account(t, path, "acct02@example.com"); ok {
@@ -774,6 +774,31 @@ func TestAccountDisableEnable(t *testing.T) {
 	}
 }
 
+// TestAccountDisableStopsUploads checks that an uploader's account, created
+// by game add --uploader without a password, can be disabled and enabled.
+func TestAccountDisableStopsUploads(t *testing.T) {
+	clearEnv(t)
+	path := toggleFixture(t)
+	if a, ok := account(t, path, "catbird@example.com"); !ok || a.HashedSecret != nil {
+		t.Fatalf("account = %+v, %v; want one without a secret", a, ok)
+	}
+	for _, tc := range []struct {
+		verb string
+		want bool
+	}{{"disable", false}, {"enable", true}} {
+		args := []string{"--env", "test", "--db", path, "account", tc.verb, "catbird@example.com"}
+		if out, err := runCommand(t, args...); err != nil {
+			t.Fatalf("%q: %v\n%s", args, err, out)
+		}
+		if got := uploaderExists(t, path, "game01", "catbird@example.com", "token-c"); got != tc.want {
+			t.Errorf("after account %s, catbird uploads = %v, want %v", tc.verb, got, tc.want)
+		}
+		if !uploaderExists(t, path, "game01", "spoonbill@example.com", "token-s") {
+			t.Errorf("account %s catbird stopped spoonbill's uploads", tc.verb)
+		}
+	}
+}
+
 func TestAccountDisableEnableRefusals(t *testing.T) {
 	clearEnv(t)
 	path := toggleFixture(t)
@@ -783,7 +808,6 @@ func TestAccountDisableEnableRefusals(t *testing.T) {
 			want error
 		}{
 			{[]string{"missing@example.com"}, store.ErrUnknownAccount},
-			{[]string{"catbird@example.com"}, store.ErrUnknownAccount},
 			{[]string{"acct 01@example.com"}, ErrEmail},
 			{[]string{}, ErrUsage},
 			{[]string{"acct01@example.com", "extra"}, ErrUsage},

@@ -447,7 +447,7 @@ func TestAuthorizationFailures(t *testing.T) {
 	}
 }
 
-func TestInactiveUploaderAndGame(t *testing.T) {
+func TestInactiveUploaderGameAndAccount(t *testing.T) {
 	t.Parallel()
 	t.Run("uploader", func(t *testing.T) {
 		t.Parallel()
@@ -467,6 +467,15 @@ func TestInactiveUploaderAndGame(t *testing.T) {
 		f.expectRejected("inactive game", f.upload(turnFile(catbird, "orders\n")), http.StatusForbidden, msgAuthorization)
 		f.expectAccepted("active game", f.upload(turnFile(caracara, "orders\n")), "orders\n")
 	})
+	t.Run("account", func(t *testing.T) {
+		t.Parallel()
+		f := newFixture(t)
+		if err := f.store.SetAccountActive(t.Context(), catbird.Email, false); err != nil {
+			t.Fatal(err)
+		}
+		f.expectRejected("inactive account", f.upload(turnFile(catbird, "orders\n")), http.StatusForbidden, msgAuthorization)
+		f.expectAccepted("active account", f.upload(turnFile(spoonbill, "orders\n")), "orders\n")
+	})
 }
 
 func TestSameEmailAndTokenInTwoGames(t *testing.T) {
@@ -475,7 +484,7 @@ func TestSameEmailAndTokenInTwoGames(t *testing.T) {
 	err := f.store.CreateUploader(t.Context(), store.NewUploader{
 		GameCode: caracara.Game,
 		Email:    catbird.Email,
-		CredentialHash: func(gameID int64) []byte {
+		HashedCredentials: func(gameID int64) []byte {
 			return credential.Hash(pepper, catbird.Email, gameID, catbird.Token)
 		},
 	})

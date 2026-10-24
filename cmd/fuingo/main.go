@@ -34,17 +34,20 @@
 // Game codes, emails, and tokens must be valid header words: one or more
 // bytes in 0x21-0x7E. New games and uploaders are active.
 //
-// game add --manager makes an existing API account a manager of an existing
-// game. game add --uploader creates an upload account in it, generating a
-// random UUID for the token unless --token is given, and prints a generated
-// token once; only its hash is stored.
+// Each email has one account, for uploading and managing alike.
+// game add --manager makes an existing account a manager of an existing
+// game. game add --uploader adds an upload credential in it, creating the
+// account without a password if it does not exist, generating a random UUID
+// for the token unless --token is given, and printing a generated token
+// once; only its hash is stored.
 //
 // game disable and game enable clear or set is_active on the game, or with
 // --uploader or --manager, on that uploader or manager of the game. Rows are
 // never deleted. An inactive game or uploader refuses uploads. account disable
-// and account enable clear or set is_active on an API account; an inactive
-// account manages no games.
-// account create reads the password from the first line of standard input,
+// and account enable clear or set is_active on an account; an inactive
+// account manages no games and refuses uploads in every game.
+// account create makes an account with a password, which the API requires.
+// It reads the password from the first line of standard input,
 // or, with --generate-password, generates one and prints it once. Passwords
 // are hashed with bcrypt at bcrypt.MinCost and are at most 72 bytes.
 package main
@@ -148,14 +151,14 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	}
 	var manager, addUploader, addCode, addToken string
 	gameAddFlags := ff.NewFlagSet("game add").SetParent(rootFlags)
-	gameAddFlags.StringVar(&manager, 0, "manager", "", "email of the API account to make a manager (command line only)")
-	gameAddFlags.StringVar(&addUploader, 0, "uploader", "", "email of the upload account to create (command line only)")
+	gameAddFlags.StringVar(&manager, 0, "manager", "", "email of the account to make a manager (command line only)")
+	gameAddFlags.StringVar(&addUploader, 0, "uploader", "", "email of the uploader to add (command line only)")
 	gameAddFlags.StringVar(&addCode, 0, "code", "", "code of the game (command line only)")
 	gameAddFlags.StringVar(&addToken, 0, "token", "", "with --uploader, the upload token; a random UUID if omitted (command line only)")
 	gameAdd := &ff.Command{
 		Name:      "add",
 		Usage:     "fuingo [--db PATH] game add (--manager EMAIL | --uploader EMAIL [--token TOKEN]) --code CODE",
-		ShortHelp: "make an API account a manager of a game, or create an upload account in it",
+		ShortHelp: "make an account a manager of a game, or add an uploader to it",
 		Flags:     gameAddFlags,
 		Exec: func(ctx context.Context, args []string) error {
 			if len(args) != 0 {
@@ -194,7 +197,7 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	toggle := func(name string, active bool) *ff.Command {
 		var manager, uploader, codeArg string
 		flags := ff.NewFlagSet("game " + name).SetParent(rootFlags)
-		flags.StringVar(&uploader, 0, "uploader", "", "email of the upload account to "+name+" (command line only)")
+		flags.StringVar(&uploader, 0, "uploader", "", "email of the uploader to "+name+" (command line only)")
 		flags.StringVar(&manager, 0, "manager", "", "email of the manager to "+name+" (command line only)")
 		flags.StringVar(&codeArg, 0, "code", "", "code of the game (command line only)")
 		return &ff.Command{
@@ -263,7 +266,7 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	accountCreate := &ff.Command{
 		Name:      "create",
 		Usage:     "fuingo [--db PATH] account create [--generate-password] EMAIL",
-		ShortHelp: "create an API account",
+		ShortHelp: "create an account with a password for the API",
 		Flags:     accountCreateFlags,
 		Exec: func(ctx context.Context, args []string) error {
 			if len(args) != 1 {
@@ -284,7 +287,7 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 				return err
 			}
 			return withDatabase(ctx, path, func(s *store.Store) error {
-				id, err := s.CreateAccount(ctx, store.NewAccount{Email: email, PasswordHash: hash})
+				id, err := s.CreateAccount(ctx, store.NewAccount{Email: email, HashedSecret: hash})
 				if err != nil {
 					return err
 				}
@@ -302,7 +305,7 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		return &ff.Command{
 			Name:      name,
 			Usage:     "fuingo [--db PATH] account " + name + " EMAIL",
-			ShortHelp: name + " an API account",
+			ShortHelp: name + " an account",
 			Flags:     ff.NewFlagSet("account " + name).SetParent(rootFlags),
 			Exec: func(ctx context.Context, args []string) error {
 				if len(args) != 1 {
@@ -325,7 +328,7 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	account := &ff.Command{
 		Name:        "account",
 		Usage:       "fuingo [--db PATH] account <create|disable|enable>",
-		ShortHelp:   "manage API accounts",
+		ShortHelp:   "manage accounts",
 		Flags:       ff.NewFlagSet("account").SetParent(rootFlags),
 		Subcommands: []*ff.Command{accountCreate, accountToggle("disable", false), accountToggle("enable", true)},
 		Exec: func(ctx context.Context, args []string) error {
@@ -385,7 +388,7 @@ func withDatabase(ctx context.Context, path string, fn func(*store.Store) error)
 	return fn(s)
 }
 
-// createUploader creates an active upload account in the game, generating a
+// createUploader adds an active uploader to the game, generating a
 // UUID token if token is empty. It prints a generated token once and never
 // prints a given one.
 func createUploader(ctx context.Context, stdout io.Writer, path, gameArg, emailArg, token string) error {
@@ -411,7 +414,7 @@ func createUploader(ctx context.Context, stdout io.Writer, path, gameArg, emailA
 		if err := s.CreateUploader(ctx, store.NewUploader{
 			GameCode: code,
 			Email:    email,
-			CredentialHash: func(gameID int64) []byte {
+			HashedCredentials: func(gameID int64) []byte {
 				return credential.Hash(pepper, email, gameID, token)
 			},
 		}); err != nil {

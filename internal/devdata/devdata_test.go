@@ -48,10 +48,10 @@ func TestSeed(t *testing.T) {
 				t.Errorf("%s: account %s not found: %v", env, a.Email, err)
 				continue
 			}
-			if err := bcrypt.CompareHashAndPassword(got.PasswordHash, []byte(a.Password)); err != nil {
+			if err := bcrypt.CompareHashAndPassword(got.HashedSecret, []byte(a.Password)); err != nil {
 				t.Errorf("%s: account %s: password does not match: %v", env, a.Email, err)
 			}
-			if cost, err := bcrypt.Cost(got.PasswordHash); err != nil || cost != bcrypt.MinCost {
+			if cost, err := bcrypt.Cost(got.HashedSecret); err != nil || cost != bcrypt.MinCost {
 				t.Errorf("%s: account %s: bcrypt cost %d, %v; want MinCost", env, a.Email, cost, err)
 			}
 		}

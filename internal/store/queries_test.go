@@ -16,20 +16,22 @@ import (
 	"zombiezen.com/go/sqlite/sqlitex"
 )
 
-func seedUploaders(t *testing.T, s *Store) (game1, game2 int64) {
+// seedUploaders creates a@example.com and b@example.com in game01 and
+// c@example.com in game02, and returns their uploader IDs.
+func seedUploaders(t *testing.T, s *Store) (a, b, c int64) {
 	t.Helper()
 	err := s.CreateRows(t.Context(), Rows{
 		Games: []string{"game01", "game02"},
 		Uploaders: []NewUploader{
-			{GameCode: "game01", Email: "a@example.com", CredentialHash: fixedHash(1)},
-			{GameCode: "game01", Email: "b@example.com", CredentialHash: fixedHash(2)},
-			{GameCode: "game02", Email: "c@example.com", CredentialHash: fixedHash(3)},
+			{GameCode: "game01", Email: "a@example.com", HashedCredentials: fixedHash(1)},
+			{GameCode: "game01", Email: "b@example.com", HashedCredentials: fixedHash(2)},
+			{GameCode: "game02", Email: "c@example.com", HashedCredentials: fixedHash(3)},
 		},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	return 1, 2
+	return 1, 2, 3
 }
 
 func sha(data []byte) string {
@@ -46,20 +48,20 @@ func TestConcurrentRecordUpload(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	game1, game2 := seedUploaders(t, s)
+	a, b, c := seedUploaders(t, s)
 	contents := []byte("setup orders\n")
 	hash := sha(contents)
 
 	uploaders := []struct {
-		game  int64
+		id    int64
 		email string
-	}{{game1, "a@example.com"}, {game1, "b@example.com"}, {game2, "c@example.com"}}
+	}{{a, "a@example.com"}, {b, "b@example.com"}, {c, "c@example.com"}}
 	const rounds = 8
 	var wg sync.WaitGroup
 	for range rounds {
 		for _, u := range uploaders {
 			wg.Go(func() {
-				if err := s.RecordUpload(t.Context(), u.game, u.email, "1", hash, contents, time.Now()); err != nil {
+				if err := s.RecordUpload(t.Context(), u.id, u.email, "1", hash, contents, time.Now()); err != nil {
 					t.Errorf("RecordUpload: %v", err)
 				}
 			})
@@ -93,7 +95,7 @@ func TestRecordUploadIsAtomic(t *testing.T) {
 	defer s.Close()
 	seedUploaders(t, s)
 	contents := []byte("orders\n")
-	if err := s.RecordUpload(t.Context(), 1, "nobody@example.com", "1", sha(contents), contents, time.Now()); err == nil {
+	if err := s.RecordUpload(t.Context(), 99, "nobody@example.com", "1", sha(contents), contents, time.Now()); err == nil {
 		t.Fatal("RecordUpload for an unknown uploader succeeded")
 	}
 	if blobs, _ := s.Blobs(t.Context()); len(blobs) != 0 {
@@ -111,14 +113,14 @@ func TestBlobsAreProtectedByForeignKeys(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	game1, game2 := seedUploaders(t, s)
+	a, b, c := seedUploaders(t, s)
 	shared, other := []byte("shared\n"), []byte("other\n")
 	for _, r := range []struct {
-		game     int64
+		id       int64
 		email    string
 		contents []byte
-	}{{game1, "a@example.com", shared}, {game2, "c@example.com", shared}, {game1, "b@example.com", other}} {
-		if err := s.RecordUpload(t.Context(), r.game, r.email, "1", sha(r.contents), r.contents, time.Now()); err != nil {
+	}{{a, "a@example.com", shared}, {c, "c@example.com", shared}, {b, "b@example.com", other}} {
+		if err := s.RecordUpload(t.Context(), r.id, r.email, "1", sha(r.contents), r.contents, time.Now()); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -134,13 +136,13 @@ func TestBlobsAreProtectedByForeignKeys(t *testing.T) {
 	if err := run("DELETE FROM upload_blobs WHERE content_hash = ?;", sha(shared)); !isForeignKeyError(err) {
 		t.Errorf("deleting a referenced blob = %v, want a foreign key error", err)
 	}
-	if err := run("INSERT INTO uploads (game_id, email, turn_no, content_hash, uploaded_at) VALUES (1, 'a@example.com', '1', ?, 'x');", sha([]byte("missing"))); !isForeignKeyError(err) {
+	if err := run("INSERT INTO uploads (uploader_id, email, turn_no, content_hash, uploaded_at) VALUES (1, 'a@example.com', '1', ?, 'x');", sha([]byte("missing"))); !isForeignKeyError(err) {
 		t.Errorf("upload of a missing blob = %v, want a foreign key error", err)
 	}
 
 	// Removing game01's history leaves "shared" referenced by game02 and
 	// "other" orphaned; the sweep removes only the orphan.
-	if err := run("DELETE FROM uploads WHERE game_id = ?;", game1); err != nil {
+	if err := run("DELETE FROM uploads WHERE uploader_id IN (SELECT id FROM game_uploaders WHERE game_id = 1);"); err != nil {
 		t.Fatal(err)
 	}
 	if err := run("DELETE FROM upload_blobs WHERE content_hash NOT IN (SELECT content_hash FROM uploads);"); err != nil {
@@ -215,7 +217,7 @@ func TestCreateAccount(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	id, err := s.CreateAccount(t.Context(), NewAccount{Email: "a@example.com", PasswordHash: []byte("hash-a")})
+	id, err := s.CreateAccount(t.Context(), NewAccount{Email: "a@example.com", HashedSecret: []byte("hash-a")})
 	if err != nil {
 		t.Fatalf("CreateAccount: %v", err)
 	}
@@ -223,16 +225,16 @@ func TestCreateAccount(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("FindAccount = %v, %v", ok, err)
 	}
-	if a.ID != id || a.Email != "a@example.com" || string(a.PasswordHash) != "hash-a" {
+	if a.ID != id || a.Email != "a@example.com" || string(a.HashedSecret) != "hash-a" {
 		t.Errorf("FindAccount = %+v, want ID %d and hash-a", a, id)
 	}
-	if _, err := s.CreateAccount(t.Context(), NewAccount{Email: "a@example.com", PasswordHash: []byte("hash-b")}); !errors.Is(err, ErrAccountExists) {
+	if _, err := s.CreateAccount(t.Context(), NewAccount{Email: "a@example.com", HashedSecret: []byte("hash-b")}); !errors.Is(err, ErrAccountExists) {
 		t.Errorf("CreateAccount with an existing email = %v, want ErrAccountExists", err)
 	}
-	if a, _, _ := s.FindAccount(t.Context(), "a@example.com"); string(a.PasswordHash) != "hash-a" {
-		t.Errorf("a duplicate CreateAccount changed the password hash to %q", a.PasswordHash)
+	if a, _, _ := s.FindAccount(t.Context(), "a@example.com"); string(a.HashedSecret) != "hash-a" {
+		t.Errorf("a duplicate CreateAccount changed the password hash to %q", a.HashedSecret)
 	}
-	if _, err := s.CreateAccount(t.Context(), NewAccount{Email: "B@example.com", PasswordHash: []byte("hash-b")}); !errors.Is(err, ErrEmailCase) {
+	if _, err := s.CreateAccount(t.Context(), NewAccount{Email: "B@example.com", HashedSecret: []byte("hash-b")}); !errors.Is(err, ErrEmailCase) {
 		t.Errorf("CreateAccount with an uppercase email = %v, want ErrEmailCase", err)
 	}
 	if _, ok, _ := s.FindAccount(t.Context(), "missing@example.com"); ok {
@@ -249,7 +251,7 @@ func TestCreateRowsIsAtomic(t *testing.T) {
 	defer s.Close()
 	err = s.CreateRows(t.Context(), Rows{
 		Games:    []string{"game01"},
-		Accounts: []NewAccount{{Email: "a@example.com", PasswordHash: []byte("x")}, {Email: "a@example.com", PasswordHash: []byte("y")}},
+		Accounts: []NewAccount{{Email: "a@example.com", HashedSecret: []byte("x")}, {Email: "a@example.com", HashedSecret: []byte("y")}},
 	})
 	if !errors.Is(err, ErrAccountExists) {
 		t.Fatalf("CreateRows with a duplicate account = %v, want ErrAccountExists", err)
@@ -271,7 +273,7 @@ func TestAddManager(t *testing.T) {
 	defer s.Close()
 	if err := s.CreateRows(t.Context(), Rows{
 		Games:    []string{"game01", "game02"},
-		Accounts: []NewAccount{{Email: "a@example.com", PasswordHash: []byte("x")}, {Email: "b@example.com", PasswordHash: []byte("y")}},
+		Accounts: []NewAccount{{Email: "a@example.com", HashedSecret: []byte("x")}, {Email: "b@example.com", HashedSecret: []byte("y")}},
 		Managers: []NewManager{{GameCode: "game01", Email: "b@example.com"}},
 	}); err != nil {
 		t.Fatal(err)
@@ -314,7 +316,7 @@ func TestManagedRowsCannotBeDeleted(t *testing.T) {
 	defer s.Close()
 	if err := s.CreateRows(t.Context(), Rows{
 		Games:    []string{"game01"},
-		Accounts: []NewAccount{{Email: "a@example.com", PasswordHash: []byte("x")}},
+		Accounts: []NewAccount{{Email: "a@example.com", HashedSecret: []byte("x")}},
 		Managers: []NewManager{{GameCode: "game01", Email: "a@example.com"}},
 	}); err != nil {
 		t.Fatal(err)
@@ -340,7 +342,7 @@ func TestSetManagerActive(t *testing.T) {
 	defer s.Close()
 	if err := s.CreateRows(t.Context(), Rows{
 		Games:    []string{"game01", "game02"},
-		Accounts: []NewAccount{{Email: "a@example.com", PasswordHash: []byte("x")}, {Email: "b@example.com", PasswordHash: []byte("y")}},
+		Accounts: []NewAccount{{Email: "a@example.com", HashedSecret: []byte("x")}, {Email: "b@example.com", HashedSecret: []byte("y")}},
 		Managers: []NewManager{{GameCode: "game01", Email: "a@example.com"}, {GameCode: "game01", Email: "b@example.com"}, {GameCode: "game02", Email: "a@example.com"}},
 	}); err != nil {
 		t.Fatal(err)
@@ -393,7 +395,7 @@ func TestSetAccountActive(t *testing.T) {
 	defer s.Close()
 	if err := s.CreateRows(t.Context(), Rows{
 		Games:    []string{"game01"},
-		Accounts: []NewAccount{{Email: "a@example.com", PasswordHash: []byte("x")}, {Email: "b@example.com", PasswordHash: []byte("y")}},
+		Accounts: []NewAccount{{Email: "a@example.com", HashedSecret: []byte("x")}, {Email: "b@example.com", HashedSecret: []byte("y")}},
 		Managers: []NewManager{{GameCode: "game01", Email: "a@example.com"}, {GameCode: "game01", Email: "b@example.com"}},
 	}); err != nil {
 		t.Fatal(err)
@@ -422,5 +424,56 @@ func TestSetAccountActive(t *testing.T) {
 	check(true, "a@example.com,b@example.com")
 	if err := s.SetAccountActive(t.Context(), "missing@example.com", false); !errors.Is(err, ErrUnknownAccount) {
 		t.Errorf("SetAccountActive of a missing account = %v, want ErrUnknownAccount", err)
+	}
+}
+
+// TestUploadersHaveAccounts checks that an uploader uses the account with its
+// email, creating one without a secret if needed, and that disabling the
+// account stops its uploads.
+func TestUploadersHaveAccounts(t *testing.T) {
+	t.Parallel()
+	s, err := OpenPrivateMemory(t.Context(), t.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.CreateRows(t.Context(), Rows{
+		Games:    []string{"game01", "game02"},
+		Accounts: []NewAccount{{Email: "a@example.com", HashedSecret: []byte("x")}},
+		Uploaders: []NewUploader{
+			{GameCode: "game01", Email: "a@example.com", HashedCredentials: fixedHash(1)},
+			{GameCode: "game01", Email: "b@example.com", HashedCredentials: fixedHash(2)},
+			{GameCode: "game02", Email: "b@example.com", HashedCredentials: fixedHash(3)},
+		},
+		Managers: []NewManager{{GameCode: "game01", Email: "a@example.com"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if a, _, _ := s.FindAccount(t.Context(), "a@example.com"); string(a.HashedSecret) != "x" {
+		t.Errorf("uploader a@example.com changed its account's secret to %q", a.HashedSecret)
+	}
+	b, ok, err := s.FindAccount(t.Context(), "b@example.com")
+	if err != nil || !ok || b.HashedSecret != nil || !b.Active {
+		t.Errorf("FindAccount(b) = %+v, %v, %v; want an active account without a secret", b, ok, err)
+	}
+	if _, err := s.CreateAccount(t.Context(), NewAccount{Email: "b@example.com", HashedSecret: []byte("y")}); !errors.Is(err, ErrAccountExists) {
+		t.Errorf("CreateAccount for an uploader's email = %v, want ErrAccountExists", err)
+	}
+	if err := s.CreateUploader(t.Context(), NewUploader{GameCode: "game02", Email: "b@example.com", HashedCredentials: fixedHash(4)}); !errors.Is(err, ErrUploaderExists) {
+		t.Errorf("CreateUploader for an existing uploader = %v, want ErrUploaderExists", err)
+	}
+	if err := s.SetAccountActive(t.Context(), "b@example.com", false); err != nil {
+		t.Fatal(err)
+	}
+	for _, hash := range []byte{2, 3} {
+		if _, ok, _ := s.FindUploader(t.Context(), []byte{hash}); ok {
+			t.Errorf("FindUploader(%02x) found an uploader with an inactive account", hash)
+		}
+	}
+	if u, ok, err := s.FindUploader(t.Context(), []byte{1}); err != nil || !ok || u.Email != "a@example.com" {
+		t.Errorf("FindUploader(01) = %+v, %v, %v", u, ok, err)
+	}
+	if got, _ := s.Managers(t.Context(), "game01"); strings.Join(got, ",") != "a@example.com" {
+		t.Errorf("Managers = %v, want a@example.com", got)
 	}
 }

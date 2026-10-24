@@ -6,12 +6,14 @@ package store
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"zombiezen.com/go/sqlite"
 	"zombiezen.com/go/sqlite/sqlitex"
@@ -326,7 +328,7 @@ func checkPoolInvariants(t *testing.T, s *Store, n int, journalMode string) {
 		if fk, err := pragmaText(conn, "PRAGMA foreign_keys;"); err != nil || fk != "1" {
 			t.Errorf("conn %d: foreign_keys = %q, %v; want 1", i, fk, err)
 		}
-		err := sqlitex.ExecuteTransient(conn, "INSERT INTO game_uploaders (game_id, email, credential_hash) VALUES (-1, 'x@example.com', x'00');", nil)
+		err := sqlitex.ExecuteTransient(conn, "INSERT INTO game_uploaders (game_id, account_id, hashed_credentials) VALUES (-1, -1, x'00');", nil)
 		if sqlite.ErrCode(err) != sqlite.ResultConstraintForeignKey {
 			t.Errorf("conn %d: insert with unknown game = %v, want foreign key error", i, err)
 		}
@@ -492,7 +494,96 @@ func TestMigrateKeepsVersion1Data(t *testing.T) {
 	if games, err := s.Games(t.Context()); err != nil || len(games) != 1 || games[0] != "game01" {
 		t.Errorf("Games = %v, %v; want [game01]", games, err)
 	}
-	if _, err := s.CreateAccount(t.Context(), NewAccount{Email: "a@example.com", PasswordHash: []byte("x")}); err != nil {
+	if _, err := s.CreateAccount(t.Context(), NewAccount{Email: "a@example.com", HashedSecret: []byte("x")}); err != nil {
 		t.Errorf("CreateAccount after Migrate: %v", err)
+	}
+}
+
+// TestMigrateKeepsVersion5Data migrates a database made by migrations 1-5,
+// whose uploaders had no accounts.
+func TestMigrateKeepsVersion5Data(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "v5.db")
+	conn, err := sqlite.OpenConn(path, sqlite.OpenReadWrite|sqlite.OpenCreate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blob := strings.Repeat("a", 64)
+	script := "PRAGMA application_id = " + strconv.Itoa(int(applicationID)) + ";\n" +
+		strings.Join(migrations[:5], "\n") + `
+INSERT INTO games (code) VALUES ('game01'), ('game02');
+INSERT INTO accounts (email, password_hash, is_active) VALUES
+	('m@example.com', 'hash-m', 1), ('both@example.com', 'hash-b', 0), ('gone@example.com', 'x', 1);
+DELETE FROM accounts WHERE email = 'gone@example.com';
+INSERT INTO game_managers (game_id, account_id, is_active) VALUES (1, 1, 1), (1, 2, 1);
+INSERT INTO game_uploaders (game_id, email, credential_hash, is_active) VALUES
+	(1, 'u@example.com', x'01', 1), (2, 'u@example.com', x'02', 0), (1, 'both@example.com', x'03', 1);
+INSERT INTO upload_blobs (content_hash, contents, created_at) VALUES ('` + blob + `', 'orders', '2026-01-01T00:00:00.000000000Z');
+INSERT INTO uploads (game_id, email, turn_no, content_hash, uploaded_at) VALUES
+	(1, 'u@example.com', '1', '` + blob + `', '2026-01-01T00:00:00.000000000Z'),
+	(1, 'both@example.com', '1', '` + blob + `', '2026-01-01T00:00:00.000000000Z'),
+	(1, 'u@example.com', '2', '` + blob + `', '2026-01-01T00:00:00.000000000Z');
+DELETE FROM uploads WHERE id = 3;
+PRAGMA user_version = 5;
+`
+	if err := sqlitex.ExecuteScript(conn, script, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := Migrate(t.Context(), path); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	s, err := Open(t.Context(), path)
+	if err != nil {
+		t.Fatalf("Open after Migrate: %v", err)
+	}
+	defer s.Close()
+
+	// API accounts keep their IDs, secrets, and state; an uploader without
+	// an account gets one with no secret, after the deleted account's ID.
+	for _, want := range []Account{
+		{ID: 1, Email: "m@example.com", HashedSecret: []byte("hash-m"), Active: true},
+		{ID: 2, Email: "both@example.com", HashedSecret: []byte("hash-b"), Active: false},
+		{ID: 4, Email: "u@example.com", Active: true},
+	} {
+		got, ok, err := s.FindAccount(t.Context(), want.Email)
+		if err != nil || !ok || got.ID != want.ID || !bytes.Equal(got.HashedSecret, want.HashedSecret) ||
+			(got.HashedSecret == nil) != (want.HashedSecret == nil) || got.Active != want.Active {
+			t.Errorf("FindAccount(%s) = %+v, %v, %v; want %+v", want.Email, got, ok, err, want)
+		}
+	}
+	// Only u@example.com's active credential in game01 still uploads:
+	// both@example.com's account is inactive.
+	u, ok, err := s.FindUploader(t.Context(), []byte{1})
+	if err != nil || !ok || u.GameID != 1 || u.Email != "u@example.com" {
+		t.Errorf("FindUploader(01) = %+v, %v, %v", u, ok, err)
+	}
+	for _, hash := range []byte{2, 3} {
+		if _, ok, _ := s.FindUploader(t.Context(), []byte{hash}); ok {
+			t.Errorf("FindUploader(%02x) found an inactive uploader", hash)
+		}
+	}
+	if got, err := s.Managers(t.Context(), "game01"); err != nil || strings.Join(got, ",") != "m@example.com" {
+		t.Errorf("Managers = %v, %v; want m@example.com", got, err)
+	}
+	// The history keeps its IDs, and new uploads do not reuse the deleted one.
+	if err := s.RecordUpload(t.Context(), u.ID, u.Email, "3", blob, []byte("orders"), time.Now()); err != nil {
+		t.Fatalf("RecordUpload: %v", err)
+	}
+	uploads, err := s.Uploads(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, up := range uploads {
+		got = append(got, fmt.Sprintf("%d %s %s %s", up.ID, up.GameCode, up.Email, up.TurnNo))
+	}
+	if want := "1 game01 u@example.com 1;2 game01 both@example.com 1;4 game01 u@example.com 3"; strings.Join(got, ";") != want {
+		t.Errorf("uploads = %q, want %q", strings.Join(got, ";"), want)
+	}
+	if id, err := s.CreateAccount(t.Context(), NewAccount{Email: "new@example.com"}); err != nil || id != 5 {
+		t.Errorf("CreateAccount = %d, %v; want 5", id, err)
 	}
 }

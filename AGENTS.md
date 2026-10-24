@@ -56,7 +56,8 @@ environment files, through `internal/cli`. Explicit flags override environment
 values, which override defaults. Every flag `--name` has an environment
 variable `FUINGO_NAME`; secrets such as `FUINGO_PEPPER` have no flag. The one
 secret with a flag is `--token` on `fuingo uploader create` and
-`fuingo game add --uploader`, which is command-line only (below) so that no environment file can give every uploader one token.
+`fuingo game add --uploader`, which is command-line only (below) so that no
+environment file can give every uploader one token.
 
 The exception is a flag that changes what a command does, or names what it
 acts on, rather than configuring it. `fuingo version --schema` prints the
@@ -101,7 +102,7 @@ as the user asks for them.
   and emails are lowercased with `strings.ToLower`.
 - `uploader create` and `game add --uploader` do the same thing and share
   their code. They generate a random UUID token unless `--token` is given,
-  prints a generated token once, and never prints a given one. It requires
+  print a generated token once, and never print a given one. They require
   `FUINGO_PEPPER`.
 - `account create` reads the password from the first line of standard input,
   without its LF or CRLF, or generates one with `--generate-password` and

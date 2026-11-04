@@ -10,3 +10,9 @@
 # Local environment overrides may hold secrets such as FUINGO_PEPPER.
 .env.local
 .env.*.local
+
+# Binaries built in the repository root.
+/fuingo
+/fuingod
+/fuingodb
+/olympia

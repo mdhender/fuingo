@@ -71,7 +71,22 @@ var (
 	filePattern = regexp.MustCompile(`^m[0-9a-z][0-9a-z._-]*$`)
 	hashPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 	slugRun     = regexp.MustCompile(`[^a-z0-9]+`)
+	// factionPattern matches the entity codes the engine prints (int_to_code
+	// in code.c): a number, or CCNN, CCN, CNN, or CNNN.
+	factionPattern = regexp.MustCompile(`^([0-9]{1,5}|[a-z]{2}[0-9]{1,2}|[a-z][0-9]{2,3})$`)
 )
+
+// ValidGame reports whether code, already lowercased, is a game code olympia
+// accepts: letters, digits, '.', '_', or '-', starting with a letter or digit.
+func ValidGame(code string) bool {
+	return gamePattern.MatchString(code)
+}
+
+// ValidFaction reports whether faction, already lowercased, has the form of
+// an Olympia G3 entity code, such as ab1, a12, ab12, or 1234.
+func ValidFaction(faction string) bool {
+	return factionPattern.MatchString(faction)
+}
 
 // Manifest describes a frozen batch. It never holds credentials.
 type Manifest struct {

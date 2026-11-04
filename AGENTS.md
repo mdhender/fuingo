@@ -45,7 +45,12 @@ upload files over HTTPS instead of mailing them.
   development/agent helpers) behind `http.NewCrossOriginProtection`. HTMX
   2.0.11 is vendored as `internal/server/static/htmx-2.0.11.min.js`.
 - `internal/api` is the `/api/` handler described below. `internal/olympia`
-  is `olympia`'s API client and its Olympia G3 order staging.
+  is `olympia`'s API client and its Olympia G3 order staging, and
+  `internal/gmstore` is `olympia`'s own store of games and players.
+- `internal/sqlitedb` implements the SQLite file contract in
+  [SQLITE3.md](SQLITE3.md) for any schema. `internal/store` and
+  `internal/gmstore` each wrap it with their own application ID and
+  migrations; do not copy the file handling into a third package.
 - `contrib/systemd/fuingod.service` runs `fuingod` as a systemd service;
   README.md documents its setup. Keep the two in sync, and keep the unit's
   `TimeoutStopSec` longer than `fuingod`'s shutdown timeout.
@@ -88,12 +93,24 @@ it manages, even when another program could reach the same thing:
   database; it never creates or migrates one, and it has no subcommands for
   data.
 - **`cmd/olympia` is the game master's tool for Olympia G3**, issue #1. It
-  never opens the database: it reaches fuingo only through `/api/`, as an
-  account that manages the game. It is specific to Olympia G3; do not
+  never opens fuingo's database: it reaches fuingo only through `/api/`, as
+  an account that manages the game. Its own data, the games and players it
+  manages, is in its own store file (`--store`, `internal/gmstore`), which
+  `olympia store create` and `store migrate` manage; every other command
+  only opens an existing, current one. It is specific to Olympia G3; do not
   generalize it into a framework for other engines. Its environment
   variables use the prefix `OLYMPIA_` instead of `FUINGO_` (through
   `cli.ParsePrefix`), and its secret, `OLYMPIA_PASSWORD`, has no flag.
-  `--game`, `--turn`, `--rebuild`, and `--force` are command line only.
+  `--game`, `--turn`, `--rebuild`, `--force`, `--faction`, `--new-faction`,
+  `--uploader`, and `--name` are command line only. A player's email flag is
+  `--uploader`, not `--email`, because `OLYMPIA_EMAIL` is the game master's
+  own login for `stage`.
+- In the store, a player is an Olympia G3 faction (the entity code on its
+  `BEGIN` line) in a game, played by a fuingo uploader's email. One email
+  may play several factions; never assume one email is one faction. Rows
+  have `AUTOINCREMENT` IDs and `ON DELETE RESTRICT` foreign keys, as in
+  fuingo. Delete removes a game or player only while nothing refers to it;
+  otherwise disable it.
 
 `fuingo` commands follow the noun-verb pattern, `fuingo <noun> <verb>`, as in
 `fuingo game create CODE`: each noun has only the verbs that make sense for it,
@@ -142,7 +159,7 @@ as the user asks for them.
 | `cmd/fuingo` | Application data. The operators' CLI for games, accounts, uploaders, and game managers. |
 | `cmd/fuingodb` | The database: `create` and `migrate`. |
 | `cmd/fuingod` | The server. Opens an existing database; never creates or migrates one. |
-| `cmd/olympia` | The Olympia G3 game master's tool. `stage` downloads a turn's uploads through `/api/` into a frozen batch and writes them to the engine's spool. |
+| `cmd/olympia` | The Olympia G3 game master's tool. `store`, `game`, and `player` manage its own store; `stage` downloads a turn's uploads through `/api/` into a frozen batch and writes them to the engine's spool. |
 
 Upload tokens are issued out of band: a game manager emails each uploader the
 game code and that game's token. A token cannot be recovered, because only its

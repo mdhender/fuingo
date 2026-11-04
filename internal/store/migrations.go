@@ -83,4 +83,18 @@ FROM game_managers gm
 JOIN accounts a ON a.id = gm.account_id
 WHERE gm.is_active = 1 AND a.is_active = 1;
 `,
+	// 2: API sessions. hashed_token is the SHA-256 of the bearer token that
+	// /api/login issues; the token itself is never stored.
+	`
+CREATE TABLE api_sessions (
+	id           INTEGER PRIMARY KEY AUTOINCREMENT,
+	account_id   INTEGER NOT NULL REFERENCES accounts (id) ON DELETE RESTRICT,
+	hashed_token BLOB    NOT NULL UNIQUE CHECK (length(hashed_token) = 32),
+	created_at   TEXT    NOT NULL,
+	expires_at   TEXT    NOT NULL
+);
+
+CREATE INDEX api_sessions_by_account ON api_sessions (account_id);
+CREATE INDEX api_sessions_by_expiry ON api_sessions (expires_at);
+`,
 }

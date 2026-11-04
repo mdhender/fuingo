@@ -11,7 +11,7 @@ upload files over HTTPS instead of mailing them.
   checked against the `game_uploaders` table.
 - Players cannot view, list, download, replace, or delete their uploads through
   the web form. This is a deliberate non-feature, not a gap to fill. Listings and
-  management belong to the future `/api/` phase described below.
+  management belong to the `/api/` routes described below, for game managers.
 - Distinguish agreed requirements from proposals. Resolve consequential design
   questions with the user rather than inventing behavior.
 
@@ -40,17 +40,18 @@ upload files over HTTPS instead of mailing them.
 - `internal/upload` is the upload handler, implementing the requirements
   below. `internal/clientip` finds the client's address behind trusted
   proxies; `internal/ratelimit` limits failed authorizations per client.
-- `internal/server` assembles the browser-facing routes (the page at `/`,
-  the vendored HTMX under `/static/`, `POST /upload`, and the
-  development/agent helper) behind `http.NewCrossOriginProtection`. HTMX
+- `internal/server` assembles the routes (the page at `/`, the vendored
+  HTMX under `/static/`, `POST /upload`, the `/api/` routes, and the
+  development/agent helpers) behind `http.NewCrossOriginProtection`. HTMX
   2.0.11 is vendored as `internal/server/static/htmx-2.0.11.min.js`.
+- `internal/api` is the `/api/` handler described below. `internal/olympia`
+  is `olympia`'s API client and its Olympia G3 order staging.
 - `contrib/systemd/fuingod.service` runs `fuingod` as a systemd service;
   README.md documents its setup. Keep the two in sync, and keep the unit's
   `TimeoutStopSec` longer than `fuingod`'s shutdown timeout.
-- `cmd/fuingod`, `cmd/fuingodb`, and `cmd/fuingo` exist; [README.md](README.md)
-  documents their flags and environment variables. Keep it current when adding
-  any of them. The `/api/` routes do not exist yet; do not document them as
-  implemented until they are.
+- `cmd/fuingod`, `cmd/fuingodb`, `cmd/fuingo`, and `cmd/olympia` exist;
+  [README.md](README.md) documents their flags and environment variables and
+  the `/api/` routes. Keep it current when adding any of them.
 
 ## Commands
 
@@ -82,9 +83,17 @@ it manages, even when another program could reach the same thing:
 - **`cmd/fuingodb` manages the database itself**: creating, migrating, and any
   future maintenance of the database file and its schema. Never add one of
   these, such as `migrate`, to `fuingo`.
-- **`cmd/fuingod` manages the server**: it serves the upload form and owns the
-  server's startup flags. It opens an existing database; it never creates or
-  migrates one, and it has no subcommands for data.
+- **`cmd/fuingod` manages the server**: it serves the upload form and the
+  `/api/` routes, and owns the server's startup flags. It opens an existing
+  database; it never creates or migrates one, and it has no subcommands for
+  data.
+- **`cmd/olympia` is the game master's tool for Olympia G3**, issue #1. It
+  never opens the database: it reaches fuingo only through `/api/`, as an
+  account that manages the game. It is specific to Olympia G3; do not
+  generalize it into a framework for other engines. Its environment
+  variables use the prefix `OLYMPIA_` instead of `FUINGO_` (through
+  `cli.ParsePrefix`), and its secret, `OLYMPIA_PASSWORD`, has no flag.
+  `--game`, `--turn`, `--rebuild`, and `--force` are command line only.
 
 `fuingo` commands follow the noun-verb pattern, `fuingo <noun> <verb>`, as in
 `fuingo game create CODE`: each noun has only the verbs that make sense for it,
@@ -133,6 +142,7 @@ as the user asks for them.
 | `cmd/fuingo` | Application data. The operators' CLI for games, accounts, uploaders, and game managers. |
 | `cmd/fuingodb` | The database: `create` and `migrate`. |
 | `cmd/fuingod` | The server. Opens an existing database; never creates or migrates one. |
+| `cmd/olympia` | The Olympia G3 game master's tool. `stage` downloads a turn's uploads through `/api/` into a frozen batch and writes them to the engine's spool. |
 
 Upload tokens are issued out of band: a game manager emails each uploader the
 game code and that game's token. A token cannot be recovered, because only its
@@ -154,6 +164,7 @@ never be reused.
 | `game_managers` | `id`, `game_id`, `account_id`, `is_active` | PK `id`; `(game_id, account_id)` unique; FKs to `games` and `accounts` |
 | `upload_blobs` | `content_hash`, `contents`, `created_at` | PK `content_hash` |
 | `uploads` | `id`, `uploader_id`, `email`, `turn_no`, `content_hash`, `uploaded_at` | PK `id`; FK `uploader_id` → `game_uploaders`; FK `content_hash` → `upload_blobs` |
+| `api_sessions` | `id`, `account_id`, `hashed_token`, `created_at`, `expires_at` | PK `id`; `hashed_token` unique; FK `account_id` → `accounts` |
 
 Two views hold the rules for being active, so queries do not repeat them:
 `active_uploaders` lists the `game_uploaders` rows whose row, game, and
@@ -185,17 +196,20 @@ or not.
   the file's header line, stored as text exactly as written. `uploaded_at` is
   UTC.
 - Uploaded files are stored only in the database, never on the filesystem.
-  Games and other clients read them through the future `/api/` routes, which
+  Games and other clients read them through the `/api/` routes, which
   enforce access controls.
 - Upload tokens are never stored in `accounts`, and the API password is never
   an upload credential. `game_managers` lists the games each account manages.
+- `api_sessions` holds the bearer tokens issued by `/api/login`, as the
+  SHA-256 of each token, never the token. A session is valid until
+  `expires_at` (UTC), and only while its account is active and has a
+  `hashed_secret`. Logging in deletes expired sessions.
 - Every foreign key is `ON DELETE RESTRICT`: deleting a row that others refer to
   fails instead of removing history. Revoke access by clearing `is_active`.
 
 Rows in `games`, `game_uploaders`, `accounts`, and `game_managers` come from
 `fuingo`, the default data, and the development/agent helpers in
-[TESTING.md](TESTING.md). The tables exist in preparation for the `/api/`
-phase; the routes that use them do not yet.
+[TESTING.md](TESTING.md). The `/api/` routes read them; none changes them yet.
 
 ## Upload requirements
 
@@ -307,22 +321,38 @@ The server handles each upload in this order:
   repository; the user will set those up if the project adopts a Tailwind UI kit
   component.
 
-## Future phase: the `/api/` routes
+## The `/api/` routes
 
-Do not implement these until the user starts the phase.
+The `/api/` phase has started. The routes are documented in
+[README.md](README.md#api). So far they are read-only and serve `olympia`;
+add routes only as the user asks for them.
 
-- Smarter clients will submit files through `/api/` routes without the web form.
-- `/api/` requests authenticate with the `Authorization` header. An inactive
-  account fails authentication like a wrong password.
-- Only an account with a `hashed_secret` can authenticate to `/api/`. Upload
-  tokens never authenticate to `/api/`, and the API password never authorizes
-  an upload. Keep the two kinds of credential separate; see
+- `POST /api/login` exchanges an account's email and API password for a
+  bearer token valid for 24 hours, stored only as its SHA-256 in
+  `api_sessions`. Every other route requires `Authorization: Bearer TOKEN`.
+  Failed logins are limited per client address with the same limits as
+  failed uploads, and all get one generic `401`.
+- `GET /api/games/{code}/uploads[?turn=N]` lists a game's uploads, oldest
+  first, and `GET /api/games/{code}/uploads/{id}/body` returns one upload's
+  contents with its hash in `X-Content-SHA256`. There is no pagination yet.
+- Only an account with a `hashed_secret` can log in, and an inactive account
+  fails like a wrong password; its existing tokens stop working. Upload
+  tokens never authenticate to `/api/`, and the API password never
+  authorizes an upload. Keep the two kinds of credential separate; see
   [TESTING.md](TESTING.md).
 - API passwords are hashed with bcrypt at `bcrypt.MinCost`. This is an
   accepted risk; do not raise the cost or propose doing so.
-- The API adds listing and management of uploaded files. An account may act
-  only on the games it manages in `game_managers`, and only while the account
-  and that row are active.
+- An account may act only on the games it manages in `game_managers`, and
+  only while the account and that row are active; the game may be inactive.
+  Any other game, and any upload outside a managed game, gets the same `404`
+  as one that does not exist. Never add a route that reaches a blob by its
+  content hash alone: blobs are shared across games.
+- The `/api/` routes go through the same `http.NewCrossOriginProtection` as
+  the form. Command-line clients send neither `Origin` nor `Sec-Fetch-Site`,
+  so they pass; browsers on other origins are refused.
+- Still to settle with the user (issue #1): management routes that create or
+  change games, players, turns, and orders; deletion and history rules;
+  replacement and cutoff rules for multiple submissions; pagination.
 
 ## Verification
 

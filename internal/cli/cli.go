@@ -34,30 +34,43 @@ const EnvPrefix = "FUINGO"
 // their environment variables, including any set by an environment file,
 // before applying the environment.
 func Parse(cmd *ff.Command, args []string, env *string, commandLineOnly ...string) error {
+	return ParsePrefix(EnvPrefix, cmd, args, env, commandLineOnly...)
+}
+
+// ParsePrefix is Parse for a program whose environment variables start with
+// prefix instead of EnvPrefix: with prefix OLYMPIA, --env falls back to
+// OLYMPIA_ENV and --spool reads OLYMPIA_SPOOL.
+func ParsePrefix(prefix string, cmd *ff.Command, args []string, env *string, commandLineOnly ...string) error {
 	if err := cmd.Parse(args); err != nil {
 		return err
 	}
 	if *env == "" {
-		*env = os.Getenv(EnvPrefix + "_ENV")
+		*env = os.Getenv(prefix + "_ENV")
 	}
 	if err := dotenv.Load(*env); err != nil {
 		return err
 	}
 	for _, name := range commandLineOnly {
-		if err := os.Unsetenv(EnvVar(name)); err != nil {
+		if err := os.Unsetenv(PrefixedEnvVar(prefix, name)); err != nil {
 			return err
 		}
 	}
 	if err := cmd.Reset(); err != nil {
 		return err
 	}
-	return cmd.Parse(args, ff.WithEnvVarPrefix(EnvPrefix))
+	return cmd.Parse(args, ff.WithEnvVarPrefix(prefix))
 }
 
 // EnvVar returns the environment variable for the flag --name, as ff names it:
 // --generate-password reads FUINGO_GENERATE_PASSWORD.
 func EnvVar(name string) string {
-	return EnvPrefix + "_" + strings.ToUpper(strings.NewReplacer("-", "_", ".", "_", "/", "_").Replace(name))
+	return PrefixedEnvVar(EnvPrefix, name)
+}
+
+// PrefixedEnvVar returns the environment variable for the flag --name in a
+// program whose variables start with prefix.
+func PrefixedEnvVar(prefix, name string) string {
+	return prefix + "_" + strings.ToUpper(strings.NewReplacer("-", "_", ".", "_", "/", "_").Replace(name))
 }
 
 // Pepper returns FUINGO_PEPPER, which only ever comes from the environment

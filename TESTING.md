@@ -29,11 +29,10 @@ the other:
   password never authorizes an upload. `game_managers` lists the games each
   account manages.
 
-The tables and their default rows exist, and `fuingo account create`,
-`fuingo account set-password`, and `fuingo game add --manager` add to them,
-but nothing authenticates to the API until the future `/api/` phase described
-in [AGENTS.md](AGENTS.md). Do not implement the API account helpers below
-until that phase starts.
+`fuingo account create`, `fuingo account set-password`, and
+`fuingo game add --manager` add to the tables. An account logs in to the
+`/api/` routes described in [AGENTS.md](AGENTS.md) with `POST /api/login`,
+which returns a bearer token.
 
 ## Default accounts
 
@@ -129,7 +128,7 @@ POST /__agent/create-account/<game>/<email>/<token>
   the same email and token may be created in another game.
   Never modify an existing row, including when creation requests race.
 
-### Create an API account (future `/api/` phase)
+### Create an API account
 
 ```text
 POST /__development/create-api-account/<email>
@@ -144,7 +143,7 @@ POST /__agent/create-api-account/<email>
 - Return an error if the account already exists.
   Never recreate it, reset its password, or otherwise modify it, including when creation requests race.
 
-### Log in an API account (future `/api/` phase)
+### Log in an API account
 
 ```text
 POST /__development/log-me-in/<email>
@@ -153,10 +152,11 @@ POST /__agent/log-me-in/<email>
 
 - Encode the email as a URL path segment.
 - Require an existing account with a password; return an error rather than
-  creating one. Refuse an account without a password.
+  creating one. Refuse an account without a password, and a disabled one.
 - Issue the same authorization token that a normal `/api/` login issues for
   that account, and return it in the response for use in the `Authorization`
-  header. Do not set cookies or redirect. Never log the token.
+  header, in the same JSON as `POST /api/login`. Do not set cookies or
+  redirect. Never log the token.
 
 ## Verification contract
 
@@ -167,7 +167,7 @@ When changing the HTTP helpers, cover environment and prefix isolation,
 non-POST requests, duplicate account creation without mutation, and CSRF
 rejection through HTTP tests. Test that a helper-created upload account can
 upload through the web form, and that `create-account` refuses an unknown game
-code. Once the `/api/` phase exists, test that
+code. Test that
 `log-me-in` refuses missing accounts and accounts without a password, that its token authenticates
 `/api/` requests, and that each kind of account is refused by the other's
 routes. Exercise an upload with a

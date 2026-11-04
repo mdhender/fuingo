@@ -3,7 +3,9 @@
 A web server that accepts turn-file uploads for play-by-email games. Players
 upload a turn file through a web form instead of mailing it. The file's first
 line, `<game code> <turn number> <email address> <token>`, authorizes it; the
-server stores the rest of the file.
+server stores the rest of the file. Game managers read the uploads through
+the `/api/` routes, and `olympia` stages them as orders for the Olympia G3
+engine.
 
 ## Commands
 
@@ -17,11 +19,13 @@ go run ./cmd/fuingo   --env development --db tmp/fuingo.db game create game03
 go run ./cmd/fuingo   --env development --db tmp/fuingo.db game add --uploader tern@example.com --code game03
 go run ./cmd/fuingo   --env development --db tmp/fuingo.db account create --generate-password acct03@example.com
 go run ./cmd/fuingo   --env development --db tmp/fuingo.db game add --manager acct03@example.com --code game03
+go run ./cmd/olympia  --env development stage --game game01 --turn 1
 ```
 
 `fuingodb` creates and migrates databases. `fuingod` serves the upload form and
 only opens an existing, current database; it never creates or migrates one.
-`fuingo` is the operators' CLI for the application data. `fuingo version`
+`fuingo` is the operators' CLI for the application data. `olympia` is the game
+master's tool for Olympia G3 games; see [olympia](#olympia). `fuingo version`
 prints the program's version; `fuingo version --schema` prints the database's
 schema version. Commands that use the database, like `fuingod`, refuse one
 that is not at the schema version the program expects. `fuingo` never creates
@@ -76,6 +80,96 @@ override environment variables, which override the defaults.
   SHA-256 of their contents; identical files are stored once. Each successful
   upload is recorded in the `uploads` table. Nothing is written to the
   filesystem, so backing up the database backs up every upload.
+
+## API
+
+`fuingod` serves these routes under `/api/` for game managers. Requests and
+responses are JSON, except a body download. Every response has
+`Cache-Control: no-store`.
+
+| Route | Does |
+| --- | --- |
+| `POST /api/login` | Takes `{"email": ..., "password": ...}` with `Content-Type: application/json`. Returns `{"token": ..., "expires_at": ...}`. The token is valid for 24 hours. |
+| `GET /api/games/{code}/uploads[?turn=N]` | Lists the game's uploads, oldest first: `{"game": ..., "uploads": [{"id", "email", "turn", "content_hash", "size", "uploaded_at"}]}`. `turn` matches the turn number exactly as written in the uploaded file. |
+| `GET /api/games/{code}/uploads/{id}/body` | Returns an upload's contents (without its header line), with the SHA-256 in `X-Content-SHA256`. |
+
+- Log in with an account that has a password (`fuingo account create` or
+  `account set-password`). Send the token as `Authorization: Bearer TOKEN`.
+  Only the token's SHA-256 is stored. An upload token never logs in, and an
+  API password never authorizes an upload.
+- Every failed login gets the same `401`, whether the email is unknown, the
+  password is wrong, or the account is disabled or has no password. Failed
+  logins are limited per client address like failed uploads: 5, then one per
+  minute, with `429` and `Retry-After` beyond that.
+- An account sees only the games it manages while it and its
+  `game_managers` row are active, whether or not the game is. Any other game,
+  and any upload outside a managed game, gets the same `404` as one that does
+  not exist. Upload contents are reachable only through an upload, never by
+  content hash. A disabled account's tokens stop working at once.
+- Timestamps are UTC, as `2006-01-02T15:04:05.000000000Z`.
+- There is no pagination yet, and no route changes any data.
+
+## olympia
+
+`olympia stage` downloads every upload for one turn of a game and writes them
+to the Olympia G3 engine's spool directory as order files.
+
+```sh
+export OLYMPIA_SERVER=https://htmx-app.localhost:8443
+export OLYMPIA_EMAIL=acct01@example.com
+export OLYMPIA_SPOOL=~/Games/olympia-g3/alpha/lib/spool
+export OLYMPIA_BATCH=~/Games/olympia-g3/alpha/batches
+# OLYMPIA_PASSWORD goes in the process environment or an ignored .local file.
+olympia --env production stage --game alpha --turn 3
+```
+
+1. It logs in to fuingo with `OLYMPIA_EMAIL` and `OLYMPIA_PASSWORD`, an
+   account that manages the game.
+2. It downloads the turn's uploads into a batch directory,
+   `<batch>/<game>/turn-<turn>/`: `blobs/<sha256>` for each distinct body and
+   `manifest.json` listing, for each file to stage, its name, the upload ID,
+   the uploader's email, the upload time, the content hash, the size, and any
+   lines over 1,023 bytes (which the engine truncates). The batch appears only
+   once every body matches its hash; a failed or interrupted download leaves
+   nothing behind. A turn with no uploads is an error.
+3. It writes one file per upload to the spool, in upload order, named
+   `m<turn>-<seq>-<email>-<upload id>`, such as
+   `m3-0002-alice-example-com-17`:
+
+   ```text
+   From alice@example.com Wed Nov  4 07:36:00 2026
+   From: alice@example.com
+
+   <the uploaded orders, with LF line endings>
+   ```
+
+   Every upload for the turn is staged, not only each player's latest, and
+   the engine applies them one at a time, so feed them to it in name order.
+
+Once a turn's batch exists it is frozen: staging the turn again, for example
+after the engine has consumed the spool, reuses it without logging in, and
+ignores later uploads. `--rebuild` downloads it again. `olympia` refuses a
+spool directory that already holds files starting with `m`, since the engine
+would read them as orders, unless given `--force`; it never deletes them.
+
+`olympia` never writes the password, its bearer token, or upload tokens to
+any file. It requires `https`, except for `localhost` and loopback addresses.
+
+| Flag | Environment variable | Meaning |
+| --- | --- | --- |
+| `--env` | `OLYMPIA_ENV` | `development`, `test`, `production`, or `agent`; selects the environment files, as for the other commands. Required by `stage`. |
+| `--server` | `OLYMPIA_SERVER` | fuingo's URL. Required. |
+| `--email` | `OLYMPIA_EMAIL` | The email of an account that manages the game. Required. |
+| `--spool` | `OLYMPIA_SPOOL` | The engine's spool directory, `<libdir>/spool`. Must exist. Required. |
+| `--batch` | `OLYMPIA_BATCH` | The directory holding the batches. Must exist. Required. |
+| `--game`, `--turn` | (none) | The game code and the turn number (decimal digits). Required. Command line only. |
+| `--rebuild` | (none) | Download the batch again even if it exists. Command line only. |
+| `--force` | (none) | Stage even if the spool holds files starting with `m`. Command line only. |
+| (none) | `OLYMPIA_PASSWORD` | The account's API password. Required. |
+
+Not yet implemented: managing games, players, turns, and orders in
+`olympia`, replacement and cutoff rules for multiple submissions, and
+running the engine or mailing reports, which stay with the GM's scripts.
 
 ## Proxy
 

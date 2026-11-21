@@ -55,8 +55,8 @@ upload files over HTTPS instead of mailing them.
   README.md documents its setup. Keep the two in sync, and keep the unit's
   `TimeoutStopSec` longer than `fuingod`'s shutdown timeout.
 - `cmd/fuingod`, `cmd/fuingodb`, `cmd/fuingo`, and `cmd/olympia` exist;
-  [README.md](README.md) documents their flags and environment variables and
-  the `/api/` routes. Keep it current when adding any of them.
+  [README.md](README.md) documents their flags and environment variables,
+  and [API.md](API.md) the `/api/` routes. Keep it current when adding any of them.
 
 ## Commands
 
@@ -343,8 +343,10 @@ The server handles each upload in this order:
 
 ## The `/api/` routes
 
-The `/api/` phase has started. The routes are documented in
-[README.md](README.md#api). They serve game managers and `olympia`; add routes only as the user asks
+The `/api/` phase has started. [API.md](API.md) is the reference for
+clients: every route's request, response, status codes, and an example.
+Keep it current with every change to a route, and keep the route table in
+[README.md](README.md#api) in step with it. They serve game managers and `olympia`; add routes only as the user asks
 for them.
 
 - `POST /api/login` exchanges an account's email and API password for a

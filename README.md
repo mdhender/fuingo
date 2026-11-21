@@ -83,47 +83,24 @@ override environment variables, which override the defaults.
 
 ## API
 
-`fuingod` serves these routes under `/api/` for game managers. Requests and
-responses are JSON, except a body download. Every response has
-`Cache-Control: no-store`.
+`fuingod` serves these routes under `/api/` for game managers.
+[API.md](API.md) is the reference for writing a client: requests,
+responses, status codes, and examples for every route.
 
 | Route | Does |
 | --- | --- |
-| `POST /api/login` | Takes `{"email": ..., "password": ...}` with `Content-Type: application/json`. Returns `{"token": ..., "expires_at": ...}`. The token is valid for 24 hours. |
-| `POST /api/games` | Takes `{"code": ...}`. Creates an active game and makes the account its manager. Returns `201` and `{"game": ...}`, with the code lowercased; `409` if a game has that code. |
-| `GET /api/games/{code}/uploaders` | Lists the game's uploaders, active or not, in order of ID: `{"game": ..., "uploaders": [{"id", "email", "active", "account_active"}]}`. An uploader can upload only while it, its account, and the game are all active. |
-| `POST /api/games/{code}/uploaders` | Takes `{"email": ...}`. Adds an active uploader, creating an account without a password if the email has none. Returns `201` and `{"game", "id", "email", "token"}`; `409` if the email is already an uploader of the game, even a disabled one. |
-| `POST /api/games/{code}/uploaders/{id}/disable`, `.../enable` | Clears or sets the uploader's active flag. Takes no body, and repeating one succeeds. Returns `{"game", "id", "active"}`. |
-| `POST /api/games/{code}/uploaders/{id}/reset-token` | Replaces the uploader's upload token; the old one stops working at once. Takes no body. Returns `{"game", "id", "email", "token"}`. It does not enable a disabled uploader. |
-| `GET /api/games/{code}/uploads[?turn=N]` | Lists the game's uploads, oldest first: `{"game": ..., "uploads": [{"id", "email", "turn", "content_hash", "size", "uploaded_at"}]}`. `turn` matches the turn number exactly as written in the uploaded file. |
-| `GET /api/games/{code}/uploads/{id}/body` | Returns an upload's contents (without its header line), with the SHA-256 in `X-Content-SHA256`. |
+| `POST /api/login` | Exchanges an account's email and API password for a bearer token valid for 24 hours. |
+| `POST /api/games` | Creates a game and makes the account its manager. |
+| `GET /api/games/{code}/uploaders` | Lists the game's uploaders. |
+| `POST /api/games/{code}/uploaders` | Adds an uploader and returns its upload token once. |
+| `POST /api/games/{code}/uploaders/{id}/disable`, `.../enable` | Clears or sets the uploader's active flag. |
+| `POST /api/games/{code}/uploaders/{id}/reset-token` | Replaces the uploader's upload token and returns the new one once. |
+| `GET /api/games/{code}/uploads[?turn=N]` | Lists the game's uploads, oldest first. |
+| `GET /api/games/{code}/uploads/{id}/body` | Returns an upload's contents, without its header line. |
 
-- Log in with an account that has a password (`fuingo account create` or
-  `account set-password`). Send the token as `Authorization: Bearer TOKEN`.
-  Only the token's SHA-256 is stored. An upload token never logs in, and an
-  API password never authorizes an upload.
-- Every failed login gets the same `401`, whether the email is unknown, the
-  password is wrong, or the account is disabled or has no password. Failed
-  logins are limited per client address like failed uploads: 5, then one per
-  minute, with `429` and `Retry-After` beyond that.
-- An account sees only the games it manages while it and its
-  `game_managers` row are active, whether or not the game is. Any other game,
-  and any upload outside a managed game, gets the same `404` as one that does
-  not exist. Upload contents are reachable only through an upload, never by
-  content hash. A disabled account's tokens stop working at once.
-- Timestamps are UTC, as `2006-01-02T15:04:05.000000000Z`.
-- fuingo generates every upload token, a random UUID, and returns it once,
-  in the response that adds the uploader or resets the token. Only its hash
-  is stored, so a lost token is replaced by resetting it. The manager sends
-  the token to the uploader out of band.
-- Game codes and emails must be one or more printable ASCII characters
-  without spaces, and are lowercased. A request body must be
-  `application/json` with only the documented fields, or it gets `415` or
-  `400`.
-- Any account that can log in may create games. Creating one reveals, by
-  its `409`, whether a code is taken.
-- There is no pagination yet. No route deletes anything: uploads are
-  permanent history, and access is revoked by disabling.
+Log in with an account that has a password (`fuingo account create` or
+`account set-password`). An account reaches only the games it manages. An
+upload token never logs in, and an API password never authorizes an upload.
 
 ## olympia
 

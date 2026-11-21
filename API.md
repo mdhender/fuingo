@@ -34,8 +34,15 @@ exist only in `development` and `agent`; see
 - **Base URL.** Every route is under `/api/` on the server's public HTTPS
   origin. In development that is `https://htmx-app.localhost:8443`.
 - **Requests.** A request with a body sends a JSON object with
-  `Content-Type: application/json`, at most 4 KiB, containing only the
-  documented fields. An unknown field is an error, not ignored.
+  `Content-Type: application/json` (a `charset` parameter is accepted),
+  at most 4 KiB, containing only the documented fields. An unknown field,
+  a field of the wrong type, or a larger body gets `400`.
+- **Methods.** Each route accepts only the method shown. A `GET` route
+  also answers `HEAD`.
+- **Paths** must be written exactly as shown, with no trailing slash and
+  no doubled slashes. A trailing slash gets `404`. A path that needs
+  cleaning, such as `/api//games`, gets a redirect to the clean path
+  rather than an error; do not rely on following it.
 - **Responses.** JSON with `Content-Type: application/json`, except a
   successful download of an upload's body, which is `text/plain`. Every
   error is JSON. Every response has `Cache-Control: no-store`.
@@ -79,8 +86,21 @@ Treat the message as text for people; branch on the status code.
 | `429` | Too many failed logins from this client address. `Retry-After` gives the seconds to wait. |
 | `500` | Server error. Safe to retry later. |
 
-`403`, `404` for an unknown path, and `405` are decided before the bearer
-token is checked, so they do not depend on being logged in. A proxy in
+Checks run in a fixed order, and the first failure decides the status:
+
+1. `403` for a cross-origin request.
+2. `404` for an unknown path, or `405` for a wrong method.
+3. `401` for a missing or invalid token (except on login).
+4. `404` for a game the account does not manage.
+5. `415`, then `400`, for the body.
+6. `404` or `409` for the item itself.
+
+So the first two do not depend on being logged in, and a request to an
+unmanaged game gets `404` however malformed its body is. On
+`POST /api/games`, which names no game in its path, step 4 does not apply.
+On login, the order is `415`, `400`, `429`, then `401`.
+
+A proxy in
 front of the server may still answer in its own format when the server is
 down (for example `502`), so a robust client checks `Content-Type` before
 parsing an error.
@@ -113,14 +133,21 @@ curl -s "$FUINGO/api/login" \
 - A token is valid for 24 hours, until `expires_at`. There is no refresh
   and no logout route: log in again when it expires or a route returns
   `401`. An account may hold several tokens at once.
-- A token stops working at once if its account is disabled.
+- A token stops working at once if its account is disabled, and works
+  again if the account is re-enabled before it expires.
+- **Changing the account's password does not end its tokens.** A token
+  issued under the old password stays valid until it expires. Disabling
+  the account is the only way to cut one off early.
 - Every failed login gets the same `401`, whether the email is unknown, the
   password is wrong, the account is disabled, or the account has no
   password. A client cannot tell these apart.
 - **Failure limit.** Each client address may fail 5 times, then once more
   per minute. Beyond that every login from the address gets `429`, even
   with the right password, until `Retry-After` seconds pass. Successful
-  logins do not count. Do not retry a `401` in a loop.
+  logins and malformed requests (`400`, `415`) do not count. Do not retry
+  a `401` in a loop. IPv6 clients are grouped by /64 prefix, so tools on
+  one network may share a limit. The limit is separate from the one on
+  failed uploads.
 - Only an account with an API password can log in. An operator creates one
   with `fuingo account create` or `fuingo account set-password`; the API
   cannot.
@@ -136,14 +163,17 @@ An account acts only on the games it **manages**. It manages a game it
 created with `POST /api/games`, or one an operator added it to with
 `fuingo game add --manager`.
 
-- For any other game, every route below returns the same `404` as for a
-  game that does not exist. So does an uploader or upload ID that belongs to
+- For any other game, every route with a game code in its path returns
+  the same `404` as for a game that does not exist. So does an uploader or upload ID that belongs to
   another game, even when requested through a game the account manages.
 - A disabled game is still fully manageable. Disabling a game only stops
   uploads to it.
 - If an operator disables the account's manager row for a game, the
   account gets `404` for that game.
-- `GET /api/games` lists the games the account can reach.
+- `GET /api/games` lists the games the account can reach, and
+  `POST /api/games` reports `409` for a code that is taken by anyone. That
+  `409` is the one place the API reveals a game the account does not
+  manage.
 
 ## Games
 
@@ -441,8 +471,8 @@ Helper errors are plain text, not JSON.
   bcrypt check and a new session row.
 - On `429`, wait `Retry-After` seconds. On `500`, back off and retry.
 - Treat `404` on a game as "not mine or not there". Retrying will not help.
-- Send no body and no `Content-Type` on `disable`, `enable`, and
-  `reset-token`.
+- Send no body on `disable`, `enable`, and `reset-token`. One sent is
+  ignored, not validated.
 - Never retry `reset-token` or `POST .../uploaders` blindly after a timeout:
   the first call may have succeeded, and its token is then lost. List the
   uploaders to see what happened; if the uploader exists, reset its token

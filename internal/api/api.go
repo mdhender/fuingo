@@ -20,6 +20,9 @@
 // upload in a managed game, never by content hash.
 //
 // Failed logins are limited per client address, like failed uploads.
+//
+// Every error is a JSON Error, including a path or method that matches no
+// route. The server uses Forbidden for cross-origin requests it refuses.
 package api
 
 import (
@@ -98,14 +101,16 @@ type Error struct {
 
 // Messages in error responses.
 const (
-	msgBadRequest    = "the request body must be a JSON object with email and password"
-	msgLoginFailed   = "the email or password is not valid"
-	msgNotFound      = "not found"
-	msgServerError   = "the request could not be completed; try again later"
-	msgTooManyFailed = "too many failed logins from your address; try again later"
-	msgUnauthorized  = "a valid bearer token is required"
-	msgUnsupported   = "the request body must be application/json"
-	msgBadTurn       = "turn must not be empty"
+	msgForbidden        = "cross-origin requests are not allowed"
+	msgMethodNotAllowed = "method not allowed"
+	msgBadRequest       = "the request body must be a JSON object with email and password"
+	msgLoginFailed      = "the email or password is not valid"
+	msgNotFound         = "not found"
+	msgServerError      = "the request could not be completed; try again later"
+	msgTooManyFailed    = "too many failed logins from your address; try again later"
+	msgUnauthorized     = "a valid bearer token is required"
+	msgUnsupported      = "the request body must be application/json"
+	msgBadTurn          = "turn must not be empty"
 )
 
 // Config configures a Handler.
@@ -156,6 +161,7 @@ func New(cfg Config) (*Handler, error) {
 	h := &Handler{db: cfg.Store, pepper: cfg.Pepper, logger: cfg.Logger, clients: cfg.Clients, failures: cfg.LoginFailures, now: cfg.Now, dummyHash: dummy}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/login", h.login)
+	mux.HandleFunc("GET /api/games", h.authenticated(h.listGames))
 	mux.HandleFunc("POST /api/games", h.authenticated(h.createGame))
 	mux.HandleFunc("GET /api/games/{code}/uploaders", h.authenticated(h.listUploaders))
 	mux.HandleFunc("POST /api/games/{code}/uploaders", h.authenticated(h.addUploader))
@@ -170,8 +176,38 @@ func New(cfg Config) (*Handler, error) {
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
-	h.mux.ServeHTTP(w, r)
+	next, pattern := h.mux.Handler(r)
+	if pattern != "" {
+		h.mux.ServeHTTP(w, r)
+		return
+	}
+	// No route matches: the mux would answer in plain text. Keep its status
+	// and headers, such as Allow, and answer in JSON like every other error.
+	status := statusOnly{ResponseWriter: w, code: http.StatusNotFound}
+	next.ServeHTTP(&status, r)
+	if status.code == http.StatusMethodNotAllowed {
+		writeError(w, status.code, msgMethodNotAllowed)
+		return
+	}
+	writeError(w, http.StatusNotFound, msgNotFound)
 }
+
+// Forbidden answers a cross-origin request that was refused before it
+// reached a route, in JSON like every other error.
+func Forbidden(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	writeError(w, http.StatusForbidden, msgForbidden)
+}
+
+// statusOnly records the status a handler writes and discards the rest,
+// leaving the headers it set on the underlying writer.
+type statusOnly struct {
+	http.ResponseWriter
+	code int
+}
+
+func (s *statusOnly) WriteHeader(code int)        { s.code = code }
+func (s *statusOnly) Write(p []byte) (int, error) { return len(p), nil }
 
 // IssueToken creates a session for the account and returns its bearer
 // token and expiry. The token is returned once and never stored or logged.

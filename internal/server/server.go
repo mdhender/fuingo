@@ -17,6 +17,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/netip"
+	"strings"
 
 	"github.com/mdhender/fuingo/internal/api"
 	"github.com/mdhender/fuingo/internal/clientip"
@@ -93,7 +94,17 @@ func New(cfg Config) (http.Handler, error) {
 		mux.HandleFunc("POST "+prefix+"/create-api-account/{email}", h.createAPIAccount)
 		mux.HandleFunc("POST "+prefix+"/log-me-in/{email}", h.logMeIn)
 	}
-	return http.NewCrossOriginProtection().Handler(mux), nil
+	// A refused cross-origin request to /api/ gets the API's JSON error;
+	// any other gets the standard plain-text one.
+	protection := http.NewCrossOriginProtection()
+	protection.SetDenyHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			api.Forbidden(w, r)
+			return
+		}
+		http.Error(w, "cross-origin request refused", http.StatusForbidden)
+	}))
+	return protection.Handler(mux), nil
 }
 
 // helpers are the development and agent account helpers in TESTING.md.

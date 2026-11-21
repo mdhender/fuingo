@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -286,4 +287,77 @@ func TestUploaderScope(t *testing.T) {
 	}
 	check(get("/api/games/game01/uploaders", token))
 	check(post("/api/games/game01/uploaders", token, `{"email":"lark@example.com"}`))
+}
+
+func TestListGames(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	token := f.login(t, acct01.Email, acct01.Password)
+	decode[api.Game](t, f, post("/api/games", token, `{"code":"alpha"}`), http.StatusCreated)
+	if err := f.s.SetGameActive(t.Context(), "alpha", false); err != nil {
+		t.Fatal(err)
+	}
+	list := decode[api.GameList](t, f, get("/api/games", token), http.StatusOK)
+	want := []api.ManagedGame{{Code: "alpha", Active: false}, {Code: "game01", Active: true}}
+	if !slices.Equal(list.Games, want) {
+		t.Errorf("games = %+v, want %+v", list.Games, want)
+	}
+	// A disabled manager row drops the game; the list is then [], not null.
+	if err := f.s.SetManagerActive(t.Context(), "game01", acct01.Email, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.s.SetManagerActive(t.Context(), "alpha", acct01.Email, false); err != nil {
+		t.Fatal(err)
+	}
+	if w := f.serve(get("/api/games", token)); w.Code != http.StatusOK || strings.TrimSpace(w.Body.String()) != `{"games":[]}` {
+		t.Errorf("no games: %d %s", w.Code, w.Body)
+	}
+	if w := f.serve(get("/api/games", "")); w.Code != http.StatusUnauthorized {
+		t.Errorf("no token: %d", w.Code)
+	}
+}
+
+// Every error is JSON, including requests that match no route.
+func TestUnmatchedRequestsGetJSONErrors(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	token := f.login(t, acct01.Email, acct01.Password)
+	for name, tc := range map[string]struct {
+		method, path string
+		status       int
+		allow        string
+	}{
+		"unknown path":           {http.MethodGet, "/api/nope", http.StatusNotFound, ""},
+		"unknown path, POST":     {http.MethodPost, "/api/games/game01/nope", http.StatusNotFound, ""},
+		"the prefix itself":      {http.MethodGet, "/api/", http.StatusNotFound, ""},
+		"wrong method":           {http.MethodDelete, "/api/games/game01/uploaders", http.StatusMethodNotAllowed, "GET, HEAD, POST"},
+		"GET of a POST route":    {http.MethodGet, "/api/login", http.StatusMethodNotAllowed, "POST"},
+		"POST of a GET route":    {http.MethodPost, "/api/games/game01/uploads", http.StatusMethodNotAllowed, "GET, HEAD"},
+		"wrong method, no token": {http.MethodPut, "/api/games", http.StatusMethodNotAllowed, "GET, HEAD, POST"},
+	} {
+		r := httptest.NewRequest(tc.method, tc.path, nil)
+		if !strings.HasSuffix(name, "no token") {
+			r.Header.Set("Authorization", "Bearer "+token)
+		}
+		w := f.serve(r)
+		var e api.Error
+		err := json.Unmarshal(w.Body.Bytes(), &e)
+		if w.Code != tc.status || err != nil || e.Error == "" {
+			t.Errorf("%s: %d %q, want %d and a JSON error", name, w.Code, w.Body, tc.status)
+		}
+		if ct := w.Header().Get("Content-Type"); ct != "application/json" {
+			t.Errorf("%s: Content-Type %q", name, ct)
+		}
+		if got := w.Header().Get("Allow"); got != tc.allow {
+			t.Errorf("%s: Allow %q, want %q", name, got, tc.allow)
+		}
+		if w.Header().Get("Cache-Control") != "no-store" {
+			t.Errorf("%s: no Cache-Control", name)
+		}
+	}
+	// An unknown path is indistinguishable from an unmanaged game.
+	a, b := f.serve(get("/api/nope", token)), f.serve(get("/api/games/game02/uploads", token))
+	if a.Body.String() != b.Body.String() {
+		t.Errorf("404 bodies differ: %q %q", a.Body, b.Body)
+	}
 }

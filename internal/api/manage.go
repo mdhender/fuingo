@@ -28,6 +28,18 @@ type Game struct {
 	Game string `json:"game"`
 }
 
+// GameList is the response to GET /api/games.
+type GameList struct {
+	Games []ManagedGame `json:"games"`
+}
+
+// ManagedGame is a game the account manages. An inactive game accepts no
+// uploads but can still be managed.
+type ManagedGame struct {
+	Code   string `json:"code"`
+	Active bool   `json:"active"`
+}
+
 // UploaderList is the response to GET /api/games/{code}/uploaders.
 type UploaderList struct {
 	Game      string     `json:"game"`
@@ -88,6 +100,20 @@ func readJSON(w http.ResponseWriter, r *http.Request, v any) bool {
 		return false
 	}
 	return true
+}
+
+func (h *Handler) listGames(w http.ResponseWriter, r *http.Request, account store.Account) {
+	games, err := h.db.ManagedGames(r.Context(), account.ID)
+	if err != nil {
+		h.logger.Error("api: list games", "email", account.Email, "err", err)
+		writeError(w, http.StatusInternalServerError, msgServerError)
+		return
+	}
+	list := GameList{Games: make([]ManagedGame, 0, len(games))}
+	for _, g := range games {
+		list.Games = append(list.Games, ManagedGame{Code: g.Code, Active: g.Active})
+	}
+	writeJSON(w, http.StatusOK, list)
 }
 
 func (h *Handler) createGame(w http.ResponseWriter, r *http.Request, account store.Account) {

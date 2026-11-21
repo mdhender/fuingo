@@ -90,6 +90,7 @@ responses, status codes, and examples for every route.
 | Route | Does |
 | --- | --- |
 | `POST /api/login` | Exchanges an account's email and API password for a bearer token valid for 24 hours. |
+| `GET /api/games` | Lists the games the account manages. |
 | `POST /api/games` | Creates a game and makes the account its manager. |
 | `GET /api/games/{code}/uploaders` | Lists the game's uploaders. |
 | `POST /api/games/{code}/uploaders` | Adds an uploader and returns its upload token once. |

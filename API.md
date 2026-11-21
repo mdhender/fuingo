@@ -36,9 +36,9 @@ exist only in `development` and `agent`; see
 - **Requests.** A request with a body sends a JSON object with
   `Content-Type: application/json`, at most 4 KiB, containing only the
   documented fields. An unknown field is an error, not ignored.
-- **Responses.** JSON with `Content-Type: application/json`, except an
-  upload's body, which is `text/plain`. Every response from an `/api/` route
-  has `Cache-Control: no-store`.
+- **Responses.** JSON with `Content-Type: application/json`, except a
+  successful download of an upload's body, which is `text/plain`. Every
+  error is JSON. Every response has `Cache-Control: no-store`.
 - **Game codes and emails** are case-insensitive: the server lowercases
   them, and returns them lowercased. Each must be one or more printable
   ASCII characters (`0x21`–`0x7E`), with no spaces.
@@ -57,7 +57,9 @@ exist only in `development` and `agent`; see
 
 ## Errors
 
-An error from a route has a JSON body with one field:
+Every error from a path under `/api/` has a JSON body with one field,
+including an unknown path, a wrong method, and a refused cross-origin
+request:
 
 ```json
 {"error":"not found"}
@@ -69,16 +71,19 @@ Treat the message as text for people; branch on the status code.
 | --- | --- |
 | `400` | The body is not valid JSON, has an unknown or badly formed field, or a value breaks a rule above. |
 | `401` | Login failed, or the bearer token is missing, unknown, or expired. On routes other than login, the response has `WWW-Authenticate: Bearer realm="fuingo"`. Log in again. |
-| `403` | Cross-origin request refused. **Plain text**, not JSON. |
-| `404` | The game or item does not exist, or the account does not manage the game. The two cases are deliberately identical. An unknown path under `/api/` also gets `404`, as **plain text**. |
-| `405` | Wrong method for the path. **Plain text**, with an `Allow` header. |
+| `403` | Cross-origin request refused. |
+| `404` | The game or item does not exist, or the account does not manage the game. The two cases are deliberately identical, and identical to an unknown path under `/api/`. |
+| `405` | Wrong method for the path. The `Allow` header lists the methods it accepts. |
 | `409` | The game code or uploader already exists. |
 | `415` | A body was required and `Content-Type` was not `application/json`. |
 | `429` | Too many failed logins from this client address. `Retry-After` gives the seconds to wait. |
 | `500` | Server error. Safe to retry later. |
 
-A client must not assume an error body is JSON: check `Content-Type`
-first, because `403`, `405`, and the unknown-path `404` are plain text.
+`403`, `404` for an unknown path, and `405` are decided before the bearer
+token is checked, so they do not depend on being logged in. A proxy in
+front of the server may still answer in its own format when the server is
+down (for example `502`), so a robust client checks `Content-Type` before
+parsing an error.
 
 ## Authentication
 
@@ -138,10 +143,26 @@ created with `POST /api/games`, or one an operator added it to with
   uploads to it.
 - If an operator disables the account's manager row for a game, the
   account gets `404` for that game.
-- There is no route that lists the games an account manages. A tool must be
-  told its game codes.
+- `GET /api/games` lists the games the account can reach.
 
 ## Games
+
+### `GET /api/games`
+
+Lists the games the caller manages, in order of code.
+
+```sh
+curl -s "$FUINGO/api/games" -H "Authorization: Bearer $TOKEN"
+```
+
+```json
+{"games":[{"code":"alpha","active":false},{"code":"game01","active":true}]}
+```
+
+- `active` is whether the game accepts uploads. An inactive game is still
+  listed and still manageable.
+- A game whose manager row an operator has disabled is not listed.
+- `games` is `[]`, never `null`, for an account that manages none.
 
 ### `POST /api/games`
 

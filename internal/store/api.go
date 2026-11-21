@@ -176,6 +176,34 @@ func (s *Store) CreateManagedGame(ctx context.Context, code string, accountID in
 	return id, err
 }
 
+// GameInfo describes a game.
+type GameInfo struct {
+	Code   string
+	Active bool
+}
+
+// ManagedGames returns the games the account actively manages, active or
+// not, in order of code.
+func (s *Store) ManagedGames(ctx context.Context, accountID int64) ([]GameInfo, error) {
+	conn, err := s.take(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer s.pool.Put(conn)
+	var games []GameInfo
+	err = sqlitex.Execute(conn, `
+SELECT g.code, g.is_active FROM games g JOIN active_managers m ON m.game_id = g.id
+WHERE m.account_id = ?
+ORDER BY g.code;`, &sqlitex.ExecOptions{
+		Args: []any{accountID},
+		ResultFunc: func(stmt *sqlite.Stmt) error {
+			games = append(games, GameInfo{Code: stmt.ColumnText(0), Active: stmt.ColumnBool(1)})
+			return nil
+		},
+	})
+	return games, err
+}
+
 // UploaderInfo describes one upload credential of a game. Active is the
 // credential's own flag; AccountActive is its account's. Both, and the
 // game, must be active for it to upload.

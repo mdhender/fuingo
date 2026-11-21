@@ -372,6 +372,12 @@ for them.
 - The `/api/` routes go through the same `http.NewCrossOriginProtection` as
   the form. Command-line clients send neither `Origin` nor `Sec-Fetch-Site`,
   so they pass; browsers on other origins are refused.
+- Every error from a path under `/api/` is a JSON `api.Error`, including an
+  unknown path, a wrong method (with its `Allow` header), and a cross-origin
+  request the server refuses, which `internal/server` answers through
+  `api.Forbidden`. Never let a plain-text error out of `/api/`.
+- `GET /api/games` lists the games the account actively manages, active or
+  not, in order of code.
 - `POST /api/games` creates an active game and makes the account its
   manager, in one transaction. Any account that can log in may create games.
 - `GET` and `POST /api/games/{code}/uploaders` list a managed game's
@@ -423,6 +429,7 @@ for them.
   the old one stops, that a reset leaves a disabled uploader disabled, that
   an upload token never logs in, identical `404`s for unmanaged games and
   for uploader IDs outside the managed game, that refused requests change
-  nothing, and that no token is logged.
+  nothing, and that no token is logged. Cover that unknown paths, wrong
+  methods, and refused cross-origin requests under `/api/` get JSON errors.
 - Run the checks required by [WORKFLOW.md](WORKFLOW.md) and identify any checks
   that could not be run.

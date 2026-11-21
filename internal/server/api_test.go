@@ -188,3 +188,25 @@ func TestAPIHelpersRequirePostAndSameOrigin(t *testing.T) {
 		}
 	}
 }
+
+// A refused cross-origin request gets the API's JSON error under /api/,
+// whether or not the path is a route, and plain text elsewhere.
+func TestCrossOriginRefusalContentType(t *testing.T) {
+	t.Parallel()
+	h, _ := newServer(t, "production")
+	for _, path := range []string{"/api/login", "/api/games", "/api/nope"} {
+		r := httptest.NewRequest(http.MethodPost, publicOrigin+path, strings.NewReader("{}"))
+		r.Header.Set("Sec-Fetch-Site", "cross-site")
+		w := serve(h, r)
+		var e api.Error
+		if err := json.Unmarshal(w.Body.Bytes(), &e); w.Code != http.StatusForbidden || err != nil || e.Error == "" ||
+			w.Header().Get("Content-Type") != "application/json" || w.Header().Get("Cache-Control") != "no-store" {
+			t.Errorf("%s: %d %q %q", path, w.Code, w.Header().Get("Content-Type"), w.Body)
+		}
+	}
+	r := httptest.NewRequest(http.MethodPost, publicOrigin+"/upload", strings.NewReader(""))
+	r.Header.Set("Sec-Fetch-Site", "cross-site")
+	if w := serve(h, r); w.Code != http.StatusForbidden || !strings.HasPrefix(w.Header().Get("Content-Type"), "text/plain") {
+		t.Errorf("/upload: %d %q", w.Code, w.Header().Get("Content-Type"))
+	}
+}

@@ -376,6 +376,9 @@ for them.
   unknown path, a wrong method (with its `Allow` header), and a cross-origin
   request the server refuses, which `internal/server` answers through
   `api.Forbidden`. Never let a plain-text error out of `/api/`.
+- A request body must be exactly one JSON object with only the documented
+  fields, read with `decodeOnly`. Unknown fields and anything but white
+  space after the object get `400`.
 - `GET /api/games` lists the games the account actively manages, active or
   not, in order of code.
 - `POST /api/games` creates an active game and makes the account its

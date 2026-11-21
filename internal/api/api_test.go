@@ -212,6 +212,13 @@ func TestLoginRejectsMalformedRequests(t *testing.T) {
 			t.Errorf("bad JSON %d: status %d", i, w.Code)
 		}
 	}
+	// The right password followed by anything else is still malformed.
+	trailing := httptest.NewRequest(http.MethodPost, "/api/login", strings.NewReader(`{"email":"`+acct01.Email+`","password":"`+acct01.Password+`"} junk`))
+	trailing.Header.Set("Content-Type", "application/json")
+	trailing.RemoteAddr = remote
+	if w := f.serve(trailing); w.Code != http.StatusBadRequest {
+		t.Errorf("trailing data: status %d", w.Code)
+	}
 	r := loginRequest(acct01.Email, acct01.Password, remote)
 	r.Header.Set("Content-Type", "text/plain")
 	if w := f.serve(r); w.Code != http.StatusUnsupportedMediaType {

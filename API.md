@@ -35,8 +35,10 @@ exist only in `development` and `agent`; see
   origin. In development that is `https://htmx-app.localhost:8443`.
 - **Requests.** A request with a body sends a JSON object with
   `Content-Type: application/json` (a `charset` parameter is accepted),
-  at most 4 KiB, containing only the documented fields. An unknown field,
-  a field of the wrong type, or a larger body gets `400`.
+  at most 4 KiB, containing only the documented fields. The object must be
+  the whole body: white space around it is allowed, anything else after it
+  is not. An unknown field, a field of the wrong type, trailing data, or a
+  larger body gets `400`.
 - **Methods.** Each route accepts only the method shown. A `GET` route
   also answers `HEAD`.
 - **Paths** must be written exactly as shown, with no trailing slash and
@@ -76,7 +78,7 @@ Treat the message as text for people; branch on the status code.
 
 | Status | Meaning |
 | --- | --- |
-| `400` | The body is not valid JSON, has an unknown or badly formed field, or a value breaks a rule above. |
+| `400` | The body is not exactly one valid JSON object, has an unknown or badly formed field, or a value breaks a rule above. |
 | `401` | Login failed, or the bearer token is missing, unknown, or expired. On routes other than login, the response has `WWW-Authenticate: Bearer realm="fuingo"`. Log in again. |
 | `403` | Cross-origin request refused. |
 | `404` | The game or item does not exist, or the account does not manage the game. The two cases are deliberately identical, and identical to an unknown path under `/api/`. |
@@ -95,8 +97,9 @@ Checks run in a fixed order, and the first failure decides the status:
 5. `415`, then `400`, for the body.
 6. `404` or `409` for the item itself.
 
-So the first two do not depend on being logged in, and a request to an
-unmanaged game gets `404` however malformed its body is. On
+So the first two do not depend on being logged in. A request with no
+token gets `401`, never `415` or `400`, whatever its body. A bad body sent
+to a game the account does not manage gets `404`, not `400`. On
 `POST /api/games`, which names no game in its path, step 4 does not apply.
 On login, the order is `415`, `400`, `429`, then `401`.
 
@@ -412,13 +415,17 @@ because a manager's tool hands out the tokens that make it work.
 
 A player uploads a `.txt` file through the form at `/`, which posts it to
 `POST /upload` as `multipart/form-data` in a field named `file`. The file's
-first line names the game, turn, uploader, and that uploader's token for
-the game:
+first line is four words: the game code, the turn, the uploader's email,
+and that uploader's token for the game. The words are separated by one or
+more spaces or tabs, and the line may end in LF or CRLF:
 
 ```text
 alpha 7 wren@example.com 3f0e6c1a-7b0d-4f6e-9a55-0d7c1e2b9a41
 <the orders>
 ```
+
+Everything after the first line is the body the API returns. The game code
+and email are matched case-insensitively; the token is not.
 
 The response is an HTML fragment for the form, not JSON. `200` means the
 file was stored; the message is a receipt with the body's size and SHA-256.

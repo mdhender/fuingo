@@ -6,11 +6,13 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"mime"
 	"net/http"
 	"strconv"
 
 	"github.com/google/uuid"
+	"github.com/mdhender/fuingo/internal/cerrs"
 	"github.com/mdhender/fuingo/internal/credential"
 	"github.com/mdhender/fuingo/internal/store"
 )
@@ -95,11 +97,27 @@ func readJSON(w http.ResponseWriter, r *http.Request, v any) bool {
 	}
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxManageBody))
 	dec.DisallowUnknownFields()
-	if err := dec.Decode(v); err != nil {
+	if err := decodeOnly(dec, v); err != nil {
 		writeError(w, http.StatusBadRequest, msgBadJSON)
 		return false
 	}
 	return true
+}
+
+// errTrailingData is returned by decodeOnly for a body with anything but
+// white space after its JSON value.
+const errTrailingData = cerrs.Error("data after the JSON value")
+
+// decodeOnly decodes the single JSON value that must make up the whole
+// body into v.
+func decodeOnly(dec *json.Decoder, v any) error {
+	if err := dec.Decode(v); err != nil {
+		return err
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		return errTrailingData
+	}
+	return nil
 }
 
 func (h *Handler) listGames(w http.ResponseWriter, r *http.Request, account store.Account) {

@@ -230,7 +230,7 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 	var req LoginRequest
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxLoginBody))
 	dec.DisallowUnknownFields()
-	if err := dec.Decode(&req); err != nil || req.Email == "" || req.Password == "" {
+	if err := decodeOnly(dec, &req); err != nil || req.Email == "" || req.Password == "" {
 		writeError(w, http.StatusBadRequest, msgBadRequest)
 		return
 	}

@@ -99,6 +99,10 @@ func TestCreateGame(t *testing.T) {
 		"non-ASCII code":   {token, `{"code":"café"}`, http.StatusBadRequest},
 		"unknown field":    {token, `{"code":"x","is_active":false}`, http.StatusBadRequest},
 		"not JSON":         {token, `code=x`, http.StatusBadRequest},
+		"trailing data":    {token, `{"code":"x"} junk`, http.StatusBadRequest},
+		"two objects":      {token, `{"code":"x"}{"code":"y"}`, http.StatusBadRequest},
+		"an array":         {token, `[{"code":"x"}]`, http.StatusBadRequest},
+		"wrong type":       {token, `{"code":5}`, http.StatusBadRequest},
 		"no token":         {"", `{"code":"x"}`, http.StatusUnauthorized},
 		"not a real token": {"nope", `{"code":"x"}`, http.StatusUnauthorized},
 	} {
@@ -111,6 +115,8 @@ func TestCreateGame(t *testing.T) {
 	if w := f.serve(r); w.Code != http.StatusUnsupportedMediaType {
 		t.Errorf("text/plain: %d", w.Code)
 	}
+	// White space around the object is fine.
+	decode[api.Game](t, f, post("/api/games", token, " {\"code\":\"padded\"}\r\n\t "), http.StatusCreated)
 	if _, ok, _ := f.s.GameID(t.Context(), "x"); ok {
 		t.Error("a refused request created a game")
 	}
@@ -184,6 +190,7 @@ func TestAddUploader(t *testing.T) {
 		"empty":           {`{"email":""}`, http.StatusBadRequest},
 		"space":           {`{"email":"a b@example.com"}`, http.StatusBadRequest},
 		"given token":     {`{"email":"x@example.com","token":"mine"}`, http.StatusBadRequest},
+		"trailing data":   {`{"email":"x@example.com"} junk`, http.StatusBadRequest},
 	} {
 		if w := f.serve(post("/api/games/game01/uploaders", token, tc.body)); w.Code != tc.status {
 			t.Errorf("%s: %d %s, want %d", name, w.Code, w.Body, tc.status)

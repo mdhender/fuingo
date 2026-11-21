@@ -299,11 +299,51 @@ gets `FUINGO_PEPPER` from `/etc/fuingo/fuingod.env`.
    }
    ```
 
-Run `fuingo` as the `fuingo` user with the same environment, for example:
+### Creating accounts, games, and players on the server
+
+Run `fuingo` as the `fuingo` user, never as root, and from
+`/var/lib/fuingo`:
+
+- As root, SQLite may leave the database's `-wal` and `-shm` files owned
+  by root, and the service can then no longer write to its database.
+- `fuingo` looks for `.env` files in the current directory and fails if it
+  cannot read it, which the `fuingo` user cannot do in root's home.
+
+A small wrapper keeps the commands short. It loads the pepper, which only
+`game add --uploader` needs:
 
 ```sh
-sudo -u fuingo sh -c 'cd /var/lib/fuingo; set -a; . /etc/fuingo/fuingod.env; exec fuingo --env production --db /var/lib/fuingo/fuingo.db game create game01'
+fu() { sudo -u fuingo sh -c 'cd /var/lib/fuingo && set -a && . /etc/fuingo/fuingod.env && exec fuingo --env production --db /var/lib/fuingo/fuingo.db "$@"' fuingo "$@"; }
 ```
+
+Create an account that can log in to the API. The password is printed
+once; only its hash is stored:
+
+```sh
+fu account create --generate-password gm@example.com
+```
+
+Create a game and make that account its manager. A game created here has
+no manager until one is added:
+
+```sh
+fu game create game01
+fu game add --manager gm@example.com --code game01
+```
+
+Add the players, as uploaders of the game. Each command prints that
+player's upload token once; a lost token can only be replaced:
+
+```sh
+for n in 1 2 3; do
+  fu game add --uploader player-$n@example.com --code game01
+done
+```
+
+Send each player the game code and their token. A manager can instead
+create the game and add its players through the API, without a shell on
+the server; see [Setting up a game](API.md#setting-up-a-game). Only
+creating an account with a password requires the shell.
 
 On `systemctl stop` or `restart`, systemd sends SIGTERM. `fuingod` stops
 accepting connections, gives in-flight requests 10 seconds to finish, cuts off

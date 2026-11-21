@@ -29,6 +29,34 @@ The email and password above are one of the public default accounts that
 exist only in `development` and `agent`; see
 [Local development](#local-development).
 
+## Setting up a game
+
+A logged-in account can create a game and add its players without help
+from an operator. Continuing from the quick start:
+
+```sh
+# Create the game. The caller becomes its manager.
+curl -s "$FUINGO/api/games" -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' -d '{"code":"alpha"}'
+
+# Add each player. Every response carries that player's upload token,
+# which is shown only once, so save the output.
+for n in 1 2 3; do
+  curl -s "$FUINGO/api/games/alpha/uploaders" -H "Authorization: Bearer $TOKEN" \
+    -H 'Content-Type: application/json' -d "{\"email\":\"player-$n@example.com\"}"
+  echo
+done
+
+# Check the result.
+curl -s "$FUINGO/api/games/alpha/uploaders" -H "Authorization: Bearer $TOKEN"
+```
+
+Send each player the game code and their token; they put both on the
+first line of every turn file (see
+[Uploading a turn file](#uploading-a-turn-file)). The account itself, with
+its password, must come from an operator: see "Creating accounts, games,
+and players on the server" in [README.md](README.md).
+
 ## Conventions
 
 - **Base URL.** Every route is under `/api/` on the server's public HTTPS

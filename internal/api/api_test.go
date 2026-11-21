@@ -72,6 +72,7 @@ func newFixture(t *testing.T) *fixture {
 	var logs bytes.Buffer
 	h, err := api.New(api.Config{
 		Store:         s,
+		Pepper:        pepper,
 		Logger:        slog.New(slog.NewTextHandler(&logs, nil)),
 		LoginFailures: ratelimit.New(api.FailureBurst, api.FailureInterval, c.Now),
 		Now:           c.Now,

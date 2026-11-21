@@ -74,6 +74,7 @@ func New(cfg Config) (http.Handler, error) {
 	}
 	apiHandler, err := api.New(api.Config{
 		Store:         cfg.Store,
+		Pepper:        cfg.Pepper,
 		Logger:        cfg.Logger,
 		Clients:       clients,
 		LoginFailures: cfg.LoginFailures,

@@ -90,6 +90,11 @@ responses are JSON, except a body download. Every response has
 | Route | Does |
 | --- | --- |
 | `POST /api/login` | Takes `{"email": ..., "password": ...}` with `Content-Type: application/json`. Returns `{"token": ..., "expires_at": ...}`. The token is valid for 24 hours. |
+| `POST /api/games` | Takes `{"code": ...}`. Creates an active game and makes the account its manager. Returns `201` and `{"game": ...}`, with the code lowercased; `409` if a game has that code. |
+| `GET /api/games/{code}/uploaders` | Lists the game's uploaders, active or not, in order of ID: `{"game": ..., "uploaders": [{"id", "email", "active", "account_active"}]}`. An uploader can upload only while it, its account, and the game are all active. |
+| `POST /api/games/{code}/uploaders` | Takes `{"email": ...}`. Adds an active uploader, creating an account without a password if the email has none. Returns `201` and `{"game", "id", "email", "token"}`; `409` if the email is already an uploader of the game, even a disabled one. |
+| `POST /api/games/{code}/uploaders/{id}/disable`, `.../enable` | Clears or sets the uploader's active flag. Takes no body, and repeating one succeeds. Returns `{"game", "id", "active"}`. |
+| `POST /api/games/{code}/uploaders/{id}/reset-token` | Replaces the uploader's upload token; the old one stops working at once. Takes no body. Returns `{"game", "id", "email", "token"}`. It does not enable a disabled uploader. |
 | `GET /api/games/{code}/uploads[?turn=N]` | Lists the game's uploads, oldest first: `{"game": ..., "uploads": [{"id", "email", "turn", "content_hash", "size", "uploaded_at"}]}`. `turn` matches the turn number exactly as written in the uploaded file. |
 | `GET /api/games/{code}/uploads/{id}/body` | Returns an upload's contents (without its header line), with the SHA-256 in `X-Content-SHA256`. |
 
@@ -107,7 +112,18 @@ responses are JSON, except a body download. Every response has
   not exist. Upload contents are reachable only through an upload, never by
   content hash. A disabled account's tokens stop working at once.
 - Timestamps are UTC, as `2006-01-02T15:04:05.000000000Z`.
-- There is no pagination yet, and no route changes any data.
+- fuingo generates every upload token, a random UUID, and returns it once,
+  in the response that adds the uploader or resets the token. Only its hash
+  is stored, so a lost token is replaced by resetting it. The manager sends
+  the token to the uploader out of band.
+- Game codes and emails must be one or more printable ASCII characters
+  without spaces, and are lowercased. A request body must be
+  `application/json` with only the documented fields, or it gets `415` or
+  `400`.
+- Any account that can log in may create games. Creating one reveals, by
+  its `409`, whether a code is taken.
+- There is no pagination yet. No route deletes anything: uploads are
+  permanent history, and access is revoked by disabling.
 
 ## olympia
 

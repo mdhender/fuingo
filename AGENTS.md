@@ -83,8 +83,9 @@ it manages, even when another program could reach the same thing:
 - **`cmd/fuingo` manages the application data**: games, accounts,
   uploaders, game managers, and uploads. Every command that creates or changes
   rows belongs here, including every `create` verb for application
-  data. Outside development and agent, it will be the only way to create
-  accounts.
+  data. Outside development and agent, it is the only way to create an
+  account with a password; `POST /api/games/{code}/uploaders` creates only
+  accounts without one.
 - **`cmd/fuingodb` manages the database itself**: creating, migrating, and any
   future maintenance of the database file and its schema. Never add one of
   these, such as `migrate`, to `fuingo`.
@@ -164,7 +165,8 @@ as the user asks for them.
 Upload tokens are issued out of band: a game manager emails each uploader the
 game code and that game's token. A token cannot be recovered, because only its
 hash is stored; a lost token is replaced by resetting it and sending the new
-one. Resetting belongs to `cmd/fuingo` or the `/api/` phase.
+one. A manager resets it with
+`POST /api/games/{code}/uploaders/{id}/reset-token`.
 
 ## Data model
 
@@ -226,7 +228,8 @@ or not.
 
 Rows in `games`, `game_uploaders`, `accounts`, and `game_managers` come from
 `fuingo`, the default data, and the development/agent helpers in
-[TESTING.md](TESTING.md). The `/api/` routes read them; none changes them yet.
+[TESTING.md](TESTING.md). The `/api/` routes create games and add, disable, enable, and reset
+uploaders, for the games an account manages; they change nothing else.
 
 ## Upload requirements
 
@@ -341,8 +344,8 @@ The server handles each upload in this order:
 ## The `/api/` routes
 
 The `/api/` phase has started. The routes are documented in
-[README.md](README.md#api). So far they are read-only and serve `olympia`;
-add routes only as the user asks for them.
+[README.md](README.md#api). They serve game managers and `olympia`; add routes only as the user asks
+for them.
 
 - `POST /api/login` exchanges an account's email and API password for a
   bearer token valid for 24 hours, stored only as its SHA-256 in
@@ -367,8 +370,23 @@ add routes only as the user asks for them.
 - The `/api/` routes go through the same `http.NewCrossOriginProtection` as
   the form. Command-line clients send neither `Origin` nor `Sec-Fetch-Site`,
   so they pass; browsers on other origins are refused.
-- Still to settle with the user (issue #1): management routes that create or
-  change games, players, turns, and orders; deletion and history rules;
+- `POST /api/games` creates an active game and makes the account its
+  manager, in one transaction. Any account that can log in may create games.
+- `GET` and `POST /api/games/{code}/uploaders` list a managed game's
+  uploaders and add one, creating an account without a `hashed_secret` if
+  the email has none, as `fuingo game add --uploader` does.
+  `POST /api/games/{code}/uploaders/{id}/disable`, `enable`, and
+  `reset-token` act on one `game_uploaders` row by its ID, never by email.
+  An ID outside the managed game gets the same `404` as any other.
+- The server generates every upload token the API issues, a random UUID,
+  and returns it once. A client never supplies one. Never log it.
+  `reset-token` replaces `hashed_credentials` and leaves `is_active` alone.
+- The API deletes nothing. Uploads are permanent history; do not add a
+  route that deletes them.
+- Codes and emails given to the API must be header words, checked with
+  `credential.HeaderWord`, and are lowercased, as in `fuingo`.
+- Still to settle with the user (issue #1): routes that change or rename
+  games, manage co-managers, or manage players, turns, and orders;
   replacement and cutoff rules for multiple submissions; pagination.
 
 ## Verification
@@ -399,5 +417,10 @@ add routes only as the user asks for them.
   another address) are unaffected, concurrent failures from one client,
   IPv6 /64 grouping, the 16 Ki client cap, that `X-Forwarded-For` is ignored from untrusted peers,
   and that the rightmost untrusted address is used behind trusted proxies.
+- Cover the management routes: that a new token authorizes an upload and
+  the old one stops, that a reset leaves a disabled uploader disabled, that
+  an upload token never logs in, identical `404`s for unmanaged games and
+  for uploader IDs outside the managed game, that refused requests change
+  nothing, and that no token is logged.
 - Run the checks required by [WORKFLOW.md](WORKFLOW.md) and identify any checks
   that could not be run.

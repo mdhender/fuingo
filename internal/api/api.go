@@ -9,7 +9,12 @@
 // SHA-256 is stored. Upload tokens never authenticate here, and an API
 // password never authorizes an upload.
 //
-// Every game route is scoped to the games the account actively manages. A
+// POST /api/games creates a game and makes the account its manager. The
+// uploader routes list a managed game's uploaders, add one, disable or
+// enable one, and reset one's upload token. A new token is generated here
+// and returned once; only its hash is stored, and it is never logged.
+//
+// Every other game route is scoped to the games the account actively manages. A
 // game it does not manage, and an upload in such a game, get the same 404
 // as one that does not exist. Upload contents are reachable only through an
 // upload in a managed game, never by content hash.
@@ -29,12 +34,16 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mdhender/fuingo/internal/cerrs"
 	"github.com/mdhender/fuingo/internal/clientip"
 	"github.com/mdhender/fuingo/internal/credential"
 	"github.com/mdhender/fuingo/internal/ratelimit"
 	"github.com/mdhender/fuingo/internal/store"
 	"golang.org/x/crypto/bcrypt"
 )
+
+// ErrMissingPepper is returned by New without a pepper.
+const ErrMissingPepper = cerrs.Error("upload pepper is missing or empty")
 
 const (
 	// SessionLifetime is how long a bearer token from /api/login is valid.
@@ -101,7 +110,10 @@ const (
 
 // Config configures a Handler.
 type Config struct {
-	Store  *store.Store
+	Store *store.Store
+	// Pepper keys the upload credential hashes of the uploaders the routes
+	// add and reset. It is required.
+	Pepper string
 	Logger *slog.Logger
 	// Clients finds the client's address behind trusted proxies.
 	Clients clientip.Resolver
@@ -115,6 +127,7 @@ type Config struct {
 // Handler serves the /api/ routes.
 type Handler struct {
 	db       *store.Store
+	pepper   string
 	logger   *slog.Logger
 	clients  clientip.Resolver
 	failures *ratelimit.Limiter
@@ -127,6 +140,9 @@ type Handler struct {
 
 // New returns the handler for the /api/ routes.
 func New(cfg Config) (*Handler, error) {
+	if cfg.Pepper == "" {
+		return nil, ErrMissingPepper
+	}
 	if cfg.LoginFailures == nil {
 		cfg.LoginFailures = ratelimit.New(FailureBurst, FailureInterval, nil)
 	}
@@ -137,9 +153,15 @@ func New(cfg Config) (*Handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	h := &Handler{db: cfg.Store, logger: cfg.Logger, clients: cfg.Clients, failures: cfg.LoginFailures, now: cfg.Now, dummyHash: dummy}
+	h := &Handler{db: cfg.Store, pepper: cfg.Pepper, logger: cfg.Logger, clients: cfg.Clients, failures: cfg.LoginFailures, now: cfg.Now, dummyHash: dummy}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/login", h.login)
+	mux.HandleFunc("POST /api/games", h.authenticated(h.createGame))
+	mux.HandleFunc("GET /api/games/{code}/uploaders", h.authenticated(h.listUploaders))
+	mux.HandleFunc("POST /api/games/{code}/uploaders", h.authenticated(h.addUploader))
+	mux.HandleFunc("POST /api/games/{code}/uploaders/{id}/disable", h.authenticated(h.setUploaderActive(false)))
+	mux.HandleFunc("POST /api/games/{code}/uploaders/{id}/enable", h.authenticated(h.setUploaderActive(true)))
+	mux.HandleFunc("POST /api/games/{code}/uploaders/{id}/reset-token", h.authenticated(h.resetUploaderToken))
 	mux.HandleFunc("GET /api/games/{code}/uploads", h.authenticated(h.listUploads))
 	mux.HandleFunc("GET /api/games/{code}/uploads/{id}/body", h.authenticated(h.uploadBody))
 	h.mux = mux

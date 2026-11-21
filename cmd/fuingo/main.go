@@ -432,7 +432,7 @@ func createUploader(ctx context.Context, stdout io.Writer, path, gameArg, emailA
 	generated := token == ""
 	if generated {
 		token = uuid.NewString()
-	} else if !headerWord(token) {
+	} else if !credential.HeaderWord(token) {
 		return ErrToken // never echo the token
 	}
 	pepper, err := cli.Pepper()
@@ -460,7 +460,7 @@ func createUploader(ctx context.Context, stdout io.Writer, path, gameArg, emailA
 // gameCode lowercases code and checks that it can appear in a turn file's
 // header line.
 func gameCode(code string) (string, error) {
-	if !headerWord(code) {
+	if !credential.HeaderWord(code) {
 		return "", fmt.Errorf("%q: %w", code, ErrGameCode)
 	}
 	return credential.NormalizeGameCode(code), nil
@@ -469,24 +469,10 @@ func gameCode(code string) (string, error) {
 // emailAddress lowercases email and checks that it can appear in a turn
 // file's header line.
 func emailAddress(email string) (string, error) {
-	if !headerWord(email) {
+	if !credential.HeaderWord(email) {
 		return "", fmt.Errorf("%q: %w", email, ErrEmail)
 	}
 	return credential.NormalizeEmail(email), nil
-}
-
-// headerWord reports whether s is one or more bytes in 0x21-0x7E, as every
-// word of a turn file's header line must be.
-func headerWord(s string) bool {
-	if s == "" {
-		return false
-	}
-	for i := 0; i < len(s); i++ {
-		if s[i] < 0x21 || s[i] > 0x7e {
-			return false
-		}
-	}
-	return true
 }
 
 // newPassword generates a password, or reads one from stdin, and returns it

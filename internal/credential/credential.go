@@ -23,6 +23,21 @@ func NormalizeGameCode(code string) string {
 	return strings.ToLower(code)
 }
 
+// HeaderWord reports whether s is one or more bytes in 0x21-0x7E, as every
+// word of a turn file's header line must be. Game codes, emails, and tokens
+// must be header words, so that an upload can name them.
+func HeaderWord(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := range len(s) {
+		if s[i] < 0x21 || s[i] > 0x7e {
+			return false
+		}
+	}
+	return true
+}
+
 // Hash returns HMAC-SHA256(pepper, lowercased-email + "\x00" + game-id +
 // "\x00" + token), where game-id is the game's integer ID in decimal. The ID,
 // not the game code, keeps credentials valid when a game's code changes.

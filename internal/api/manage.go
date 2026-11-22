@@ -55,13 +55,24 @@ type NewPlayerRequest struct {
 	Email string `json:"email"`
 }
 
-// NewPlayer is the response to adding a player.
+// NewPlayer is the response to adding a player. Invitation says whether
+// the email's account was new and so was mailed an invitation: InvitationSent,
+// InvitationFailed if the mail could not be sent, or InvitationNone for an
+// account that already existed.
 type NewPlayer struct {
-	System string `json:"system"`
-	Game   string `json:"game"`
-	ID     int64  `json:"id"`
-	Email  string `json:"email"`
+	System     string `json:"system"`
+	Game       string `json:"game"`
+	ID         int64  `json:"id"`
+	Email      string `json:"email"`
+	Invitation string `json:"invitation"`
 }
+
+// The values of NewPlayer.Invitation.
+const (
+	InvitationSent   = "sent"
+	InvitationFailed = "failed"
+	InvitationNone   = "none"
+)
 
 // PlayerStatus is the response to disabling or enabling a player.
 type PlayerStatus struct {
@@ -156,7 +167,7 @@ func (h *Handler) addPlayer(w http.ResponseWriter, r *http.Request, account stor
 		writeError(w, http.StatusBadRequest, msgBadEmail)
 		return
 	}
-	id, err := h.db.AddGamePlayer(r.Context(), gameID, email)
+	added, err := h.db.AddGamePlayer(r.Context(), gameID, email)
 	if errors.Is(err, store.ErrPlayerExists) {
 		writeError(w, http.StatusConflict, msgPlayerExists)
 		return
@@ -165,8 +176,18 @@ func (h *Handler) addPlayer(w http.ResponseWriter, r *http.Request, account stor
 		writeError(w, http.StatusInternalServerError, msgServerError)
 		return
 	}
-	h.logger.Info("api: added player", "email", account.Email, "game", game.String(), "player", email, "player_id", id)
-	writeJSON(w, http.StatusCreated, NewPlayer{System: game.System, Game: game.Code, ID: id, Email: email})
+	// A new account gets its invitation. The player stays added if the mail
+	// fails: the owner can ask for a new link on the reset page.
+	invitation := InvitationNone
+	if added.NewAccount {
+		invitation = InvitationSent
+		if err := h.links.Send(r.Context(), added.AccountID, email, store.LinkInvitation); err != nil {
+			invitation = InvitationFailed
+			h.logger.Error("api: send invitation", "email", account.Email, "game", game.String(), "player", email, "err", err)
+		}
+	}
+	h.logger.Info("api: added player", "email", account.Email, "game", game.String(), "player", email, "player_id", added.ID, "invitation", invitation)
+	writeJSON(w, http.StatusCreated, NewPlayer{System: game.System, Game: game.Code, ID: added.ID, Email: email, Invitation: invitation})
 }
 
 func (h *Handler) setPlayerActive(active bool) func(http.ResponseWriter, *http.Request, store.Account) {

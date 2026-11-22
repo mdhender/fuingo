@@ -7,7 +7,9 @@ upload their orders and download their reports over HTTPS, and game masters
 The design is being built in steps. What exists today is the hierarchy
 (systems, games, a game's GMs and players, and turns) and the `/api/` routes
 a GM's tool uses: to manage a game's players and turns, and to upload, list,
-download, and withdraw its files. Players cannot sign in yet, so only GMs
+download, and withdraw its files. Accounts are by invitation: a new account
+is mailed a link to choose its password, and its owner resets a forgotten
+password the same way. Players cannot sign in to the web yet, so only GMs
 exchange files.
 
 ## Commands
@@ -20,7 +22,7 @@ go run ./cmd/fuingo   version
 go run ./cmd/fuingo   --env development --db tmp/fuingo.db version --schema
 go run ./cmd/fuingo   --env development --db tmp/fuingo.db system create olympia
 go run ./cmd/fuingo   --env development --db tmp/fuingo.db game create --system olympia g3
-go run ./cmd/fuingo   --env development --db tmp/fuingo.db account create --generate-password acct03@example.com
+go run ./cmd/fuingo   --env development --db tmp/fuingo.db account create acct03@example.com
 go run ./cmd/fuingo   --env development --db tmp/fuingo.db game add --manager acct03@example.com --system olympia --code g3
 go run ./cmd/fuingo   --env development --db tmp/fuingo.db game add --player tern@example.com --system olympia --code g3
 ```
@@ -43,12 +45,12 @@ name a game with both `--system` and its code.
 | `fuingo system create CODE` | Adds a system. |
 | `fuingo game create --system SYSTEM CODE` | Adds an active game to an existing system. |
 | `fuingo game add --manager EMAIL --system SYSTEM --code CODE` | Makes an existing account a GM of an existing game. |
-| `fuingo game add --player EMAIL --system SYSTEM --code CODE` | Makes an account a player in an existing game, creating the account (without a password) if needed. Prints the player's number. |
+| `fuingo game add --player EMAIL --system SYSTEM --code CODE` | Makes an account a player in an existing game. Prints the player's number. If the email has no account, creates one and mails its invitation; an account that already exists is sent nothing. |
 | `fuingo game disable --system SYSTEM --code CODE` | Disables a game: it has no active players. Its GMs still manage it. `game enable` reverses it. |
 | `fuingo game disable --player EMAIL --system SYSTEM --code CODE` | Disables a player in a game. `game enable` reverses it. |
 | `fuingo game disable --manager EMAIL --system SYSTEM --code CODE` | Stops an account managing a game. `game enable` reverses it. |
-| `fuingo account create [--generate-password] EMAIL` | Adds an account with a password. Fails if the email already has an account, including one made by `game add --player`; give that one a password with `account set-password`. Reads the password from the first line of standard input (`printf '%s\n' "$PW" \| fuingo ... account create EMAIL`), or with `--generate-password` generates one and prints it once. At most 72 bytes. |
-| `fuingo account set-password [--generate-password] EMAIL` | Sets or replaces the password of an existing account, such as one made by `game add --player`. Reads or generates the password like `account create`. |
+| `fuingo account create EMAIL` | Adds an account and mails its invitation. Fails if the email already has an account, including one made by `game add --player`. |
+| `fuingo account reset-password EMAIL` | Mails an active account a new link to choose a password: a reset, or another invitation if it has not chosen one yet. Its current password keeps working until the owner uses the link. |
 | `fuingo account disable EMAIL` | Disables an account: it manages no games, plays in none, and cannot log in. `account enable` reverses it. |
 
 Codes and emails are lowercased. A code is 1 to 32 characters: letters and
@@ -56,9 +58,53 @@ digits in any script, `-`, and `_`. An email is one or more printable ASCII
 bytes with no spaces. Flags come before a command's argument, as in
 `game create --system olympia g3`.
 
-`account create` and `account set-password` set a password from the command
-line only until invitations by mail are built; AGENTS.md's design has no
-command that sets one.
+No command sets, prints, or reads a password. The commands that send mail
+need `--public-url` and the [Mailgun settings](#mail), and check for them
+before changing anything. If Mailgun then refuses the message, the account
+(and player) stays, the command fails, and `account reset-password` sends
+another link.
+
+## Accounts and mail
+
+Nobody can sign up. An account starts without a password, and its owner
+chooses one through a link mailed to the account's address.
+
+| Page | Does |
+| --- | --- |
+| `/account/password?token=...` | Where a mailed link leads: a form to choose the password. |
+| `/account/reset` | Asks for a link by email address. Open to anyone. |
+
+- A link works once and expires 72 hours after it was sent. Sending an
+  account a new link cancels its earlier ones. Only a hash of a link's token
+  is stored, and links are never logged.
+- A password is at least 8 characters and at most 72 bytes, with no
+  control characters.
+- Choosing a password ends the account's `/api/` tokens.
+- `/account/reset` gives the same answer whether or not the address has an
+  account, and mails nothing to an unknown or disabled one. An account that
+  has not chosen a password is sent its invitation again, so this also
+  replaces an expired invitation. Each client address may ask 5 times, then
+  once more per minute, and gets `429` beyond that.
+- Fuingo sends no other mail: nothing announces a file or a turn.
+
+### Mail
+
+Mail goes through [Mailgun](https://www.mailgun.com/). Its settings are
+secrets: they come only from the environment, and have no flags.
+
+| Environment variable | Meaning |
+| --- | --- |
+| `FUINGO_MAILGUN_DOMAIN` | The Mailgun sending domain. Required to send mail. |
+| `FUINGO_MAILGUN_API_KEY` | The Mailgun API key. Required to send mail. |
+| `FUINGO_MAILGUN_FROM` | The `From` address of every message. Required to send mail. |
+| `FUINGO_MAILGUN_API_BASE` | The Mailgun API's origin. Default `https://api.mailgun.net`; use `https://api.eu.mailgun.net` for an EU domain. |
+| `FUINGO_MAILGUN_SANDBOX_TO_ADDR` | For a Mailgun sandbox domain, which may send to one address only. Every message is delivered to this address instead, with the intended recipient at the start of its subject. Refused in `production`. |
+
+- Set all three required settings or none; some but not all is an error.
+- With none, `fuingod` starts in `development`, `test`, and `agent`, logs a
+  warning, and sends nothing; the `fuingo` commands that send mail fail. In
+  `production`, `fuingod` does not start without them.
+- Fuingo does not handle mail that fails later. Bounces show in Mailgun.
 
 ## Configuration
 
@@ -73,7 +119,7 @@ override environment variables, which override the defaults.
 | `--trusted-proxies` | `FUINGO_TRUSTED_PROXIES` | `fuingod` | Comma-separated addresses and CIDR prefixes of the reverse proxies whose `X-Forwarded-For` header is trusted. Default `127.0.0.0/8,::1` (loopback); empty trusts none. |
 | `--max-api-upload` | `FUINGO_MAX_API_UPLOAD` | `fuingod` | Largest file accepted through `/api/`, in bytes. Default `1048576` (1 MiB). Changing it never affects a file already stored. |
 | `--schema` | (none) | `fuingo version` | Print the database's schema version. Command line only. |
-| `--generate-password` | (none) | `fuingo account create`, `set-password` | Generate the password instead of reading it. Command line only. |
+| `--public-url` | `FUINGO_PUBLIC_URL` | `fuingod`, `fuingo` | The origin players reach Fuingo at, such as `https://fuingo.example.com`, which mailed links point to: `https`, with no path. Defaults to `https://htmx-app.localhost:8443` in `development` and `agent`; required elsewhere by `fuingod` and by the `fuingo` commands that send mail. |
 | `--system` | (none) | `fuingo game` commands | The code of the game's system. Required. Command line only. |
 | `--manager`, `--player`, `--code` | (none) | `fuingo game add`, `disable`, `enable` | The GM's or player's email, and the game's code. `--code` is required; `game add` needs exactly one of the others, and `disable` and `enable` at most one. Command line only. |
 
@@ -83,8 +129,10 @@ override environment variables, which override the defaults.
   `.env.local`, `.env.<env>`, `.env`.
 - Flags marked "command line only" ignore their `FUINGO_` variables, so an
   environment file cannot change what a command does.
-- No setting is a secret yet. `FUINGO_PEPPER`, which the previous design
-  required, is no longer read; remove it from environment files.
+- The [Mailgun settings](#mail) are the only secrets. They have no flags;
+  keep them in a `.env.<env>.local` file, which Git ignores, or in the
+  process environment. `FUINGO_PEPPER`, which the previous design required,
+  is no longer read; remove it from environment files.
 - `fuingodb create` in `development` and `agent` seeds the default system,
   games, players, and accounts listed in [TESTING.md](TESTING.md). So does
   `fuingod --db :memory:`.
@@ -116,8 +164,8 @@ responses, status codes, and examples for every route.
 | `GET /api/systems/{system}/games/{game}/uploads/{upload}/contents` | Downloads the file, exactly as uploaded. |
 | `POST /api/systems/{system}/games/{game}/uploads/{upload}/withdraw` | Withdraws a file the account uploaded. |
 
-Log in with an account that has a password (`fuingo account create` or
-`account set-password`). An account reaches only the games it manages.
+Log in with an account whose owner has chosen a password through its
+invitation. An account reaches only the games it manages.
 
 ## Proxy
 
@@ -188,7 +236,25 @@ database from `/var/lib/fuingo/fuingo.db` and listens on `127.0.0.1:18443`.
    sudo -u fuingo sh -c 'cd /var/lib/fuingo && exec fuingodb --env production create --db /var/lib/fuingo/fuingo.db'
    ```
 
-4. Install and start the service:
+4. Write the settings that differ per server, including the secrets, to
+   `/etc/fuingo/fuingo.env`, readable by root and the `fuingo` group only:
+
+   ```sh
+   sudo install -d -m 0755 /etc/fuingo
+   sudo install -o root -g fuingo -m 0640 /dev/null /etc/fuingo/fuingo.env
+   sudoedit /etc/fuingo/fuingo.env
+   ```
+
+   ```sh
+   FUINGO_PUBLIC_URL=https://uploads.example.com
+   FUINGO_MAILGUN_DOMAIN=mg.example.com
+   FUINGO_MAILGUN_API_KEY=...
+   FUINGO_MAILGUN_FROM=Fuingo <fuingo@mg.example.com>
+   ```
+
+   `fuingod` does not start in production without these.
+
+5. Install and start the service:
 
    ```sh
    sudo cp contrib/systemd/fuingod.service /etc/systemd/system/
@@ -197,7 +263,7 @@ database from `/var/lib/fuingo/fuingo.db` and listens on `127.0.0.1:18443`.
    journalctl -u fuingod -f
    ```
 
-5. Point Caddy at it. Caddy obtains the certificate for the domain itself:
+6. Point Caddy at it. Caddy obtains the certificate for the domain itself:
 
    ```caddyfile
    uploads.example.com {
@@ -215,10 +281,11 @@ Run `fuingo` as the `fuingo` user, never as root, and from
 - `fuingo` looks for `.env` files in the current directory and fails if it
   cannot read it, which the `fuingo` user cannot do in root's home.
 
-A small wrapper keeps the commands short:
+A small wrapper keeps the commands short. It reads the same settings file
+as the service, so the commands can send mail:
 
 ```sh
-fu() { sudo -u fuingo sh -c 'cd /var/lib/fuingo && exec fuingo --env production --db /var/lib/fuingo/fuingo.db "$@"' fuingo "$@"; }
+fu() { sudo -u fuingo sh -c 'cd /var/lib/fuingo && set -a && . /etc/fuingo/fuingo.env && set +a && exec fuingo --env production --db /var/lib/fuingo/fuingo.db "$@"' fuingo "$@"; }
 ```
 
 Create the system and a game in it:
@@ -228,15 +295,16 @@ fu system create olympia
 fu game create --system olympia g3
 ```
 
-Create the GM's account and make it a GM of the game. The password is
-printed once; only its hash is stored:
+Create the GM's account, which mails the GM an invitation to choose a
+password, and make it a GM of the game:
 
 ```sh
-fu account create --generate-password gm@example.com
+fu account create gm@example.com
 fu game add --manager gm@example.com --system olympia --code g3
 ```
 
-Add the players. Each command prints that player's number:
+Add the players. Each command prints that player's number, and mails an
+invitation to each email that had no account:
 
 ```sh
 for n in 1 2 3; do

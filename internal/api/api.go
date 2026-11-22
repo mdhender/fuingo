@@ -35,6 +35,8 @@ import (
 	"time"
 
 	"github.com/mdhender/fuingo/internal/clientip"
+	"github.com/mdhender/fuingo/internal/links"
+	"github.com/mdhender/fuingo/internal/mail"
 	"github.com/mdhender/fuingo/internal/names"
 	"github.com/mdhender/fuingo/internal/ratelimit"
 	"github.com/mdhender/fuingo/internal/store"
@@ -94,6 +96,9 @@ type Config struct {
 	// LoginFailures limits failed logins per client. If nil, each client may
 	// fail FailureBurst times, then once per FailureInterval.
 	LoginFailures *ratelimit.Limiter
+	// Links mails an invitation to an account created by adding a player.
+	// If nil, no mail can be sent and such an invitation fails.
+	Links *links.Service
 	// MaxUpload is the most bytes an uploaded file may hold. If zero, it is
 	// DefaultMaxUpload.
 	MaxUpload int64
@@ -108,6 +113,7 @@ type Handler struct {
 	clients  clientip.Resolver
 	failures *ratelimit.Limiter
 	now      func() time.Time
+	links    *links.Service
 	mux      *http.ServeMux
 	// maxUpload is the most bytes an uploaded file may hold.
 	maxUpload int64
@@ -124,6 +130,9 @@ func New(cfg Config) (*Handler, error) {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
+	if cfg.Links == nil {
+		cfg.Links = &links.Service{Store: cfg.Store, Sender: mail.Unconfigured{}, Now: cfg.Now}
+	}
 	if cfg.MaxUpload == 0 {
 		cfg.MaxUpload = DefaultMaxUpload
 	}
@@ -131,7 +140,7 @@ func New(cfg Config) (*Handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	h := &Handler{db: cfg.Store, logger: cfg.Logger, clients: cfg.Clients, failures: cfg.LoginFailures, now: cfg.Now, maxUpload: cfg.MaxUpload, dummyHash: dummy}
+	h := &Handler{db: cfg.Store, logger: cfg.Logger, clients: cfg.Clients, failures: cfg.LoginFailures, now: cfg.Now, links: cfg.Links, maxUpload: cfg.MaxUpload, dummyHash: dummy}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/login", h.login)
 	mux.HandleFunc("GET /api/games", h.authenticated(h.listGames))

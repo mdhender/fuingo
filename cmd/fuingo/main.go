@@ -10,8 +10,8 @@
 //	fuingo [--env ENV] [--db PATH] game create --system SYSTEM CODE
 //	fuingo [--env ENV] [--db PATH] game add (--manager EMAIL | --player EMAIL) --system SYSTEM --code CODE
 //	fuingo [--env ENV] [--db PATH] game (disable|enable) [--player EMAIL | --manager EMAIL] --system SYSTEM --code CODE
-//	fuingo [--env ENV] [--db PATH] account create [--generate-password] EMAIL
-//	fuingo [--env ENV] [--db PATH] account set-password [--generate-password] EMAIL
+//	fuingo [--env ENV] [--db PATH] [--public-url URL] account create EMAIL
+//	fuingo [--env ENV] [--db PATH] [--public-url URL] account reset-password EMAIL
 //	fuingo [--env ENV] [--db PATH] account (disable|enable) EMAIL
 //
 // Every flag can also be set with a FUINGO_ environment variable:
@@ -20,8 +20,11 @@
 //	                     command but version without --schema)
 //	--db    FUINGO_DB    path to the database file (required by commands that use it;
 //	                     :memory: is refused)
+//	--public-url  FUINGO_PUBLIC_URL  the server's public origin, such as
+//	                     https://fuingo.example.com, for the links in mail (required
+//	                     by commands that send mail, except in development and agent)
 //
-// --schema, --generate-password, --manager, --player, --system, and --code
+// --schema, --manager, --player, --system, and --code
 // are honored only on the command line; their FUINGO_ variables are ignored.
 // version reads no environment unless --schema is on the command line.
 //
@@ -37,50 +40,53 @@
 //
 // Each email has one account, for playing and managing alike.
 // game add --manager makes an existing account a manager of an existing
-// game. game add --player makes an account a player in it, creating the
-// account without a password if it does not exist.
+// game. game add --player makes an account a player in it; if the email has
+// no account, it creates one and mails its invitation.
 //
 // game disable and game enable clear or set is_active on the game, or with
 // --player or --manager, on that player or manager of the game. Rows are
 // never deleted. account disable and account enable clear or set is_active
 // on an account; an inactive account manages no games and plays in none.
-// account create makes an account with a password, and account set-password
-// sets or replaces the password of an existing account, such as one made by
-// game add --player. Each reads the password from the first line of standard
-// input, or, with --generate-password, generates one and prints it once.
-// Passwords are hashed with bcrypt at bcrypt.MinCost and are at most 72
-// bytes.
+//
+// No command sets or reads a password. account create makes an account and
+// mails its invitation: a link, valid for 72 hours and usable once, with
+// which the owner chooses a password. account reset-password mails such a
+// link to an existing account; the password it has keeps working until the
+// owner chooses a new one. Mail is sent through Mailgun, whose settings are
+// secrets read only from the environment (FUINGO_MAILGUN_DOMAIN,
+// FUINGO_MAILGUN_API_KEY, FUINGO_MAILGUN_FROM, and optionally
+// FUINGO_MAILGUN_API_BASE and FUINGO_MAILGUN_SANDBOX_TO_ADDR). A command that
+// would send mail fails, changing nothing, if they are not set.
 package main
 
 import (
-	"bufio"
 	"context"
-	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
 	"os"
-	"strings"
 
 	"github.com/mdhender/fuingo"
 	"github.com/mdhender/fuingo/internal/cerrs"
 	"github.com/mdhender/fuingo/internal/cli"
+	"github.com/mdhender/fuingo/internal/links"
+	"github.com/mdhender/fuingo/internal/mail"
 	"github.com/mdhender/fuingo/internal/names"
 	"github.com/mdhender/fuingo/internal/store"
 	"github.com/peterbourgon/ff/v4"
 	"github.com/peterbourgon/ff/v4/ffhelp"
-	"golang.org/x/crypto/bcrypt"
 )
 
 const (
-	ErrMissingDatabase = cerrs.Error("--db (FUINGO_DB) is required")
-	ErrMemoryDatabase  = cerrs.Error("fuingo requires a database file, not :memory:")
-	ErrMissingCode     = cerrs.Error("--code is required")
-	ErrMissingSystem   = cerrs.Error("--system is required")
-	ErrAddWhat         = cerrs.Error("game add needs exactly one of --manager and --player")
-	ErrToggleWhat      = cerrs.Error("give at most one of --manager and --player")
-	ErrMissingPassword = cerrs.Error("no password on standard input; pipe one in or use --generate-password")
-	ErrUsage           = cerrs.Error("wrong number of arguments")
+	ErrMissingDatabase  = cerrs.Error("--db (FUINGO_DB) is required")
+	ErrMemoryDatabase   = cerrs.Error("fuingo requires a database file, not :memory:")
+	ErrMissingCode      = cerrs.Error("--code is required")
+	ErrMissingSystem    = cerrs.Error("--system is required")
+	ErrAddWhat          = cerrs.Error("game add needs exactly one of --manager and --player")
+	ErrToggleWhat       = cerrs.Error("give at most one of --manager and --player")
+	ErrInactiveAccount  = cerrs.Error("the account is disabled")
+	ErrMissingPublicURL = cerrs.Error("--public-url (FUINGO_PUBLIC_URL) is required to mail a link")
+	ErrUsage            = cerrs.Error("wrong number of arguments")
 )
 
 func main() {
@@ -97,6 +103,8 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	rootFlags := ff.NewFlagSet("fuingo")
 	rootFlags.StringVar(&env, 0, "env", "", "environment: development, test, production, or agent (FUINGO_ENV)")
 	rootFlags.StringVar(&path, 0, "db", "", "path to the database file (FUINGO_DB)")
+	var publicURL string
+	rootFlags.StringVar(&publicURL, 0, "public-url", "", "the server's public origin, for the links in mail (FUINGO_PUBLIC_URL)")
 
 	var schema bool
 	versionFlags := ff.NewFlagSet("version").SetParent(rootFlags)
@@ -209,15 +217,35 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 				return err
 			}
 			member := store.Member{Game: game, Email: email}
-			return withDatabase(ctx, path, func(s *store.Store) error {
-				if addPlayer != "" {
-					id, err := s.AddPlayer(ctx, member)
+			if addPlayer != "" {
+				return withDatabase(ctx, path, func(s *store.Store) error {
+					// An email with no account gets one, and its invitation:
+					// make sure that can be mailed before changing anything.
+					var l *links.Service
+					if _, found, err := s.FindAccount(ctx, email); err != nil {
+						return err
+					} else if !found {
+						if l, err = linkService(s, env, publicURL); err != nil {
+							return fmt.Errorf("%s has no account, and its invitation cannot be sent: %w", email, err)
+						}
+					}
+					added, err := s.AddPlayer(ctx, member)
 					if err != nil {
 						return err
 					}
-					fmt.Fprintf(stdout, "added player %s to game %s (id %d)\n", email, game, id)
-					return nil
-				}
+					fmt.Fprintf(stdout, "added player %s to game %s (id %d)\n", email, game, added.ID)
+					if !added.NewAccount {
+						return nil
+					}
+					if l == nil { // the account was created by someone else in between
+						if l, err = linkService(s, env, publicURL); err != nil {
+							return err
+						}
+					}
+					return invite(ctx, l, stdout, added.AccountID, email)
+				})
+			}
+			return withDatabase(ctx, path, func(s *store.Store) error {
 				if err := s.AddManager(ctx, member); err != nil {
 					return err
 				}
@@ -292,14 +320,11 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		},
 	}
 
-	var generatePassword bool
-	accountCreateFlags := ff.NewFlagSet("account create").SetParent(rootFlags)
-	accountCreateFlags.BoolVar(&generatePassword, 0, "generate-password", "generate and print a password instead of reading one from standard input (command line only)")
 	accountCreate := &ff.Command{
 		Name:      "create",
-		Usage:     "fuingo [--db PATH] account create [--generate-password] EMAIL",
-		ShortHelp: "create an account with a password",
-		Flags:     accountCreateFlags,
+		Usage:     "fuingo [--db PATH] [--public-url URL] account create EMAIL",
+		ShortHelp: "create an account and mail it an invitation",
+		Flags:     ff.NewFlagSet("account create").SetParent(rootFlags),
 		Exec: func(ctx context.Context, args []string) error {
 			if len(args) != 1 {
 				return fmt.Errorf("account create EMAIL: %w", ErrUsage)
@@ -308,51 +333,42 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 			if err != nil {
 				return err
 			}
-			password, hash, err := newPassword(stdin, generatePassword)
-			if err != nil {
-				return err
-			}
-			return withDatabase(ctx, path, func(s *store.Store) error {
-				id, err := s.CreateAccount(ctx, store.NewAccount{Email: email, HashedSecret: hash})
+			return withLinks(ctx, path, env, publicURL, func(s *store.Store, l *links.Service) error {
+				id, err := s.CreateAccount(ctx, store.NewAccount{Email: email})
 				if err != nil {
 					return err
 				}
 				fmt.Fprintf(stdout, "created account %s (id %d)\n", email, id)
-				if generatePassword {
-					fmt.Fprintf(stdout, "password: %s\n", password)
-				}
-				return nil
+				return invite(ctx, l, stdout, id, email)
 			})
 		},
 	}
-	var setGeneratePassword bool
-	accountSetPasswordFlags := ff.NewFlagSet("account set-password").SetParent(rootFlags)
-	accountSetPasswordFlags.BoolVar(&setGeneratePassword, 0, "generate-password", "generate and print a password instead of reading one from standard input (command line only)")
-	accountSetPassword := &ff.Command{
-		Name:      "set-password",
-		Usage:     "fuingo [--db PATH] account set-password [--generate-password] EMAIL",
-		ShortHelp: "set or replace an account's password",
-		Flags:     accountSetPasswordFlags,
+	accountResetPassword := &ff.Command{
+		Name:      "reset-password",
+		Usage:     "fuingo [--db PATH] [--public-url URL] account reset-password EMAIL",
+		ShortHelp: "mail an account a link to choose a new password",
+		Flags:     ff.NewFlagSet("account reset-password").SetParent(rootFlags),
 		Exec: func(ctx context.Context, args []string) error {
 			if len(args) != 1 {
-				return fmt.Errorf("account set-password EMAIL: %w", ErrUsage)
+				return fmt.Errorf("account reset-password EMAIL: %w", ErrUsage)
 			}
 			email, err := emailAddress(args[0])
 			if err != nil {
 				return err
 			}
-			password, hash, err := newPassword(stdin, setGeneratePassword)
-			if err != nil {
-				return err
-			}
-			return withDatabase(ctx, path, func(s *store.Store) error {
-				if err := s.SetAccountSecret(ctx, email, hash); err != nil {
+			return withLinks(ctx, path, env, publicURL, func(s *store.Store, l *links.Service) error {
+				account, found, err := s.FindAccount(ctx, email)
+				if err != nil {
 					return err
+				} else if !found {
+					return fmt.Errorf("%s: %w", email, store.ErrUnknownAccount)
+				} else if !account.Active {
+					return fmt.Errorf("%s: %w", email, ErrInactiveAccount)
 				}
-				fmt.Fprintf(stdout, "set the password of account %s\n", email)
-				if setGeneratePassword {
-					fmt.Fprintf(stdout, "password: %s\n", password)
+				if _, err := l.SendTo(ctx, email); err != nil {
+					return fmt.Errorf("the link could not be sent to %s: %w", email, err)
 				}
+				fmt.Fprintf(stdout, "mailed %s a link to choose a password\n", email)
 				return nil
 			})
 		},
@@ -385,10 +401,10 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	}
 	account := &ff.Command{
 		Name:        "account",
-		Usage:       "fuingo [--db PATH] account <create|set-password|disable|enable>",
+		Usage:       "fuingo [--db PATH] account <create|reset-password|disable|enable>",
 		ShortHelp:   "manage accounts",
 		Flags:       ff.NewFlagSet("account").SetParent(rootFlags),
-		Subcommands: []*ff.Command{accountCreate, accountSetPassword, accountToggle("disable", false), accountToggle("enable", true)},
+		Subcommands: []*ff.Command{accountCreate, accountResetPassword, accountToggle("disable", false), accountToggle("enable", true)},
 		Exec: func(ctx context.Context, args []string) error {
 			return ff.ErrHelp
 		},
@@ -426,7 +442,7 @@ func parse(root *ff.Command, args []string, env *string, needsNoEnvironment func
 	if err := root.Reset(); err != nil {
 		return err
 	}
-	return cli.Parse(root, args, env, "schema", "generate-password", "manager", "player", "system", "code")
+	return cli.Parse(root, args, env, "schema", "manager", "player", "system", "code")
 }
 
 // withDatabase opens the database at path, which must already be at the
@@ -484,31 +500,50 @@ func emailAddress(email string) (string, error) {
 	return e, nil
 }
 
-// newPassword generates a password, or reads one from stdin, and returns it
-// with its bcrypt hash at bcrypt.MinCost.
-func newPassword(stdin io.Reader, generate bool) (password string, hash []byte, err error) {
-	if generate {
-		password = rand.Text()
-	} else if password, err = readPassword(stdin); err != nil {
-		return "", nil, err
-	}
-	hash, err = bcrypt.GenerateFromPassword([]byte(password), bcrypt.MinCost)
+// newSender returns the mail sender for the environment's settings. Tests
+// replace it.
+var newSender = mail.SenderFromEnv
+
+// linkService returns the service that mails links, or fails if this
+// program is not configured to: it needs the Mailgun settings and the
+// server's public origin.
+func linkService(s *store.Store, env, publicURL string) (*links.Service, error) {
+	sender, err := newSender(env)
 	if err != nil {
-		return "", nil, err
+		return nil, err
 	}
-	return password, hash, nil
+	if _, unconfigured := sender.(mail.Unconfigured); unconfigured {
+		return nil, mail.ErrNotConfigured
+	}
+	if publicURL == "" {
+		if publicURL = links.DefaultPublicURL(env); publicURL == "" {
+			return nil, ErrMissingPublicURL
+		}
+	}
+	if publicURL, err = links.PublicURL(publicURL); err != nil {
+		return nil, fmt.Errorf("--public-url %q: %w", publicURL, err)
+	}
+	return &links.Service{Store: s, Sender: sender, PublicURL: publicURL}, nil
 }
 
-// readPassword returns the first line of r, without its LF or CRLF ending.
-// bcrypt refuses passwords over 72 bytes, so reading stops well past that.
-func readPassword(r io.Reader) (string, error) {
-	line, err := bufio.NewReader(io.LimitReader(r, 1024)).ReadString('\n')
-	if err != nil && !errors.Is(err, io.EOF) {
-		return "", err
+// withLinks is withDatabase for a command that mails a link. It fails
+// before running fn if the link could not be mailed.
+func withLinks(ctx context.Context, path, env, publicURL string, fn func(*store.Store, *links.Service) error) error {
+	return withDatabase(ctx, path, func(s *store.Store) error {
+		l, err := linkService(s, env, publicURL)
+		if err != nil {
+			return err
+		}
+		return fn(s, l)
+	})
+}
+
+// invite mails a new account its invitation. The account stays if the mail
+// fails; the error says how to send another.
+func invite(ctx context.Context, l *links.Service, stdout io.Writer, accountID int64, email string) error {
+	if err := l.Send(ctx, accountID, email, store.LinkInvitation); err != nil {
+		return fmt.Errorf("the invitation could not be sent to %s: %w (send another with: fuingo account reset-password %s)", email, err, email)
 	}
-	line = strings.TrimSuffix(strings.TrimSuffix(line, "\n"), "\r")
-	if line == "" {
-		return "", ErrMissingPassword
-	}
-	return line, nil
+	fmt.Fprintf(stdout, "mailed %s an invitation\n", email)
+	return nil
 }

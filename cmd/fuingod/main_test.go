@@ -22,6 +22,8 @@ import (
 
 	"github.com/mdhender/fuingo/internal/clientip"
 	"github.com/mdhender/fuingo/internal/devdata"
+	"github.com/mdhender/fuingo/internal/links"
+	"github.com/mdhender/fuingo/internal/mail"
 	"github.com/mdhender/fuingo/internal/store"
 )
 
@@ -29,7 +31,10 @@ var acct01 = devdata.Accounts[0]
 
 func clearEnv(t *testing.T) {
 	t.Helper()
-	for _, key := range []string{"FUINGO_ENV", "FUINGO_ADDR", "FUINGO_DB", "FUINGO_TRUSTED_PROXIES"} {
+	for _, key := range []string{
+		"FUINGO_ENV", "FUINGO_ADDR", "FUINGO_DB", "FUINGO_TRUSTED_PROXIES", "FUINGO_MAX_API_UPLOAD", "FUINGO_PUBLIC_URL",
+		"FUINGO_MAILGUN_DOMAIN", "FUINGO_MAILGUN_API_KEY", "FUINGO_MAILGUN_FROM", "FUINGO_MAILGUN_API_BASE", "FUINGO_MAILGUN_SANDBOX_TO_ADDR",
+	} {
 		t.Setenv(key, "")
 		os.Unsetenv(key)
 	}
@@ -83,8 +88,13 @@ func TestConfigRefusals(t *testing.T) {
 		want error
 	}{
 		{"missing db", []string{"--env", "development"}, ErrMissingDatabase},
-		{"memory in test", []string{"--env", "test", "--db", ":memory:"}, ErrMemoryDatabase},
-		{"memory in production", []string{"--env", "production", "--db", ":memory:"}, ErrMemoryDatabase},
+		{"memory in test", []string{"--env", "test", "--public-url", "https://fuingo.example.com", "--db", ":memory:"}, ErrMemoryDatabase},
+		{"no public URL in test", []string{"--env", "test", "--db", "x.db"}, ErrMissingPublicURL},
+		{"no public URL in production", []string{"--env", "production", "--db", "x.db"}, ErrMissingPublicURL},
+		{"public URL with a path", []string{"--env", "test", "--public-url", "https://fuingo.example.com/app", "--db", "x.db"}, links.ErrPublicURL},
+		{"plain http public URL", []string{"--env", "test", "--public-url", "http://fuingo.example.com", "--db", "x.db"}, links.ErrPublicURL},
+		// Production does not start without the Mailgun settings.
+		{"no mail in production", []string{"--env", "production", "--public-url", "https://fuingo.example.com", "--db", "x.db"}, mail.ErrNotConfigured},
 		{"bad addr", []string{"--env", "development", "--addr", "18443", "--db", ":memory:"}, ErrInvalidAddress},
 		{"bad port", []string{"--env", "development", "--addr", "127.0.0.1:99999", "--db", ":memory:"}, ErrInvalidAddress},
 		{"bad trusted proxy", []string{"--env", "development", "--trusted-proxies", "caddy", "--db", ":memory:"}, clientip.ErrInvalidProxy},
@@ -134,8 +144,12 @@ func startServer(t *testing.T, args ...string) string {
 	go func() {
 		errc <- run(ctx, append([]string{"--addr", "127.0.0.1:0"}, args...), io.Discard, func(a net.Addr) { addrc <- a })
 	}()
+	stopped := false
 	t.Cleanup(func() {
 		cancel()
+		if stopped {
+			return
+		}
 		if err := <-errc; err != nil {
 			t.Errorf("run: %v", err)
 		}
@@ -144,6 +158,7 @@ func startServer(t *testing.T, args ...string) string {
 	case a := <-addrc:
 		return "http://" + a.String()
 	case err := <-errc:
+		stopped = true
 		t.Fatalf("run: %v", err)
 	case <-time.After(10 * time.Second):
 		t.Fatal("server did not start")
@@ -221,7 +236,7 @@ func TestServeDatabaseFile(t *testing.T) {
 	s.Close()
 
 	// In test, the defaults in the file still work but the helpers do not exist.
-	base := startServer(t, "--env", "test", "--db", path)
+	base := startServer(t, "--env", "test", "--public-url", "https://fuingo.example.com", "--db", path)
 	if code, body := postLogin(t, base, acct01.Email, acct01.Password); code != http.StatusOK {
 		t.Errorf("login: %d %s", code, body)
 	}
@@ -377,9 +392,44 @@ func TestShutdownCutsOffStalledRequests(t *testing.T) {
 	}
 }
 
+// The Mailgun settings come only from the environment.
+func TestMailSettings(t *testing.T) {
+	clearEnv(t)
+	dev := []string{"--env", "development", "--db", ":memory:"}
+	prod := []string{"--env", "production", "--public-url", "https://fuingo.example.com/", "--db", "x.db"}
+	// Outside production the server starts without mail, and cannot send any.
+	cfg, err := loadConfig(dev, io.Discard)
+	if _, ok := cfg.sender.(mail.Unconfigured); err != nil || !ok || cfg.publicURL != links.DevelopmentURL {
+		t.Errorf("development without mail: sender %T, public URL %q, %v", cfg.sender, cfg.publicURL, err)
+	}
+	t.Setenv("FUINGO_MAILGUN_DOMAIN", "mg.example.com")
+	if _, err := loadConfig(dev, io.Discard); !errors.Is(err, mail.ErrIncomplete) {
+		t.Errorf("only a domain: %v, want ErrIncomplete", err)
+	}
+	t.Setenv("FUINGO_MAILGUN_API_KEY", "key")
+	t.Setenv("FUINGO_MAILGUN_FROM", "fuingo@mg.example.com")
+	cfg, err = loadConfig(prod, io.Discard)
+	if _, ok := cfg.sender.(*mail.Mailgun); err != nil || !ok || cfg.publicURL != "https://fuingo.example.com" {
+		t.Errorf("production with mail: sender %T, public URL %q, %v", cfg.sender, cfg.publicURL, err)
+	}
+	// The sandbox address redirects all mail, so production refuses it.
+	t.Setenv("FUINGO_MAILGUN_SANDBOX_TO_ADDR", "me@example.com")
+	if _, err := loadConfig(prod, io.Discard); !errors.Is(err, mail.ErrSandboxInProd) {
+		t.Errorf("sandbox address in production: %v, want ErrSandboxInProd", err)
+	}
+	if _, err := loadConfig(dev, io.Discard); err != nil {
+		t.Errorf("sandbox address in development: %v", err)
+	}
+	// There are no flags for the secrets.
+	for _, flag := range []string{"--mailgun-api-key", "--mailgun-domain", "--mailgun-from"} {
+		if _, err := loadConfig(append(dev, flag, "x"), io.Discard); err == nil {
+			t.Errorf("%s was accepted", flag)
+		}
+	}
+}
+
 func TestMaxAPIUpload(t *testing.T) {
-	t.Setenv("FUINGO_MAX_API_UPLOAD", "1") // restored when the test ends
-	os.Unsetenv("FUINGO_MAX_API_UPLOAD")
+	clearEnv(t)
 	base := []string{"--env", "development", "--db", ":memory:"}
 	cfg, err := loadConfig(base, io.Discard)
 	if err != nil || cfg.maxAPIUpload != 1<<20 {

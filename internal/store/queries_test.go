@@ -357,8 +357,16 @@ func TestPlayersHaveAccounts(t *testing.T) {
 		t.Fatalf("AddPlayer in a second game: %v", err)
 	}
 	second, err := s.AddPlayer(t.Context(), Member{otherGame01, "b@example.com"})
-	if err != nil || second == first {
-		t.Fatalf("AddPlayer in another system = %d, %v; want a new ID after %d", second, err, first)
+	if err != nil || second.ID == first.ID {
+		t.Fatalf("AddPlayer in another system = %+v, %v; want a new ID after %d", second, err, first.ID)
+	}
+	// The account existed for the second game: only a new account needs an
+	// invitation.
+	if first.NewAccount || second.NewAccount || first.AccountID != second.AccountID {
+		t.Errorf("existing account: %+v, %+v", first, second)
+	}
+	if fresh, err := s.AddPlayer(t.Context(), Member{game02, "fresh@example.com"}); err != nil || !fresh.NewAccount || fresh.AccountID == first.AccountID {
+		t.Errorf("AddPlayer of an unknown email = %+v, %v; want a new account", fresh, err)
 	}
 	for _, tc := range []struct {
 		m    Member
@@ -502,8 +510,8 @@ INSERT INTO uploads (uploader_id, email, turn_no, content_hash, uploaded_at) VAL
 	if id, err := s.CreateGame(t.Context(), GameRef{System: "legacy", Code: "game03"}); err != nil || id != 4 {
 		t.Errorf("next game ID = %d, %v; want 4", id, err)
 	}
-	if id, err := s.AddPlayer(t.Context(), Member{legacy01, "q@example.com"}); err != nil || id != 4 {
-		t.Errorf("next player ID = %d, %v; want 4", id, err)
+	if added, err := s.AddPlayer(t.Context(), Member{legacy01, "q@example.com"}); err != nil || added.ID != 4 {
+		t.Errorf("next player ID = %d, %v; want 4", added.ID, err)
 	}
 	if err := s.AddManager(t.Context(), Member{legacy01, "q@example.com"}); err != nil {
 		t.Fatal(err)

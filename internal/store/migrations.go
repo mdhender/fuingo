@@ -237,4 +237,22 @@ CREATE INDEX uploads_by_game ON uploads (game_id, id);
 CREATE INDEX uploads_by_turn ON uploads (turn_id, player_id, id);
 CREATE INDEX uploads_by_contents ON uploads (sha256);
 `,
+	// 6: the links mailed to an account so its owner can set a password: an
+	// invitation for a new account, or a password reset. Only the SHA-256 of
+	// a link's token is stored. A link sets a password once (used_at), and a
+	// newer link for the same account cancels it (canceled_at). Rows are kept.
+	`
+CREATE TABLE account_links (
+	id           INTEGER PRIMARY KEY AUTOINCREMENT,
+	account_id   INTEGER NOT NULL REFERENCES accounts (id) ON DELETE RESTRICT,
+	kind         TEXT    NOT NULL CHECK (kind IN ('invitation', 'reset')),
+	hashed_token BLOB    NOT NULL UNIQUE CHECK (length(hashed_token) = 32),
+	created_at   TEXT    NOT NULL,
+	expires_at   TEXT    NOT NULL,
+	used_at      TEXT,
+	canceled_at  TEXT
+);
+
+CREATE INDEX account_links_by_account ON account_links (account_id);
+`,
 }

@@ -36,11 +36,19 @@ The user agreed this design on 2026-11-22, and it is being built in the steps th
   Listings leave out withdrawn files unless asked with `withdrawn=include`; a GM can still read a withdrawn file's record and contents.
   The API's size limit is `--max-api-upload` (`FUINGO_MAX_API_UPLOAD`).
   Downloads return the stored bytes only: normalization is not built.
-- Not built: anything for players (their uploads, withdrawals, and the two web size limits), web sign-in and sessions, the pages, mail (invitations and password resets), and system-level files.
+- Mail, built on 2026-11-22: invitations and password resets, sent through Mailgun.
+  `fuingo account create`, `fuingo game add --player`, and a GM adding a player through `/api/` mail an invitation to an account they create; `fuingo account reset-password` and the public page `/account/reset` mail an active account a new link.
+  A link leads to `/account/password`, works once, and expires after 72 hours; sending an account a new link cancels its earlier ones.
+  An account without a password is always sent an invitation, so `/account/reset` also replaces an expired one.
+  Setting a password ends the account's `/api/` sessions.
+  A password is at least 8 characters and at most 72 bytes.
+  `/account/reset` answers the same for every email and is limited per client address, 5 requests and then one per minute.
+  `FUINGO_MAILGUN_SANDBOX_TO_ADDR` redirects every message to one address, for a Mailgun sandbox, and is refused in production.
+  `fuingod` does not start in production without the Mailgun settings, and needs `--public-url` (`FUINGO_PUBLIC_URL`) outside development and agent.
+  No command sets or reads a password: `fuingo account set-password` and `account create`'s password were removed.
+- Not built: anything for players (their uploads, withdrawals, and the two web size limits), web sign-in and sessions, the pages other than the two account pages, and system-level files.
   The page at `/` is a placeholder.
   Closing a turn has no effect yet, because only players are stopped by it.
-- `fuingo account create`'s password and `fuingo account set-password` remain only because invitations are not built: nothing else can give an account a password.
-  Do not extend them, and remove them in the step that builds invitations.
 - Migration 3 moved the games of a database made under the previous design into a system named `legacy` and dropped its stored uploads.
 - No deployment holds live data.
   The server called production is a test server, so no step needs a cutover.
@@ -211,9 +219,12 @@ Olympia / G3 / 1 / 5    player 5's folder in turn 1
 - `internal/devdata` holds the default system, games, players, and accounts; `internal/cli` holds the flag and environment-file parsing shared by the commands.
 - `internal/clientip` finds the client's address behind trusted proxies; `internal/ratelimit` limits failures per client.
   Both carry over to sign-in unchanged.
-- `internal/server` assembles the routes (the page at `/`, the vendored HTMX under `/static/`, the `/api/` routes, and the development/agent helpers) behind `http.NewCrossOriginProtection`.
+- `internal/server` assembles the routes (the page at `/`, the account pages `/account/password` and `/account/reset` in `account.go`, the vendored HTMX under `/static/`, the `/api/` routes, and the development/agent helpers) behind `http.NewCrossOriginProtection`.
   HTMX 2.0.11 is vendored as `internal/server/static/htmx-2.0.11.min.js`.
 - `internal/api` is the `/api/` handler.
+- `internal/mail` sends mail through Mailgun, and reads its settings from the environment; `internal/mail/mailtest` records mail for tests.
+  `internal/links` makes, mails, and redeems invitation and reset links, and checks passwords.
+  Everything that sends an account a link goes through `links.Service`.
 - `internal/names` checks and lowercases codes and emails, and checks file names (`names.File`) and file contents (`names.Text`).
   Every command and route that accepts one goes through it.
 - `contrib/systemd/fuingod.service` runs `fuingod` as a systemd service; README.md documents its setup.
@@ -261,9 +272,10 @@ Codes and emails are lowercased with `strings.ToLower`; apply no other normaliza
 
 ## Data model
 
-The schema holds `systems`, `games`, `accounts`, `game_players`, `game_managers`, `turns`, `file_contents`, `uploads`, and `api_sessions`.
+The schema holds `systems`, `games`, `accounts`, `game_players`, `game_managers`, `turns`, `file_contents`, `uploads`, `api_sessions`, and `account_links`.
+`account_links` holds each invitation and reset link by the hash of its token, with when it expires and whether it was used or canceled; its rows are kept.
 `uploads` allows a row with no game, for a system-level file, but nothing writes one yet, and its uploader must be an account.
-The tables for web sessions and mail are not yet written; design them with the user when a step needs them.
+The table for web sessions is not yet written; design it with the user when a step needs it.
 These rules hold whatever the tables are:
 
 - Codes and emails can change, so rows are identified by integer IDs, never by those values.

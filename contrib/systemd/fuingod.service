@@ -13,13 +13,16 @@ Group=fuingo
 UMask=0027
 
 # The database and its WAL files live in /var/lib/fuingo, the only writable
-# path. No .env files belong there: the settings come from this unit.
+# path. No .env files belong there: the settings come from this unit and
+# from /etc/fuingo/fuingo.env, which holds what differs per server:
+# FUINGO_PUBLIC_URL and the Mailgun secrets. Keep that file root:fuingo 0640.
 StateDirectory=fuingo
 StateDirectoryMode=0750
 WorkingDirectory=/var/lib/fuingo
 Environment=FUINGO_ENV=production
 Environment=FUINGO_DB=/var/lib/fuingo/fuingo.db
 Environment=FUINGO_ADDR=127.0.0.1:18443
+EnvironmentFile=/etc/fuingo/fuingo.env
 
 # Bring the schema up to date before each start. fuingod itself never
 # migrates. Remove this line to migrate by hand when deploying.

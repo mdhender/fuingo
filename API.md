@@ -154,9 +154,9 @@ curl -s "$FUINGO/api/login" \
   `401`. An account may hold several tokens at once.
 - A token stops working at once if its account is disabled, and works
   again if the account is re-enabled before it expires.
-- **Changing the account's password does not end its tokens.** A token
-  issued under the old password stays valid until it expires. Disabling
-  the account is the only way to cut one off early.
+- **Choosing a new password ends the account's tokens.** When the owner
+  sets a password through a mailed link, every token of the account stops
+  working; log in again with the new password.
 - Every failed login gets the same `401`, whether the email is unknown, the
   password is wrong, the account is disabled, or the account has no
   password. A client cannot tell these apart.
@@ -166,9 +166,9 @@ curl -s "$FUINGO/api/login" \
   logins and malformed requests (`400`, `415`) do not count. Do not retry
   a `401` in a loop. IPv6 clients are grouped by /64 prefix, so tools on
   one network may share a limit.
-- Only an account with a password can log in. The administrator gives an
-  account one with `fuingo account create` or `fuingo account set-password`;
-  the API cannot. An account a GM adds as a player has none.
+- Only an account with a password can log in. An account's owner chooses
+  it through the invitation mailed to the account's address, and replaces
+  it through the web page `/account/reset`. No route sets a password.
 
 Keep the password and token out of logs, files, and command lines that
 other users can read.
@@ -237,7 +237,8 @@ curl -s "$FUINGO/api/systems/system01/games/game01/players" \
 ### `POST /api/systems/{system}/games/{game}/players`
 
 Makes the account with the email an active player in the game. If the
-email has no account, one is created, without a password.
+email has no account, one is created and mailed an invitation to choose
+its password.
 
 ```sh
 curl -s "$FUINGO/api/systems/system01/games/game01/players" \
@@ -247,7 +248,7 @@ curl -s "$FUINGO/api/systems/system01/games/game01/players" \
 ```
 
 ```json
-{"system":"system01","game":"game01","id":4,"email":"wren@example.com"}
+{"system":"system01","game":"game01","id":4,"email":"wren@example.com","invitation":"sent"}
 ```
 
 | Status | When |
@@ -257,8 +258,14 @@ curl -s "$FUINGO/api/systems/system01/games/game01/players" \
 | `409` | That email is already a player in the game, even a disabled one. Enable it instead. |
 
 - The body holds only `email`. A GM never sets, sees, or resets a password.
-- An account created this way cannot sign in until the administrator gives
-  it a password. Invitations by mail are not built yet.
+- `invitation` says what was mailed: `sent`, when the account is new and
+  its invitation went out; `none`, when the account already existed, which
+  is sent nothing for joining a game; or `failed`, when the account is new
+  and the mail could not be sent. The player is added in every case.
+- After `failed`, the player asks for a link at `/account/reset`, or the
+  administrator runs `fuingo account reset-password`. That page also
+  replaces an invitation that expired, after 72 hours.
+- The response never holds the link.
 
 ### `POST /api/systems/{system}/games/{game}/players/{id}/disable`
 ### `POST /api/systems/{system}/games/{game}/players/{id}/enable`

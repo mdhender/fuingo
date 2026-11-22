@@ -375,47 +375,56 @@ func (s *Store) SetAccountSecret(ctx context.Context, email string, hashedSecret
 	return nil
 }
 
+// AddedPlayer describes a player that was just added to a game. ID is the
+// player's number. NewAccount reports that the email had no account and one
+// was created for it, without a password: it needs an invitation.
+type AddedPlayer struct {
+	ID         int64
+	AccountID  int64
+	NewAccount bool
+}
+
 // AddPlayer makes the account with the email an active player in an existing
-// game and returns the player's ID, creating the account, without a hashed
-// secret, if the email has none. It fails with ErrPlayerExists if the
-// account is already a player there, even an inactive one.
-func (s *Store) AddPlayer(ctx context.Context, p Member) (int64, error) {
+// game, creating the account, without a hashed secret, if the email has
+// none. It fails with ErrPlayerExists if the account is already a player
+// there, even an inactive one.
+func (s *Store) AddPlayer(ctx context.Context, p Member) (AddedPlayer, error) {
 	conn, err := s.take(ctx)
 	if err != nil {
-		return 0, err
+		return AddedPlayer{}, err
 	}
 	defer s.pool.Put(conn)
 	return addPlayer(conn, p)
 }
 
-func addPlayer(conn *sqlite.Conn, p Member) (id int64, err error) {
+func addPlayer(conn *sqlite.Conn, p Member) (added AddedPlayer, err error) {
 	defer sqlitex.Save(conn)(&err)
 	game, err := mustGameID(conn, p.Game)
 	if err != nil {
-		return 0, err
+		return AddedPlayer{}, err
 	}
 	return addGamePlayer(conn, game, p.Email)
 }
 
 // addGamePlayer adds the player inside the caller's transaction.
-func addGamePlayer(conn *sqlite.Conn, gameID int64, email string) (int64, error) {
+func addGamePlayer(conn *sqlite.Conn, gameID int64, email string) (AddedPlayer, error) {
 	account, ok, err := accountID(conn, email)
 	if err != nil {
-		return 0, err
+		return AddedPlayer{}, err
 	} else if !ok {
 		if account, err = createAccount(conn, NewAccount{Email: email}); err != nil {
-			return 0, err
+			return AddedPlayer{}, err
 		}
 	}
 	err = sqlitex.Execute(conn, "INSERT INTO game_players (game_id, account_id, is_active) VALUES (?, ?, 1);", &sqlitex.ExecOptions{
 		Args: []any{gameID, account},
 	})
 	if sqlite.ErrCode(err) == sqlite.ResultConstraintUnique {
-		return 0, fmt.Errorf("%s: %w", email, ErrPlayerExists)
+		return AddedPlayer{}, fmt.Errorf("%s: %w", email, ErrPlayerExists)
 	} else if err != nil {
-		return 0, err
+		return AddedPlayer{}, err
 	}
-	return conn.LastInsertRowID(), nil
+	return AddedPlayer{ID: conn.LastInsertRowID(), AccountID: account, NewAccount: !ok}, nil
 }
 
 // SetPlayerActive sets whether an account's player in a game is active. It

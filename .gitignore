@@ -7,7 +7,7 @@
 .idea/
 /tmp/
 
-# Local environment overrides may hold secrets such as FUINGO_PEPPER.
+# Local environment overrides may hold secrets such as FUINGO_MAILGUN_API_KEY.
 .env.local
 .env.*.local
 

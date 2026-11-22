@@ -83,7 +83,7 @@ func TestAddPlayer(t *testing.T) {
 	token := f.login(t, acct01.Email, acct01.Password)
 
 	added := decode[api.NewPlayer](t, f, post(game01Players, token, `{"email":"Wren@Example.com"}`), http.StatusCreated)
-	if added.System != "system01" || added.Game != "game01" || added.Email != "wren@example.com" || added.ID <= 0 {
+	if added.System != "system01" || added.Game != "game01" || added.Email != "wren@example.com" || added.ID <= 0 || added.Invitation != api.InvitationSent {
 		t.Fatalf("added: %+v", added)
 	}
 	if !slices.Contains(f.players(t, game01), "wren@example.com") {
@@ -97,8 +97,8 @@ func TestAddPlayer(t *testing.T) {
 
 	// An existing account in another game becomes a separate player here.
 	again := decode[api.NewPlayer](t, f, post(game01Players, token, `{"email":"`+caracara.Email+`"}`), http.StatusCreated)
-	if again.ID <= added.ID {
-		t.Errorf("existing account: player ID %d, want one after %d", again.ID, added.ID)
+	if again.ID <= added.ID || again.Invitation != api.InvitationNone {
+		t.Errorf("existing account: %+v, want a player ID after %d and no invitation", again, added.ID)
 	}
 	if got := f.players(t, game02); !slices.Equal(got, []string{caracara.Email}) {
 		t.Errorf("adding to game01 changed game02's players to %v", got)

@@ -15,6 +15,9 @@ import (
 	"testing"
 
 	"github.com/mdhender/fuingo"
+	"github.com/mdhender/fuingo/internal/links"
+	"github.com/mdhender/fuingo/internal/mail"
+	"github.com/mdhender/fuingo/internal/mail/mailtest"
 	"github.com/mdhender/fuingo/internal/names"
 	"github.com/mdhender/fuingo/internal/store"
 	"golang.org/x/crypto/bcrypt"
@@ -22,13 +25,26 @@ import (
 	"zombiezen.com/go/sqlite/sqlitex"
 )
 
-// clearEnv keeps the developer's environment out of the test.
+// publicURL is the public origin the tests give the commands.
+const publicURL = "https://fuingo.example.com"
+
+// sent records the mail the commands send in place of Mailgun.
+var sent = &mailtest.Recorder{}
+
+// clearEnv keeps the developer's environment, and real mail, out of the
+// test: mail goes to sent, which starts empty.
 func clearEnv(t *testing.T) {
 	t.Helper()
-	for _, key := range []string{"FUINGO_ENV", "FUINGO_DB", "FUINGO_SCHEMA", "FUINGO_GENERATE_PASSWORD", "FUINGO_MANAGER", "FUINGO_PLAYER", "FUINGO_SYSTEM", "FUINGO_CODE"} {
+	for _, key := range []string{
+		"FUINGO_ENV", "FUINGO_DB", "FUINGO_SCHEMA", "FUINGO_GENERATE_PASSWORD", "FUINGO_MANAGER", "FUINGO_PLAYER", "FUINGO_SYSTEM", "FUINGO_CODE",
+		"FUINGO_PUBLIC_URL", "FUINGO_MAILGUN_DOMAIN", "FUINGO_MAILGUN_API_KEY", "FUINGO_MAILGUN_FROM", "FUINGO_MAILGUN_API_BASE", "FUINGO_MAILGUN_SANDBOX_TO_ADDR",
+	} {
 		t.Setenv(key, "")
 		os.Unsetenv(key)
 	}
+	sent.Reset()
+	newSender = func(string) (mail.Sender, error) { return sent, nil }
+	t.Cleanup(func() { newSender = func(string) (mail.Sender, error) { return sent, nil } })
 }
 
 func runCommand(t *testing.T, args ...string) (stdout string, err error) {
@@ -386,7 +402,7 @@ func TestGameCreate(t *testing.T) {
 		t.Errorf("games = %v", got)
 	}
 	// A new game is active: a player added to it is an active player.
-	mustRun(t, "added player wren@example.com to game olympia/g3 (id 1)\n", "--env", "test", "--db", path, "game", "add", "--player", "wren@example.com", "--system", "olympia", "--code", "g3")
+	mustRun(t, "added player wren@example.com to game olympia/g3 (id 1)\nmailed wren@example.com an invitation\n", "--env", "test", "--db", path, "--public-url", publicURL, "game", "add", "--player", "wren@example.com", "--system", "olympia", "--code", "g3")
 	if got := players(t, path, store.GameRef{System: "olympia", Code: "g3"}); len(got) != 1 {
 		t.Errorf("players of a new game = %v", got)
 	}
@@ -453,11 +469,14 @@ func TestGameAddManager(t *testing.T) {
 func TestGameAddPlayer(t *testing.T) {
 	clearEnv(t)
 	path := createDatabaseWithGames(t, "acct01@example.com")
-	base := []string{"--env", "test", "--db", path, "game", "add"}
-	mustRun(t, "added player catbird@example.com to game system01/game01 (id 1)\n", append(base, "--player", "Catbird@Example.com", "--system", "System01", "--code", "Game01")...)
-	// The account is new and has no password.
+	base := []string{"--env", "test", "--db", path, "--public-url", publicURL, "game", "add"}
+	mustRun(t, "added player catbird@example.com to game system01/game01 (id 1)\nmailed catbird@example.com an invitation\n", append(base, "--player", "Catbird@Example.com", "--system", "System01", "--code", "Game01")...)
+	// The account is new, has no password, and was sent its invitation.
 	if a, ok := account(t, path, "catbird@example.com"); !ok || a.HashedSecret != nil || !a.Active {
 		t.Errorf("account = %+v, %v; want an active one without a password", a, ok)
+	}
+	if got := mailed(t); !slices.Equal(got, []string{"catbird@example.com invitation"}) {
+		t.Errorf("mail = %v, want one invitation", got)
 	}
 	// The same account is a different player in another game.
 	mustRun(t, "added player catbird@example.com to game system01/game02 (id 2)\n", append(base, "--player", "catbird@example.com", "--system", "system01", "--code", "game02")...)
@@ -487,6 +506,10 @@ func TestGameAddPlayer(t *testing.T) {
 	}
 	if _, ok := account(t, path, "wren@example.com"); ok {
 		t.Error("a refused game add --player made an account")
+	}
+	// Only the new account was mailed: joining a game sends nothing.
+	if got := mailed(t); len(got) != 1 {
+		t.Errorf("mail = %v, want only catbird's invitation", got)
 	}
 	// The previous design's flags are gone.
 	for _, flag := range []string{"--uploader", "--token"} {
@@ -648,168 +671,240 @@ func account(t *testing.T, path, email string) (store.Account, bool) {
 	return a, ok
 }
 
-func TestAccountCreateReadsPassword(t *testing.T) {
-	clearEnv(t)
-	path := createDatabase(t)
-	for _, tc := range []struct{ email, input, password string }{
-		{"Acct01@Example.com", "a pass phrase\n", "a pass phrase"},
-		{"acct02@example.com", "crlf-password\r\nsecond line\n", "crlf-password"},
-		{"acct03@example.com", "no-newline", "no-newline"},
-	} {
-		out, err := runWithInput(t, tc.input, "--env", "test", "--db", path, "account", "create", tc.email)
-		if err != nil {
-			t.Fatalf("account create %s: %v\n%s", tc.email, err, out)
+// mailed returns the recipients of the mail sent since clearEnv, each with
+// the kind of message: "invitation" or "reset".
+func mailed(t *testing.T) []string {
+	t.Helper()
+	var got []string
+	for _, m := range sent.Messages() {
+		kind := "reset"
+		if m.Subject == "Your Fuingo account" {
+			kind = "invitation"
 		}
-		email := strings.ToLower(tc.email)
-		if !strings.HasPrefix(out, "created account "+email+" (id ") || strings.Contains(out, "password") {
-			t.Errorf("account create %s printed %q", tc.email, out)
+		link, token := mailtest.Link(m)
+		if !strings.HasPrefix(link, publicURL+"/account/password?token=") || token == "" {
+			t.Errorf("mail to %s has link %q, want one under %s", m.To, link, publicURL)
 		}
-		a, ok := account(t, path, email)
-		if !ok {
-			t.Fatalf("account %s not found", email)
-		}
-		if err := bcrypt.CompareHashAndPassword(a.HashedSecret, []byte(tc.password)); err != nil {
-			t.Errorf("%s: password %q does not match: %v", email, tc.password, err)
-		}
-		if cost, err := bcrypt.Cost(a.HashedSecret); err != nil || cost != bcrypt.MinCost {
-			t.Errorf("%s: bcrypt cost %d, %v; want MinCost", email, cost, err)
-		}
+		got = append(got, m.To+" "+kind)
 	}
+	return got
 }
 
-func TestAccountCreateGeneratesPassword(t *testing.T) {
+// usePassword redeems the link in the mail and reports whether it worked.
+func usePassword(t *testing.T, path string, m mail.Message, password string) bool {
+	t.Helper()
+	s := open(t, path)
+	_, token := mailtest.Link(m)
+	_, ok, err := (&links.Service{Store: s}).SetPassword(t.Context(), token, password)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ok
+}
+
+func TestAccountCreateSendsInvitation(t *testing.T) {
 	clearEnv(t)
 	path := createDatabase(t)
-	out, err := runWithInput(t, "ignored\n", "--env", "test", "--db", path, "account", "create", "--generate-password", "acct01@example.com")
+	base := []string{"--env", "test", "--db", path, "--public-url", publicURL, "account", "create"}
+	out, err := runCommand(t, append(base, "ACCT01@Example.com")...)
 	if err != nil {
 		t.Fatalf("account create: %v\n%s", err, out)
 	}
-	first, password, ok := strings.Cut(out, "password: ")
-	if !ok || !strings.HasPrefix(first, "created account acct01@example.com (id ") {
-		t.Fatalf("account create printed %q, want the account and a password", out)
+	if out != "created account acct01@example.com (id 1)\nmailed acct01@example.com an invitation\n" {
+		t.Errorf("account create printed %q", out)
 	}
-	password = strings.TrimSuffix(password, "\n")
+	// The account has no password until its owner chooses one.
+	if a, ok := account(t, path, "acct01@example.com"); !ok || a.HashedSecret != nil || !a.Active {
+		t.Errorf("account = %+v, %v; want an active one without a password", a, ok)
+	}
+	if got := mailed(t); !slices.Equal(got, []string{"acct01@example.com invitation"}) {
+		t.Fatalf("mail = %v, want one invitation", got)
+	}
+	// No token or link is printed.
+	_, token := mailtest.Link(sent.Messages()[0])
+	if strings.Contains(out, token) || strings.Contains(out, "token") {
+		t.Errorf("account create printed the link: %q", out)
+	}
+	// The link sets the password, once.
+	if !usePassword(t, path, sent.Messages()[0], "a pass phrase") {
+		t.Fatal("the invitation's link did not work")
+	}
 	a, _ := account(t, path, "acct01@example.com")
-	if err := bcrypt.CompareHashAndPassword(a.HashedSecret, []byte(password)); err != nil {
-		t.Errorf("the generated password does not match: %v", err)
+	if err := bcrypt.CompareHashAndPassword(a.HashedSecret, []byte("a pass phrase")); err != nil {
+		t.Errorf("the password does not match: %v", err)
 	}
-	if bcrypt.CompareHashAndPassword(a.HashedSecret, []byte("ignored")) == nil {
-		t.Error("account create used standard input with --generate-password")
+	if usePassword(t, path, sent.Messages()[0], "another pass phrase") {
+		t.Error("the invitation's link worked twice")
+	}
+	// The public URL may come from the environment.
+	t.Setenv("FUINGO_PUBLIC_URL", publicURL+"/")
+	mustRun(t, "created account acct02@example.com (id 2)\nmailed acct02@example.com an invitation\n", "--env", "test", "--db", path, "account", "create", "acct02@example.com")
+	if got := mailed(t); len(got) != 2 {
+		t.Errorf("mail = %v, want two", got)
 	}
 }
 
 func TestAccountCreateRefusals(t *testing.T) {
 	clearEnv(t)
-	path := createDatabase(t)
-	if out, err := runWithInput(t, "first\n", "--env", "test", "--db", path, "account", "create", "acct01@example.com"); err != nil {
-		t.Fatalf("account create: %v\n%s", err, out)
-	}
+	path := createDatabaseWithGames(t, "acct01@example.com")
+	base := []string{"--env", "test", "--db", path, "--public-url", publicURL, "account", "create"}
 	for _, tc := range []struct {
-		input string
-		args  []string
-		want  error
+		args []string
+		want error
 	}{
-		{"second\n", []string{"ACCT01@example.com"}, store.ErrAccountExists},
-		{"", []string{"acct02@example.com"}, ErrMissingPassword},
-		{"\n", []string{"acct02@example.com"}, ErrMissingPassword},
-		{strings.Repeat("x", 73) + "\n", []string{"acct02@example.com"}, bcrypt.ErrPasswordTooLong},
-		{"pw\n", []string{"acct 02@example.com"}, names.ErrEmail},
-		{"pw\n", []string{}, ErrUsage},
-		{"pw\n", []string{"a@example.com", "b@example.com"}, ErrUsage},
+		{[]string{"ACCT01@example.com"}, store.ErrAccountExists},
+		{[]string{"acct 02@example.com"}, names.ErrEmail},
+		{[]string{}, ErrUsage},
+		{[]string{"acct02@example.com", "extra"}, ErrUsage},
+		// The commands that set or printed passwords are gone.
+		{[]string{"--generate-password", "acct02@example.com"}, nil},
 	} {
-		out, err := runWithInput(t, tc.input, append([]string{"--env", "test", "--db", path, "account", "create"}, tc.args...)...)
-		if !errors.Is(err, tc.want) {
+		out, err := runWithInput(t, "a password\n", append(base, tc.args...)...)
+		if err == nil || (tc.want != nil && !errors.Is(err, tc.want)) {
 			t.Errorf("account create %q: err = %v, want %v\n%s", tc.args, err, tc.want, out)
 		}
 	}
-	a, _ := account(t, path, "acct01@example.com")
-	if err := bcrypt.CompareHashAndPassword(a.HashedSecret, []byte("first")); err != nil {
-		t.Errorf("a refused account create changed the password: %v", err)
+	if out, err := runWithInput(t, "a password\n", "--env", "test", "--db", path, "account", "set-password", "acct01@example.com"); err == nil {
+		t.Errorf("account set-password succeeded\n%s", out)
+	}
+	if a, _ := account(t, path, "acct01@example.com"); string(a.HashedSecret) != "hash" {
+		t.Errorf("a refused command changed the password hash to %q", a.HashedSecret)
 	}
 	if _, ok := account(t, path, "acct02@example.com"); ok {
-		t.Error("a refused account create made acct02@example.com")
+		t.Error("a refused account create made an account")
+	}
+	if got := mailed(t); len(got) != 0 {
+		t.Errorf("refused commands sent mail: %v", got)
 	}
 }
 
-func TestAccountCreateIgnoresGeneratePasswordEnvironmentVariable(t *testing.T) {
+// A command that would send mail changes nothing when it cannot.
+func TestMailCommandsNeedMailSettings(t *testing.T) {
 	clearEnv(t)
-	t.Setenv("FUINGO_GENERATE_PASSWORD", "true")
+	path := createDatabaseWithGames(t, "acct01@example.com")
+	commands := map[string][]string{
+		"account create":         {"account", "create", "new@example.com"},
+		"account reset-password": {"account", "reset-password", "acct01@example.com"},
+		"game add --player":      {"game", "add", "--player", "new@example.com", "--system", "system01", "--code", "game01"},
+	}
+	check := func(why string, want error, root ...string) {
+		t.Helper()
+		for name, args := range commands {
+			out, err := runCommand(t, append(append([]string{"--env", "test", "--db", path}, root...), args...)...)
+			if !errors.Is(err, want) {
+				t.Errorf("%s, %s: err = %v, want %v\n%s", name, why, err, want, out)
+			}
+		}
+		if _, ok := account(t, path, "new@example.com"); ok {
+			t.Fatalf("%s: a refused command made the account", why)
+		}
+		if got := players(t, path, game01); len(got) != 0 {
+			t.Fatalf("%s: a refused command added a player: %v", why, got)
+		}
+		if got := mailed(t); len(got) != 0 {
+			t.Fatalf("%s: mail = %v", why, got)
+		}
+	}
+	check("no public URL", ErrMissingPublicURL)
+	check("a public URL that is not an origin", links.ErrPublicURL, "--public-url", "https://fuingo.example.com/app")
+	check("plain http", links.ErrPublicURL, "--public-url", "http://fuingo.example.com")
+	newSender = mail.SenderFromEnv // as the program runs: no Mailgun settings here
+	check("no Mailgun settings", mail.ErrNotConfigured, "--public-url", publicURL)
+	t.Setenv("FUINGO_MAILGUN_DOMAIN", "mg.example.com")
+	check("incomplete Mailgun settings", mail.ErrIncomplete, "--public-url", publicURL)
+
+	// Adding an existing account as a player sends nothing, so needs nothing.
+	os.Unsetenv("FUINGO_MAILGUN_DOMAIN")
+	mustRun(t, "added player acct01@example.com to game system01/game01 (id 1)\n", "--env", "test", "--db", path, "game", "add", "--player", "acct01@example.com", "--system", "system01", "--code", "game01")
+}
+
+// In development and agent the links point at the shared development proxy.
+func TestPublicURLDefaultsInDevelopment(t *testing.T) {
+	for _, env := range []string{"development", "agent"} {
+		clearEnv(t)
+		t.Chdir(t.TempDir()) // no environment files
+		path := createDatabase(t)
+		if out, err := runCommand(t, "--env", env, "--db", path, "account", "create", "acct01@example.com"); err != nil {
+			t.Fatalf("%s: %v\n%s", env, err, out)
+		}
+		link, _ := mailtest.Link(sent.Messages()[0])
+		if !strings.HasPrefix(link, "https://htmx-app.localhost:8443/account/password?token=") {
+			t.Errorf("%s: link %q", env, link)
+		}
+	}
+}
+
+func TestAccountCreateWhenMailFails(t *testing.T) {
+	clearEnv(t)
 	path := createDatabase(t)
-	out, err := runCommand(t, "--env", "test", "--db", path, "account", "create", "acct01@example.com")
-	if !errors.Is(err, ErrMissingPassword) {
-		t.Errorf("err = %v, want ErrMissingPassword\n%s", err, out)
+	sent.Fail(mail.ErrMailgunRejected)
+	out, err := runCommand(t, "--env", "test", "--db", path, "--public-url", publicURL, "account", "create", "acct01@example.com")
+	if !errors.Is(err, mail.ErrMailgunRejected) || !strings.Contains(err.Error(), "fuingo account reset-password acct01@example.com") {
+		t.Errorf("err = %v, want the mail failure and how to send another\n%s", err, out)
+	}
+	// The account stays; a reset sends its invitation.
+	if _, ok := account(t, path, "acct01@example.com"); !ok {
+		t.Fatal("the account was not kept")
+	}
+	sent.Fail(nil)
+	mustRun(t, "mailed acct01@example.com a link to choose a password\n", "--env", "test", "--db", path, "--public-url", publicURL, "account", "reset-password", "ACCT01@example.com")
+	if got := mailed(t); !slices.Equal(got, []string{"acct01@example.com invitation"}) {
+		t.Errorf("mail = %v, want an invitation, since the account has no password", got)
 	}
 }
 
-// TestAccountSetPassword sets a password on an account made for a player,
-// then replaces it with a generated one.
-func TestAccountSetPassword(t *testing.T) {
+func TestAccountResetPassword(t *testing.T) {
 	clearEnv(t)
-	path := toggleFixture(t)
-	out, err := runWithInput(t, "a pass phrase\r\n", "--env", "test", "--db", path, "account", "set-password", "CATBIRD@example.com")
-	if err != nil {
-		t.Fatalf("account set-password: %v\n%s", err, out)
+	path := toggleFixture(t) // acct01 has a password; catbird has none
+	base := []string{"--env", "test", "--db", path, "--public-url", publicURL, "account", "reset-password"}
+	mustRun(t, "mailed acct01@example.com a link to choose a password\n", append(base, "acct01@example.com")...)
+	mustRun(t, "mailed acct01@example.com a link to choose a password\n", append(base, "acct01@example.com")...)
+	mustRun(t, "mailed catbird@example.com a link to choose a password\n", append(base, "catbird@example.com")...)
+	want := []string{"acct01@example.com reset", "acct01@example.com reset", "catbird@example.com invitation"}
+	if got := mailed(t); !slices.Equal(got, want) {
+		t.Fatalf("mail = %v, want %v", got, want)
 	}
-	if out != "set the password of account catbird@example.com\n" {
-		t.Errorf("account set-password printed %q", out)
+	// Asking does not change the password: only the owner's choice does.
+	if a, _ := account(t, path, "acct01@example.com"); string(a.HashedSecret) != "hash" {
+		t.Errorf("reset-password changed the password hash to %q", a.HashedSecret)
 	}
-	a, _ := account(t, path, "catbird@example.com")
-	if err := bcrypt.CompareHashAndPassword(a.HashedSecret, []byte("a pass phrase")); err != nil {
-		t.Errorf("the password does not match: %v", err)
+	// The newer link replaced the older one.
+	msgs := sent.Messages()
+	if usePassword(t, path, msgs[0], "a pass phrase") {
+		t.Error("a link worked after a newer one was sent")
 	}
-	if cost, err := bcrypt.Cost(a.HashedSecret); err != nil || cost != bcrypt.MinCost {
-		t.Errorf("bcrypt cost %d, %v; want MinCost", cost, err)
+	if !usePassword(t, path, msgs[1], "a pass phrase") {
+		t.Error("the newest link did not work")
 	}
-	if got := players(t, path, game01); !slices.Equal(got, []string{"catbird@example.com", "spoonbill@example.com"}) {
-		t.Errorf("setting the password changed game01's players to %v", got)
+	if a, _ := account(t, path, "acct01@example.com"); bcrypt.CompareHashAndPassword(a.HashedSecret, []byte("a pass phrase")) != nil {
+		t.Error("the link did not set the password")
 	}
-
-	out, err = runWithInput(t, "ignored\n", "--env", "test", "--db", path, "account", "set-password", "--generate-password", "catbird@example.com")
-	if err != nil {
-		t.Fatalf("account set-password --generate-password: %v\n%s", err, out)
-	}
-	first, password, ok := strings.Cut(out, "password: ")
-	if !ok || first != "set the password of account catbird@example.com\n" {
-		t.Fatalf("account set-password printed %q, want the account and a password", out)
-	}
-	a, _ = account(t, path, "catbird@example.com")
-	if err := bcrypt.CompareHashAndPassword(a.HashedSecret, []byte(strings.TrimSuffix(password, "\n"))); err != nil {
-		t.Errorf("the generated password does not match: %v", err)
-	}
-	for _, old := range []string{"a pass phrase", "ignored"} {
-		if bcrypt.CompareHashAndPassword(a.HashedSecret, []byte(old)) == nil {
-			t.Errorf("the generated password did not replace %q", old)
-		}
-	}
-}
-
-func TestAccountSetPasswordRefusals(t *testing.T) {
-	clearEnv(t)
-	t.Setenv("FUINGO_GENERATE_PASSWORD", "true")
-	path := toggleFixture(t)
-	for _, tc := range []struct {
-		input string
-		args  []string
-		want  error
-	}{
-		{"pw\n", []string{"missing@example.com"}, store.ErrUnknownAccount},
-		{"", []string{"catbird@example.com"}, ErrMissingPassword},
-		{"\n", []string{"catbird@example.com"}, ErrMissingPassword},
-		{strings.Repeat("x", 73) + "\n", []string{"catbird@example.com"}, bcrypt.ErrPasswordTooLong},
-		{"pw\n", []string{"cat bird@example.com"}, names.ErrEmail},
-		{"pw\n", []string{}, ErrUsage},
-		{"pw\n", []string{"a@example.com", "b@example.com"}, ErrUsage},
-	} {
-		out, err := runWithInput(t, tc.input, append([]string{"--env", "test", "--db", path, "account", "set-password"}, tc.args...)...)
-		if !errors.Is(err, tc.want) {
-			t.Errorf("account set-password %q: err = %v, want %v\n%s", tc.args, err, tc.want, out)
-		}
-	}
+	// One account's link does nothing to another's.
 	if a, _ := account(t, path, "catbird@example.com"); a.HashedSecret != nil {
-		t.Error("a refused account set-password set catbird's password")
+		t.Error("acct01's link set catbird's password")
 	}
-	if _, ok := account(t, path, "missing@example.com"); ok {
-		t.Error("account set-password made missing@example.com")
+
+	mustRun(t, "disabled account catbird@example.com\n", "--env", "test", "--db", path, "account", "disable", "catbird@example.com")
+	for _, tc := range []struct {
+		args []string
+		want error
+	}{
+		{[]string{"missing@example.com"}, store.ErrUnknownAccount},
+		{[]string{"catbird@example.com"}, ErrInactiveAccount},
+		{[]string{"acct 01@example.com"}, names.ErrEmail},
+		{[]string{}, ErrUsage},
+		{[]string{"acct01@example.com", "extra"}, ErrUsage},
+	} {
+		if out, err := runCommand(t, append(base, tc.args...)...); !errors.Is(err, tc.want) {
+			t.Errorf("account reset-password %q: err = %v, want %v\n%s", tc.args, err, tc.want, out)
+		}
+	}
+	if got := mailed(t); len(got) != 3 {
+		t.Errorf("refused commands sent mail: %v", got)
+	}
+	// A disabled account's earlier link does not work either.
+	if usePassword(t, path, msgs[2], "a pass phrase") {
+		t.Error("a disabled account's link worked")
 	}
 }
 

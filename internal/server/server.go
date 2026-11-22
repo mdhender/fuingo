@@ -22,6 +22,8 @@ import (
 	"github.com/mdhender/fuingo/internal/api"
 	"github.com/mdhender/fuingo/internal/clientip"
 	"github.com/mdhender/fuingo/internal/devdata"
+	"github.com/mdhender/fuingo/internal/links"
+	"github.com/mdhender/fuingo/internal/mail"
 	"github.com/mdhender/fuingo/internal/names"
 	"github.com/mdhender/fuingo/internal/ratelimit"
 	"github.com/mdhender/fuingo/internal/store"
@@ -41,6 +43,15 @@ type Config struct {
 	// LoginFailures limits failed API logins per client. If nil, the api
 	// package's default limit applies.
 	LoginFailures *ratelimit.Limiter
+	// Links creates, mails, and redeems the links that set passwords. If
+	// nil, no mail can be sent.
+	Links *links.Service
+	// ResetRequests limits requests for a reset link per client. If nil,
+	// each client may make ResetBurst, then one per ResetInterval.
+	ResetRequests *ratelimit.Limiter
+	// Background runs work that must not delay a response, such as mailing
+	// a reset link. If nil, each call gets a goroutine.
+	Background func(func())
 	// MaxAPIUpload is the most bytes a file uploaded through /api/ may
 	// hold. If zero, the api package's default applies.
 	MaxAPIUpload int64
@@ -61,11 +72,21 @@ func HelperPrefix(env string) string {
 // New returns the handler for every route.
 func New(cfg Config) (http.Handler, error) {
 	clients := clientip.New(cfg.TrustedProxies)
+	if cfg.Links == nil {
+		cfg.Links = &links.Service{Store: cfg.Store, Sender: mail.Unconfigured{}}
+	}
+	if cfg.ResetRequests == nil {
+		cfg.ResetRequests = ratelimit.New(ResetBurst, ResetInterval, nil)
+	}
+	if cfg.Background == nil {
+		cfg.Background = func(f func()) { go f() }
+	}
 	apiHandler, err := api.New(api.Config{
 		Store:         cfg.Store,
 		Logger:        cfg.Logger,
 		Clients:       clients,
 		LoginFailures: cfg.LoginFailures,
+		Links:         cfg.Links,
 		MaxUpload:     cfg.MaxAPIUpload,
 	})
 	if err != nil {
@@ -75,6 +96,11 @@ func New(cfg Config) (http.Handler, error) {
 	mux.HandleFunc("GET /{$}", servePage("index.html"))
 	mux.HandleFunc("GET "+HTMXPath, serveHTMX)
 	mux.Handle("/api/", apiHandler)
+	account := &accountPages{links: cfg.Links, logger: cfg.Logger, clients: clients, resets: cfg.ResetRequests, run: cfg.Background}
+	mux.HandleFunc("GET "+links.PasswordPath, account.showPassword)
+	mux.HandleFunc("POST "+links.PasswordPath, account.setPassword)
+	mux.HandleFunc("GET "+links.ResetPath, account.showReset)
+	mux.HandleFunc("POST "+links.ResetPath, account.requestReset)
 	if prefix := HelperPrefix(cfg.Env); prefix != "" && devdata.Allowed(cfg.Env) {
 		h := &helpers{store: cfg.Store, logger: cfg.Logger, api: apiHandler}
 		mux.HandleFunc("POST "+prefix+"/create-api-account/{email}", h.createAPIAccount)

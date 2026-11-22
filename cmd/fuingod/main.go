@@ -3,7 +3,7 @@
 
 // Command fuingod is the Fuingo server.
 //
-//	fuingod [--env ENV] [--addr HOST:PORT] [--trusted-proxies LIST] [--max-api-upload BYTES] --db PATH
+//	fuingod [--env ENV] [--addr HOST:PORT] [--trusted-proxies LIST] [--max-api-upload BYTES] [--public-url URL] --db PATH
 //
 // Every flag can also be set with a FUINGO_ environment variable. Explicit
 // flags override the environment, which overrides the defaults:
@@ -15,6 +15,16 @@
 //	        CIDR prefixes whose X-Forwarded-For is trusted (default loopback)
 //	--max-api-upload   FUINGO_MAX_API_UPLOAD   largest file accepted through /api/,
 //	        in bytes (default 1048576)
+//	--public-url       FUINGO_PUBLIC_URL       the server's public origin, such as
+//	        https://fuingo.example.com, for the links in mail (required except in
+//	        development and agent, where it is https://htmx-app.localhost:8443)
+//
+// fuingod mails invitations and password resets through Mailgun. The Mailgun
+// settings are secrets, read only from the environment: FUINGO_MAILGUN_DOMAIN,
+// FUINGO_MAILGUN_API_KEY, FUINGO_MAILGUN_FROM, and optionally
+// FUINGO_MAILGUN_API_BASE and FUINGO_MAILGUN_SANDBOX_TO_ADDR. In production
+// fuingod does not start without them; elsewhere it starts and warns that it
+// cannot send mail.
 //
 // fuingod serves plain HTTP behind a TLS-terminating reverse proxy. It opens an
 // existing database and never creates or migrates one; use fuingodb for that.
@@ -51,6 +61,8 @@ import (
 	"github.com/mdhender/fuingo/internal/cli"
 	"github.com/mdhender/fuingo/internal/clientip"
 	"github.com/mdhender/fuingo/internal/devdata"
+	"github.com/mdhender/fuingo/internal/links"
+	"github.com/mdhender/fuingo/internal/mail"
 	"github.com/mdhender/fuingo/internal/server"
 	"github.com/mdhender/fuingo/internal/store"
 	"github.com/peterbourgon/ff/v4"
@@ -60,6 +72,7 @@ import (
 const (
 	ErrInvalidAddress     = cerrs.Error("invalid listen address")
 	ErrShutdownTimeout    = cerrs.Error("requests still running at the shutdown deadline were cut off")
+	ErrMissingPublicURL   = cerrs.Error("--public-url (FUINGO_PUBLIC_URL) is required")
 	ErrInvalidUploadLimit = cerrs.Error("--max-api-upload (FUINGO_MAX_API_UPLOAD) must be 1 or more")
 	ErrMemoryDatabase     = cerrs.Error(":memory: is allowed only in development and agent")
 	ErrMissingDatabase    = cerrs.Error("--db (FUINGO_DB) is required")
@@ -102,6 +115,9 @@ type config struct {
 	proxies        []netip.Prefix
 
 	maxAPIUpload int64
+
+	publicURL string
+	sender    mail.Sender
 }
 
 // loadConfig resolves and validates the configuration.
@@ -113,9 +129,10 @@ func loadConfig(args []string, stderr io.Writer) (config, error) {
 	fs.StringVar(&cfg.db, 0, "db", "", "existing database file, or :memory: in development and agent (FUINGO_DB)")
 	fs.StringVar(&cfg.trustedProxies, 0, "trusted-proxies", defaultTrustedProxies, "comma-separated proxy addresses and CIDR prefixes whose X-Forwarded-For is trusted; empty trusts none (FUINGO_TRUSTED_PROXIES)")
 	fs.Int64Var(&cfg.maxAPIUpload, 0, "max-api-upload", api.DefaultMaxUpload, "largest file accepted through /api/, in bytes (FUINGO_MAX_API_UPLOAD)")
+	fs.StringVar(&cfg.publicURL, 0, "public-url", "", "the server's public origin, for the links in mail; required except in development and agent (FUINGO_PUBLIC_URL)")
 	cmd := &ff.Command{
 		Name:     "fuingod",
-		Usage:    "fuingod [--env ENV] [--addr HOST:PORT] [--trusted-proxies LIST] [--max-api-upload BYTES] --db PATH",
+		Usage:    "fuingod [--env ENV] [--addr HOST:PORT] [--trusted-proxies LIST] [--max-api-upload BYTES] [--public-url URL] --db PATH",
 		LongHelp: "fuingod " + fuingo.Version().String(),
 		Flags:    fs,
 	}
@@ -138,6 +155,21 @@ func loadConfig(args []string, stderr io.Writer) (config, error) {
 	}
 	if cfg.maxAPIUpload < 1 {
 		return cfg, fmt.Errorf("%w: %d", ErrInvalidUploadLimit, cfg.maxAPIUpload)
+	}
+	if cfg.publicURL == "" {
+		if cfg.publicURL = links.DefaultPublicURL(cfg.env); cfg.publicURL == "" {
+			return cfg, ErrMissingPublicURL
+		}
+	}
+	if cfg.publicURL, err = links.PublicURL(cfg.publicURL); err != nil {
+		return cfg, fmt.Errorf("--public-url: %w", err)
+	}
+	// The Mailgun settings are secrets: they have no flags.
+	if cfg.sender, err = mail.SenderFromEnv(cfg.env); err != nil {
+		return cfg, err
+	}
+	if _, unconfigured := cfg.sender.(mail.Unconfigured); unconfigured && cfg.env == "production" {
+		return cfg, mail.ErrNotConfigured
 	}
 	switch cfg.db {
 	case "":
@@ -176,6 +208,9 @@ func run(ctx context.Context, args []string, stderr io.Writer, ready func(net.Ad
 	}
 	defer s.Close()
 
+	if _, unconfigured := cfg.sender.(mail.Unconfigured); unconfigured {
+		logger.Warn("mail is not configured: invitations and password resets cannot be sent")
+	}
 	handler, err := server.New(server.Config{
 		Env:    cfg.env,
 		Store:  s,
@@ -183,6 +218,7 @@ func run(ctx context.Context, args []string, stderr io.Writer, ready func(net.Ad
 
 		TrustedProxies: cfg.proxies,
 		MaxAPIUpload:   cfg.maxAPIUpload,
+		Links:          &links.Service{Store: s, Sender: cfg.sender, PublicURL: cfg.publicURL},
 	})
 	if err != nil {
 		return err

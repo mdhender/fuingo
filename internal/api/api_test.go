@@ -16,6 +16,8 @@ import (
 
 	"github.com/mdhender/fuingo/internal/api"
 	"github.com/mdhender/fuingo/internal/devdata"
+	"github.com/mdhender/fuingo/internal/links"
+	"github.com/mdhender/fuingo/internal/mail/mailtest"
 	"github.com/mdhender/fuingo/internal/ratelimit"
 	"github.com/mdhender/fuingo/internal/store"
 )
@@ -62,7 +64,12 @@ type fixture struct {
 	s     *store.Store
 	clock *clock
 	logs  *bytes.Buffer
+	// mail records the invitations the handler sends.
+	mail *mailtest.Recorder
 }
+
+// publicURL is the origin the fixture's links point to.
+const publicURL = "https://fuingo.example.com"
 
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
@@ -83,7 +90,9 @@ func newFixtureWithLimit(t *testing.T, maxUpload int64) *fixture {
 	}
 	c := &clock{t: time.Date(2026, 11, 4, 12, 0, 0, 0, time.UTC)}
 	var logs bytes.Buffer
+	sent := &mailtest.Recorder{}
 	h, err := api.New(api.Config{
+		Links:         &links.Service{Store: s, Sender: sent, PublicURL: publicURL, Now: c.Now},
 		Store:         s,
 		Logger:        slog.New(slog.NewTextHandler(&logs, nil)),
 		LoginFailures: ratelimit.New(api.FailureBurst, api.FailureInterval, c.Now),
@@ -93,7 +102,7 @@ func newFixtureWithLimit(t *testing.T, maxUpload int64) *fixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &fixture{h: h, s: s, clock: c, logs: &logs}
+	return &fixture{h: h, s: s, clock: c, logs: &logs, mail: sent}
 }
 
 func (f *fixture) serve(r *http.Request) *httptest.ResponseRecorder {

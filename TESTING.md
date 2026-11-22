@@ -21,15 +21,27 @@ Every email has one row in the `accounts` table, whether it plays, manages
 games, or both.
 
 - **Players** are rows in the `game_players` table: an account and a game.
-  A player's ID is the player's number. An account made for a player has no
-  password until it is given one.
+  A player's ID is the player's number. An account has no password until
+  its owner chooses one through a mailed link.
 - **GMs** are rows in the `game_managers` table: an account and a game.
 - **Passwords** are the account's `hashed_secret`. Only an account with one
   can log in to `/api/`, with `POST /api/login`, which returns a bearer token
   for the `Authorization` header.
 
-`fuingo account create`, `fuingo account set-password`, `fuingo game add
---manager`, and `fuingo game add --player` add to the tables.
+`fuingo account create`, `fuingo game add --manager`, and `fuingo game add
+--player` add to the tables. No command sets a password.
+
+## Mail in tests
+
+Tests never reach Mailgun. Give the code under test a
+`mailtest.Recorder` (`internal/mail/mailtest`) as its `mail.Sender`, and
+read the link out of a recorded message with `mailtest.Link`. `cmd/fuingo`
+builds its sender through the `newSender` variable so its tests can do the
+same. The Mailgun client itself is tested against an `httptest.Server`.
+
+The `.env.development.local` and `.env.agent.local` files may hold a Mailgun
+sandbox, whose `FUINGO_MAILGUN_SANDBOX_TO_ADDR` is the only address it can
+reach. Running the programs in those environments sends real mail there.
 
 ## Default accounts
 

@@ -151,13 +151,13 @@ ORDER BY gp.id;`, &sqlitex.ExecOptions{
 }
 
 // AddGamePlayer makes the account with the lowercased email an active
-// player in the game and returns the player's ID, creating the account,
-// without a hashed secret, if the email has none. An account that is
-// already a player there fails with ErrPlayerExists.
-func (s *Store) AddGamePlayer(ctx context.Context, gameID int64, email string) (id int64, err error) {
+// player in the game, creating the account, without a hashed secret, if the
+// email has none. An account that is already a player there fails with
+// ErrPlayerExists.
+func (s *Store) AddGamePlayer(ctx context.Context, gameID int64, email string) (added AddedPlayer, err error) {
 	conn, err := s.take(ctx)
 	if err != nil {
-		return 0, err
+		return AddedPlayer{}, err
 	}
 	defer s.pool.Put(conn)
 	defer sqlitex.Save(conn)(&err)

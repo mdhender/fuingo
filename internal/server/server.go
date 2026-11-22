@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"net/netip"
 	"strings"
+	"time"
 
 	"github.com/mdhender/fuingo/internal/api"
 	"github.com/mdhender/fuingo/internal/clientip"
@@ -40,8 +41,9 @@ type Config struct {
 	// TrustedProxies are the reverse proxies whose X-Forwarded-For header
 	// names the client.
 	TrustedProxies []netip.Prefix
-	// LoginFailures limits failed API logins per client. If nil, the api
-	// package's default limit applies.
+	// LoginFailures limits failed sign-ins per client, on the web and
+	// through /api/login together. If nil, each client may fail
+	// api.FailureBurst times, then once per api.FailureInterval.
 	LoginFailures *ratelimit.Limiter
 	// Links creates, mails, and redeems the links that set passwords. If
 	// nil, no mail can be sent.
@@ -52,6 +54,8 @@ type Config struct {
 	// Background runs work that must not delay a response, such as mailing
 	// a reset link. If nil, each call gets a goroutine.
 	Background func(func())
+	// Now returns the current time. If nil, time.Now is used.
+	Now func() time.Time
 	// MaxAPIUpload is the most bytes a file uploaded through /api/ may
 	// hold. If zero, the api package's default applies.
 	MaxAPIUpload int64
@@ -72,8 +76,14 @@ func HelperPrefix(env string) string {
 // New returns the handler for every route.
 func New(cfg Config) (http.Handler, error) {
 	clients := clientip.New(cfg.TrustedProxies)
+	if cfg.Now == nil {
+		cfg.Now = time.Now
+	}
 	if cfg.Links == nil {
-		cfg.Links = &links.Service{Store: cfg.Store, Sender: mail.Unconfigured{}}
+		cfg.Links = &links.Service{Store: cfg.Store, Sender: mail.Unconfigured{}, Now: cfg.Now}
+	}
+	if cfg.LoginFailures == nil {
+		cfg.LoginFailures = ratelimit.New(api.FailureBurst, api.FailureInterval, cfg.Now)
 	}
 	if cfg.ResetRequests == nil {
 		cfg.ResetRequests = ratelimit.New(ResetBurst, ResetInterval, nil)
@@ -86,6 +96,7 @@ func New(cfg Config) (http.Handler, error) {
 		Logger:        cfg.Logger,
 		Clients:       clients,
 		LoginFailures: cfg.LoginFailures,
+		Now:           cfg.Now,
 		Links:         cfg.Links,
 		MaxUpload:     cfg.MaxAPIUpload,
 	})
@@ -93,7 +104,14 @@ func New(cfg Config) (http.Handler, error) {
 		return nil, err
 	}
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /{$}", servePage("index.html"))
+	web, err := newSessions(cfg.Store, cfg.Logger, clients, cfg.LoginFailures, cfg.Now)
+	if err != nil {
+		return nil, err
+	}
+	mux.HandleFunc("GET /{$}", web.home)
+	mux.HandleFunc("GET "+SignInPath, web.showSignIn)
+	mux.HandleFunc("POST "+SignInPath, web.signIn)
+	mux.HandleFunc("POST "+SignOutPath, web.signOut)
 	mux.HandleFunc("GET "+HTMXPath, serveHTMX)
 	mux.Handle("/api/", apiHandler)
 	account := &accountPages{links: cfg.Links, logger: cfg.Logger, clients: clients, resets: cfg.ResetRequests, run: cfg.Background}

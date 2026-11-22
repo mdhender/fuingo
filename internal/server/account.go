@@ -46,18 +46,20 @@ type accountPages struct {
 
 // accountPage is the data of the account templates.
 type accountPage struct {
-	Tailwind  string
-	State     string
-	Action    string
-	ResetPath string
-	Email     string
-	Token     string
-	Error     string
-	MinLength int
+	Tailwind   string
+	State      string
+	Action     string
+	ResetPath  string
+	SignInPath string
+	Email      string
+	Token      string
+	Error      string
+	MinLength  int
 }
 
 func (p *accountPages) render(w http.ResponseWriter, status int, name string, data accountPage) {
 	data.Tailwind, data.ResetPath, data.MinLength = TailwindURL, links.ResetPath, links.MinPasswordLength
+	data.SignInPath = SignInPath
 	var buf bytes.Buffer
 	if err := pageTemplates.ExecuteTemplate(&buf, name, data); err != nil {
 		p.logger.Error("account page", "page", name, "err", err)

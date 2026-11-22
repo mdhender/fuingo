@@ -15,12 +15,12 @@ import (
 	"github.com/mdhender/fuingo/internal/server"
 )
 
-// The page is a placeholder until signing in is built: it loads the vendored
-// HTMX and the pinned Tailwind, and offers nothing to upload with.
-func TestIndexPage(t *testing.T) {
+// The signed-in page loads the vendored HTMX and the pinned Tailwind.
+func TestHomePage(t *testing.T) {
 	t.Parallel()
-	h, _ := newServer(t, "production")
-	w := serve(h, httptest.NewRequest(http.MethodGet, publicOrigin+"/", nil))
+	f := newAccountFixture(t)
+	cookie := f.signIn(t, acct01.Email, acct01.Password, "")
+	w := f.get("/", cookie)
 	if w.Code != http.StatusOK {
 		t.Fatalf("GET /: %d", w.Code)
 	}
@@ -32,12 +32,14 @@ func TestIndexPage(t *testing.T) {
 		`<script src="` + server.HTMXPath + `"></script>`,
 		`<script src="` + server.TailwindURL + `"></script>`,
 		`id="status"`,
+		acct01.Email,
+		`<form method="post" action="` + server.SignOutPath + `">`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("page does not contain %s", want)
 		}
 	}
-	for _, gone := range []string{"<form", "<input", "/upload", "alert("} {
+	for _, gone := range []string{"/upload", "alert(", cookie.Value} {
 		if strings.Contains(body, gone) {
 			t.Errorf("page contains %s", gone)
 		}

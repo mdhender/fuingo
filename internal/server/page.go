@@ -30,20 +30,6 @@ var pageTemplates = template.Must(template.ParseFS(templates, "templates/*.html"
 // startTime is the modification time reported for embedded files.
 var startTime = time.Now()
 
-// servePage returns a handler for the page in the named template.
-func servePage(name string) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		var buf bytes.Buffer
-		if err := pageTemplates.ExecuteTemplate(&buf, name, struct{ HTMX, Tailwind string }{HTMXPath, TailwindURL}); err != nil {
-			http.Error(w, "internal error", http.StatusInternalServerError)
-			return
-		}
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Header().Set("Cache-Control", "no-cache")
-		w.Write(buf.Bytes())
-	}
-}
-
 func serveHTMX(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
 	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")

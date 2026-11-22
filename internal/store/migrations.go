@@ -255,4 +255,21 @@ CREATE TABLE account_links (
 
 CREATE INDEX account_links_by_account ON account_links (account_id);
 `,
+	// 7: web sessions. hashed_token is the SHA-256 of the token in the
+	// browser's cookie; the token itself is never stored. Each use moves
+	// expires_at forward. A session is deleted when it is signed out, when
+	// it has expired, and when its account's password is set.
+	`
+CREATE TABLE web_sessions (
+	id           INTEGER PRIMARY KEY AUTOINCREMENT,
+	account_id   INTEGER NOT NULL REFERENCES accounts (id) ON DELETE RESTRICT,
+	hashed_token BLOB    NOT NULL UNIQUE CHECK (length(hashed_token) = 32),
+	created_at   TEXT    NOT NULL,
+	last_used_at TEXT    NOT NULL,
+	expires_at   TEXT    NOT NULL
+);
+
+CREATE INDEX web_sessions_by_account ON web_sessions (account_id);
+CREATE INDEX web_sessions_by_expiry ON web_sessions (expires_at);
+`,
 }

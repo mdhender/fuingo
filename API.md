@@ -161,7 +161,8 @@ curl -s "$FUINGO/api/login" \
   password is wrong, the account is disabled, or the account has no
   password. A client cannot tell these apart.
 - **Failure limit.** Each client address may fail 5 times, then once more
-  per minute. Beyond that every login from the address gets `429`, even
+  per minute, counting failed sign-ins on the web pages from the same
+  address too. Beyond that every login from the address gets `429`, even
   with the right password, until `Retry-After` seconds pass. Successful
   logins and malformed requests (`400`, `415`) do not count. Do not retry
   a `401` in a loop. IPv6 clients are grouped by /64 prefix, so tools on

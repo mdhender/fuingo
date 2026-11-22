@@ -9,8 +9,8 @@ The design is being built in steps. What exists today is the hierarchy
 a GM's tool uses: to manage a game's players and turns, and to upload, list,
 download, and withdraw its files. Accounts are by invitation: a new account
 is mailed a link to choose its password, and its owner resets a forgotten
-password the same way. Players cannot sign in to the web yet, so only GMs
-exchange files.
+password the same way. An account can sign in to the web, but the pages for
+a game's files are not built, so only GMs exchange files, through `/api/`.
 
 ## Commands
 
@@ -71,6 +71,9 @@ chooses one through a link mailed to the account's address.
 
 | Page | Does |
 | --- | --- |
+| `/` | The signed-in account's page, for now only its email and a sign-out button. Sends anyone else to `/sign-in`. |
+| `/sign-in` | Signs an account in with its email and password. |
+| `/sign-out` | Ends the browser's session. `POST` only. |
 | `/account/password?token=...` | Where a mailed link leads: a form to choose the password. |
 | `/account/reset` | Asks for a link by email address. Open to anyone. |
 
@@ -79,7 +82,15 @@ chooses one through a link mailed to the account's address.
   is stored, and links are never logged.
 - A password is at least 8 characters and at most 72 bytes, with no
   control characters.
-- Choosing a password ends the account's `/api/` tokens.
+- Choosing a password signs nobody in, and ends every session the account
+  has, on the web and in `/api/`: sign in again with the new password.
+- A web session is a random token in the cookie `__Host-fuingo_session`
+  (`Secure`, `HttpOnly`, `SameSite=Lax`), stored only as a hash. It lasts 30
+  days from its last use. Signing out ends it on the server. A disabled
+  account's session is refused, and works again if the account is enabled
+  before it expires.
+- Every failed sign-in gets the same answer, whether the email is unknown,
+  the password is wrong, or the account is disabled or has no password.
 - `/account/reset` gives the same answer whether or not the address has an
   account, and mails nothing to an unknown or disabled one. An account that
   has not chosen a password is sent its invitation again, so this also
@@ -176,8 +187,9 @@ preserves `Host`, `Origin`, and `Sec-Fetch-Site`. In development, Caddy serves
 
 ### Client addresses and failed logins
 
-Failed logins are limited per client address: each address may fail 5 times,
-then once more per minute, and gets `429 Too Many Requests` while over the
+Failed sign-ins are limited per client address, on the web and through
+`/api/login` together: each address may fail 5 times, then once more per
+minute, and gets `429 Too Many Requests` while over the
 limit. IPv6 clients are grouped by /64. The limit applies to the address, not
 the email, so guesses from one address never lock an account's owner out
 elsewhere. Limits are kept in memory and reset on restart. At most 16,384

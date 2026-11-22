@@ -84,7 +84,7 @@ func findLiveLink(conn *sqlite.Conn, hashedToken []byte, now time.Time) (linkID 
 
 // UseAccountLink sets the password hash of the account that the link with
 // the given token hash belongs to, marks the link used, and ends every API
-// session of the account, all in one transaction. It reports false, and
+// and web session of the account, all in one transaction. It reports false, and
 // changes nothing, unless the link can still set a password, as in
 // AccountLink. A link works once.
 func (s *Store) UseAccountLink(ctx context.Context, hashedToken, hashedSecret []byte, now time.Time) (la LinkAccount, used bool, err error) {
@@ -112,6 +112,7 @@ func (s *Store) UseAccountLink(ctx context.Context, hashedToken, hashedSecret []
 		{"UPDATE account_links SET used_at = ? WHERE id = ?;", []any{at, linkID}},
 		{"UPDATE accounts SET hashed_secret = ? WHERE id = ?;", []any{string(hashedSecret), la.AccountID}},
 		{"DELETE FROM api_sessions WHERE account_id = ?;", []any{la.AccountID}},
+		{"DELETE FROM web_sessions WHERE account_id = ?;", []any{la.AccountID}},
 	} {
 		if err := sqlitex.Execute(conn, q.query, &sqlitex.ExecOptions{Args: q.args}); err != nil {
 			return LinkAccount{}, false, err

@@ -40,14 +40,19 @@ The user agreed this design on 2026-11-22, and it is being built in the steps th
   `fuingo account create`, `fuingo game add --player`, and a GM adding a player through `/api/` mail an invitation to an account they create; `fuingo account reset-password` and the public page `/account/reset` mail an active account a new link.
   A link leads to `/account/password`, works once, and expires after 72 hours; sending an account a new link cancels its earlier ones.
   An account without a password is always sent an invitation, so `/account/reset` also replaces an expired one.
-  Setting a password ends the account's `/api/` sessions.
+  Setting a password signs nobody in and ends all of the account's sessions, on the web and in `/api/`.
   A password is at least 8 characters and at most 72 bytes.
   `/account/reset` answers the same for every email and is limited per client address, 5 requests and then one per minute.
   `FUINGO_MAILGUN_SANDBOX_TO_ADDR` redirects every message to one address, for a Mailgun sandbox, and is refused in production.
   `fuingod` does not start in production without the Mailgun settings, and needs `--public-url` (`FUINGO_PUBLIC_URL`) outside development and agent.
   No command sets or reads a password: `fuingo account set-password` and `account create`'s password were removed.
-- Not built: anything for players (their uploads, withdrawals, and the two web size limits), web sign-in and sessions, the pages other than the two account pages, and system-level files.
-  The page at `/` is a placeholder.
+- Web sign-in and sessions, built on 2026-11-22: `/sign-in`, `POST /sign-out`, and the page at `/`, which shows only who is signed in and sends anyone else to `/sign-in`.
+  The session cookie is `__Host-fuingo_session`: `Secure`, `HttpOnly`, `SameSite=Lax`.
+  Every use of a session renews it for 30 days.
+  Sessions are rows of `web_sessions`, deleted when signed out, expired, or ended by a password reset.
+  An inactive account's session is refused but kept, so it works again if the account is enabled before it expires.
+  The failure limit is one limiter shared by `/sign-in` and `/api/login`.
+- Not built: anything for players (their uploads, withdrawals, and the two web size limits), the pages for systems, games, turns, and files, and system-level files.
   Closing a turn has no effect yet, because only players are stopped by it.
 - Migration 3 moved the games of a database made under the previous design into a system named `legacy` and dropped its stored uploads.
 - No deployment holds live data.
@@ -219,7 +224,7 @@ Olympia / G3 / 1 / 5    player 5's folder in turn 1
 - `internal/devdata` holds the default system, games, players, and accounts; `internal/cli` holds the flag and environment-file parsing shared by the commands.
 - `internal/clientip` finds the client's address behind trusted proxies; `internal/ratelimit` limits failures per client.
   Both carry over to sign-in unchanged.
-- `internal/server` assembles the routes (the page at `/`, the account pages `/account/password` and `/account/reset` in `account.go`, the vendored HTMX under `/static/`, the `/api/` routes, and the development/agent helpers) behind `http.NewCrossOriginProtection`.
+- `internal/server` assembles the routes (the page at `/` and the sign-in and sign-out routes in `session.go`, the account pages `/account/password` and `/account/reset` in `account.go`, the vendored HTMX under `/static/`, the `/api/` routes, and the development/agent helpers) behind `http.NewCrossOriginProtection`.
   HTMX 2.0.11 is vendored as `internal/server/static/htmx-2.0.11.min.js`.
 - `internal/api` is the `/api/` handler.
 - `internal/mail` sends mail through Mailgun, and reads its settings from the environment; `internal/mail/mailtest` records mail for tests.
@@ -272,10 +277,9 @@ Codes and emails are lowercased with `strings.ToLower`; apply no other normaliza
 
 ## Data model
 
-The schema holds `systems`, `games`, `accounts`, `game_players`, `game_managers`, `turns`, `file_contents`, `uploads`, `api_sessions`, and `account_links`.
+The schema holds `systems`, `games`, `accounts`, `game_players`, `game_managers`, `turns`, `file_contents`, `uploads`, `api_sessions`, `account_links`, and `web_sessions`.
 `account_links` holds each invitation and reset link by the hash of its token, with when it expires and whether it was used or canceled; its rows are kept.
 `uploads` allows a row with no game, for a system-level file, but nothing writes one yet, and its uploader must be an account.
-The table for web sessions is not yet written; design it with the user when a step needs it.
 These rules hold whatever the tables are:
 
 - Codes and emails can change, so rows are identified by integer IDs, never by those values.

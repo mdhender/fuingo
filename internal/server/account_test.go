@@ -53,6 +53,7 @@ func newAccountFixture(t *testing.T) *accountFixture {
 		Links:         &links.Service{Store: s, Sender: f.mail, PublicURL: publicOrigin, Now: clock},
 		ResetRequests: ratelimit.New(server.ResetBurst, server.ResetInterval, clock),
 		Background:    func(work func()) { work() },
+		Now:           clock,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -151,7 +152,8 @@ func TestInvitationLinkSetsPassword(t *testing.T) {
 	}
 
 	w = f.setPassword(token, "catbird's own pass phrase", "catbird's own pass phrase")
-	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "Your password is set") || strings.Contains(w.Body.String(), token) {
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "Your password is set") || strings.Contains(w.Body.String(), token) ||
+		!strings.Contains(w.Body.String(), `href="`+server.SignInPath+`"`) || w.Header().Get("Set-Cookie") != "" {
 		t.Fatalf("set: %d %s", w.Code, w.Body)
 	}
 	if !f.canLogIn(catbird.Email, "catbird's own pass phrase") {

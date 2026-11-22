@@ -76,9 +76,9 @@ Olympia / G3 / 1 / 5    player 5's folder in turn 1
 
 | Level | Adds files | Reads files |
 | --- | --- | --- |
-| System | The administrator | See [open questions](#open-questions) |
-| Game | The game's GMs | See [open questions](#open-questions) |
-| Turn | The game's GMs | See [open questions](#open-questions) |
+| System | The administrator | Every account that is an active player or GM in any of the system's games |
+| Game | The game's GMs | The game's GMs and players |
+| Turn | The game's GMs | The game's GMs and players |
 | Player folder | That player, while the turn is open; the game's GMs, at any time | That player and the game's GMs |
 
 - A player sees and may download every file in their own folder, whoever put it there: their orders, their reports, and anything else the GM adds.
@@ -89,7 +89,7 @@ Olympia / G3 / 1 / 5    player 5's folder in turn 1
 
 ### Turns
 
-- A GM creates each turn and closes it.
+- A GM creates each turn and closes it, and may reopen a closed turn.
   Uploads are refused for a turn that does not exist.
 - Closing a turn stops players uploading to it and withdrawing from it.
   It changes nothing else: players still read their folders, and GMs still add files.
@@ -119,13 +119,17 @@ Olympia / G3 / 1 / 5    player 5's folder in turn 1
   It must pass the sanity check: after one optional leading UTF-8 BOM (`EF BB BF`), the next 256 bytes, or all remaining bytes if fewer, must each be printable ASCII (`0x20`–`0x7E`), tab (`0x09`), LF (`0x0A`), or CR (`0x0D`).
   Bytes beyond that sample are not checked.
   A file containing only a BOM is empty.
-  The limits for a GM's upload are an [open question](#open-questions).
+- A GM's upload may start with one optional UTF-8 BOM and must be valid UTF-8 throughout.
+  It is not held to the player's ASCII check, and its size limit is larger than a player's; the limit itself is an [open question](#open-questions).
+- A report may be HTML.
+  Serve every file so that it cannot run scripts on Fuingo's origin, as a download or sandboxed, because that origin holds sessions.
 - When a GM or a tool lists or downloads files, Fuingo gives the system, game, turn, and player of each, with its name, who uploaded it, and when.
 
 ## Accounts and access
 
 - Accounts are by invitation only.
   Nobody can sign up.
+- The administrator makes the first accounts from the command line.
 - A GM gives an account access to a game, which makes it a player there.
   If the email has no account, that creates one and sends the invitation.
   This is all a GM may do to an account: a GM never sets, sees, or resets a password, and never changes an account's email.
@@ -217,6 +221,7 @@ Put a new command in the program that owns what it manages, even when another pr
 - **`cmd/fuingod` manages the server**: it serves the web pages and the `/api/` routes, and owns the server's startup flags.
   It opens an existing database; it never creates or migrates one, and it has no subcommands for data.
 - **`cmd/olympia` is the GM's tool for Olympia G3**, issue #1.
+  This design may make that issue moot: ask the user before doing further work on `olympia` or the issue.
   It never opens fuingo's database: it reaches fuingo only through `/api/`, as an account that is a GM of the game.
   Its own data, the games and players it manages, is in its own store file (`--store`, `internal/gmstore`), which `olympia store create` and `store migrate` manage; every other command only opens an existing, current one.
   It is specific to Olympia G3; do not generalize it into a framework for other engines.
@@ -299,38 +304,32 @@ These rules carry over from the routes that exist:
   Unknown fields and anything but white space after the object get `400`.
 - A download gives the contents' hash in `X-Content-SHA256`.
 
+A tool can ask for the uploads that arrived after the last one it saw, so a game can answer orders with parsing results soon after they arrive.
+
 ## Open questions
 
 Settle each of these with the user before building what depends on it.
 
-Proposed to the user and not yet confirmed:
-
-- Who reads the files above a player's folder: a system's files by every account in any of its games, and a game's and a turn's files by that game's GMs and players.
-- A GM's upload has a larger size limit than a player's.
-- An HTML report is served so that it cannot run scripts on Fuingo's origin, as a download or sandboxed, because that origin holds sessions.
-- A GM may reopen a closed turn.
-- A tool can ask for the uploads that arrived after the last one it saw, so a game can answer orders with parsing results soon after they arrive.
-
-Not yet discussed:
-
-- The size limit and sanity check for a GM's upload, and whether a report may contain bytes above `0x7F`.
+- The size limit for a GM's upload.
 - Whether a file is stored exactly as uploaded, including a leading BOM.
 - The limits on a file's name, and on the codes of systems and games, which now appear in URLs.
 - The invitation and reset flows: how long a link lasts, and what a GM or the administrator sees when mail fails.
-- How the first accounts are made, and whether `fuingo account create` and `account set-password` remain when owners set their own passwords.
-- How a web session is kept.
+- Whether the administrator gives a first account its password or sends it an invitation, and whether `fuingo account create` and `account set-password` remain when owners set their own passwords.
+- Session management for the web: how a browser stays signed in, for how long, how it signs out, and whether a password reset ends the account's other sessions.
   Follow [PROXIES.md](PROXIES.md) for cookies.
 - Whether a system has GMs or settings of its own.
 - Changing an account's email, and renaming a system or game.
 - Naming a turn, as a later feature.
 - Pagination of listings.
-- From issue #1: how `olympia` stages orders and pushes reports under this design.
+- Whether `cmd/olympia` and issue #1 continue under this design, and if so how the tool stages orders and pushes reports.
 
 ## Verification
 
 - Test observable HTTP and command behavior, not private implementation details.
 - Cover access: that a player reaches only their own folders, that a GM reaches only the games they manage, that an inactive account, player, GM, or game is refused, and that what an account may not reach is indistinguishable from what does not exist.
-- Cover turns: uploads to a turn that does not exist, to an open turn, and to a closed one; that closing blocks only players; and several open turns.
+- Cover turns: uploads to a turn that does not exist, to an open turn, to a closed one, and to a reopened one; that closing blocks only players; and several open turns.
+- Cover a GM's upload: with and without a BOM, bytes above `0x7F` in valid UTF-8 (accepted), invalid UTF-8 at the start and the end of a file (rejected), and a file over a player's limit.
+- Cover the files above a player's folder: that a game's players read its game and turn files, that an account in one of a system's games reads the system's files, and that no other account does.
 - Cover a player's upload: the 64 KiB boundary (65,536 bytes accepted, 65,537 rejected), empty and BOM-only files, a BOM followed by a valid file, every boundary byte of the sanity check, files shorter than the 256-byte sample, and a disallowed byte as the last sampled byte (rejected) and the first byte after the sample (accepted), with and without a BOM.
 - Cover repeated and withdrawn files: that a second upload replaces nothing, that a withdrawn file leaves the listings and its record remains, that a player cannot withdraw after the turn closes or withdraw a GM's file, and that a GM can withdraw their own file in a closed turn.
 - For duplicate content, cover players in the same game and in different games with identical files, concurrent uploads, and that stored contents are not rewritten.

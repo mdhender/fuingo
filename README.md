@@ -4,8 +4,7 @@ A web server that accepts turn-file uploads for play-by-email games. Players
 upload a turn file through a web form instead of mailing it. The file's first
 line, `<game code> <turn number> <email address> <token>`, authorizes it; the
 server stores the rest of the file. Game managers read the uploads through
-the `/api/` routes, and `olympia` stages them as orders for the Olympia G3
-engine.
+the `/api/` routes.
 
 ## Commands
 
@@ -19,13 +18,11 @@ go run ./cmd/fuingo   --env development --db tmp/fuingo.db game create game03
 go run ./cmd/fuingo   --env development --db tmp/fuingo.db game add --uploader tern@example.com --code game03
 go run ./cmd/fuingo   --env development --db tmp/fuingo.db account create --generate-password acct03@example.com
 go run ./cmd/fuingo   --env development --db tmp/fuingo.db game add --manager acct03@example.com --code game03
-go run ./cmd/olympia  --env development stage --game game01 --turn 1
 ```
 
 `fuingodb` creates and migrates databases. `fuingod` serves the upload form and
 only opens an existing, current database; it never creates or migrates one.
-`fuingo` is the operators' CLI for the application data. `olympia` is the game
-master's tool for Olympia G3 games; see [olympia](#olympia). `fuingo version`
+`fuingo` is the operators' CLI for the application data. `fuingo version`
 prints the program's version; `fuingo version --schema` prints the database's
 schema version. Commands that use the database, like `fuingod`, refuse one
 that is not at the schema version the program expects. `fuingo` never creates
@@ -102,109 +99,6 @@ responses, status codes, and examples for every route.
 Log in with an account that has a password (`fuingo account create` or
 `account set-password`). An account reaches only the games it manages. An
 upload token never logs in, and an API password never authorizes an upload.
-
-## olympia
-
-`olympia` is the game master's tool for Olympia G3. It keeps the games and
-players it manages in its own store file, and `olympia stage` downloads every
-upload for one turn of a game and writes them to the engine's spool
-directory as order files.
-
-### Games and players
-
-```sh
-export OLYMPIA_STORE=~/Games/olympia-g3/alpha/olympia.db
-olympia --env production store create
-olympia --env production game add alpha
-olympia --env production player add --game alpha --faction ab1 --uploader alice@example.com --name "Alice's Elves"
-olympia --env production player list --game alpha
-```
-
-The store is a SQLite file of its own, separate from fuingo's database;
-`olympia` reaches fuingo only through `/api/`. `store create` makes a new
-one and fails if the file exists; `store migrate` brings an older one up to
-date. Every other command opens an existing, current store and never
-creates one.
-
-| Command | Does |
-| --- | --- |
-| `olympia game add CODE` | Adds an active game. `CODE` is the game's code in fuingo. |
-| `olympia game list`, `game show CODE` | Lists the games, or shows one, with their status and number of players. |
-| `olympia game rename CODE NEW-CODE` | Changes a game's code, as when it changes in fuingo. Its players stay with it. |
-| `olympia game disable CODE`, `game enable CODE` | Clears or sets the game's active flag. |
-| `olympia game delete CODE` | Deletes a game with no players. Disable a game with players instead. |
-| `olympia player add --game CODE --faction ID --uploader EMAIL [--name NAME]` | Adds an active player: the Olympia G3 faction `ID`, the player entity code on its `BEGIN` line, such as `ab1`, played by the fuingo uploader `EMAIL`. One uploader may play several factions. |
-| `olympia player list --game CODE`, `player show --game CODE --faction ID` | Lists a game's players, or shows one. |
-| `olympia player update --game CODE --faction ID [--new-faction ID] [--uploader EMAIL] [--name NAME]` | Changes a player's faction, uploader, or name; `--name ""` clears the name. |
-| `olympia player disable`, `player enable` (`--game CODE --faction ID`) | Clears or sets the player's active flag. |
-| `olympia player delete --game CODE --faction ID` | Deletes a player that nothing refers to. Nothing refers to players yet; once turns and orders do, disable such a player instead. |
-
-Codes, factions, and emails are lowercased. A faction must have the form of
-an Olympia G3 entity code: a number, or letters and digits like `ab1`,
-`a12`, `ab12`, or `a123`. `olympia` does not check that the uploader exists
-in fuingo, and `stage` does not use the store yet.
-
-### Staging
-
-```sh
-export OLYMPIA_SERVER=https://htmx-app.localhost:8443
-export OLYMPIA_EMAIL=acct01@example.com
-export OLYMPIA_SPOOL=~/Games/olympia-g3/alpha/lib/spool
-export OLYMPIA_BATCH=~/Games/olympia-g3/alpha/batches
-# OLYMPIA_PASSWORD goes in the process environment or an ignored .local file.
-olympia --env production stage --game alpha --turn 3
-```
-
-1. It logs in to fuingo with `OLYMPIA_EMAIL` and `OLYMPIA_PASSWORD`, an
-   account that manages the game.
-2. It downloads the turn's uploads into a batch directory,
-   `<batch>/<game>/turn-<turn>/`: `blobs/<sha256>` for each distinct body and
-   `manifest.json` listing, for each file to stage, its name, the upload ID,
-   the uploader's email, the upload time, the content hash, the size, and any
-   lines over 1,023 bytes (which the engine truncates). The batch appears only
-   once every body matches its hash; a failed or interrupted download leaves
-   nothing behind. A turn with no uploads is an error.
-3. It writes one file per upload to the spool, in upload order, named
-   `m<turn>-<seq>-<email>-<upload id>`, such as
-   `m3-0002-alice-example-com-17`:
-
-   ```text
-   From alice@example.com Wed Nov  4 07:36:00 2026
-   From: alice@example.com
-
-   <the uploaded orders, with LF line endings>
-   ```
-
-   Every upload for the turn is staged, not only each player's latest, and
-   the engine applies them one at a time, so feed them to it in name order.
-
-Once a turn's batch exists it is frozen: staging the turn again, for example
-after the engine has consumed the spool, reuses it without logging in, and
-ignores later uploads. `--rebuild` downloads it again. `olympia` refuses a
-spool directory that already holds files starting with `m`, since the engine
-would read them as orders, unless given `--force`; it never deletes them.
-
-`olympia` never writes the password, its bearer token, or upload tokens to
-any file. It requires `https`, except for `localhost` and loopback addresses.
-
-| Flag | Environment variable | Meaning |
-| --- | --- | --- |
-| `--env` | `OLYMPIA_ENV` | `development`, `test`, `production`, or `agent`; selects the environment files, as for the other commands. Required by every command but `version`. |
-| `--store` | `OLYMPIA_STORE` | olympia's store file. Required by `store`, `game`, and `player`; `:memory:` is refused. |
-| `--server` | `OLYMPIA_SERVER` | fuingo's URL. Required. |
-| `--email` | `OLYMPIA_EMAIL` | The email of an account that manages the game. Required. |
-| `--spool` | `OLYMPIA_SPOOL` | The engine's spool directory, `<libdir>/spool`. Must exist. Required. |
-| `--batch` | `OLYMPIA_BATCH` | The directory holding the batches. Must exist. Required. |
-| `--game`, `--turn` | (none) | The game code and the turn number (decimal digits). Required by `stage`. Command line only. |
-| `--faction`, `--new-faction`, `--uploader`, `--name` | (none) | A player's faction, new faction, uploader email, and name. Command line only. |
-| `--rebuild` | (none) | Download the batch again even if it exists. Command line only. |
-| `--force` | (none) | Stage even if the spool holds files starting with `m`. Command line only. |
-| (none) | `OLYMPIA_PASSWORD` | The account's API password. Required. |
-
-Not yet implemented: turns and orders in `olympia`, using the player
-mapping when staging, replacement and cutoff rules for multiple
-submissions, and running the engine or mailing reports, which stay with the
-GM's scripts.
 
 ## Proxy
 

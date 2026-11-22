@@ -515,8 +515,4 @@ Helper errors are plain text, not JSON.
   to get a known one.
 - Ignore JSON fields you do not recognize in responses, so the client
   survives additions.
-- Require `https` except for `localhost` and loopback addresses, as
-  `olympia` does.
-
-`internal/olympia/client.go` is a working Go client for login, listing
-uploads, and downloading a verified body.
+- Require `https` except for `localhost` and loopback addresses.

@@ -203,12 +203,11 @@ Olympia / G3 / 1 / 5    player 5's folder in turn 1
 - `internal/server` assembles the routes (the page at `/`, the vendored HTMX under `/static/`, the `/api/` routes, and the development/agent helpers) behind `http.NewCrossOriginProtection`.
   HTMX 2.0.11 is vendored as `internal/server/static/htmx-2.0.11.min.js`.
 - `internal/api` is the `/api/` handler.
-  `internal/olympia` is `olympia`'s API client and its Olympia G3 order staging, and `internal/gmstore` is `olympia`'s own store of games and players.
 - `internal/upload` and `internal/credential` implement the previous design's upload form and credential hashes.
   The new design replaces both.
 - `contrib/systemd/fuingod.service` runs `fuingod` as a systemd service; README.md documents its setup.
   Keep the two in sync, and keep the unit's `TimeoutStopSec` longer than `fuingod`'s shutdown timeout.
-- `cmd/fuingod`, `cmd/fuingodb`, `cmd/fuingo`, and `cmd/olympia` exist; [README.md](README.md) documents their flags and environment variables, and [API.md](API.md) the `/api/` routes.
+- `cmd/fuingod`, `cmd/fuingodb`, and `cmd/fuingo` exist; [README.md](README.md) documents their flags and environment variables, and [API.md](API.md) the `/api/` routes.
   Keep both current when changing any of them.
 
 ## Commands
@@ -229,7 +228,6 @@ Put a new command in the program that owns what it manages, even when another pr
 | `cmd/fuingo` | Application data. The administrator's CLI. |
 | `cmd/fuingodb` | The database: `create` and `migrate`. |
 | `cmd/fuingod` | The server. Opens an existing database; never creates or migrates one. |
-| `cmd/olympia` | The Olympia G3 GM's tool. |
 
 - **`cmd/fuingo` is the administrator's tool**, and the only way to do what only the administrator may: create a system, create a game in it, assign a game's GMs, add a file at the system level, and start an account's password reset.
   Every command that creates or changes application data belongs here.
@@ -237,17 +235,10 @@ Put a new command in the program that owns what it manages, even when another pr
   Never add one of these, such as `migrate`, to `fuingo`.
 - **`cmd/fuingod` manages the server**: it serves the web pages and the `/api/` routes, and owns the server's startup flags.
   It opens an existing database; it never creates or migrates one, and it has no subcommands for data.
-- **`cmd/olympia` is the GM's tool for Olympia G3**, issue #1.
-  This design may make that issue moot: ask the user before doing further work on `olympia` or the issue.
-  It never opens fuingo's database: it reaches fuingo only through `/api/`, as an account that is a GM of the game.
-  Its own data, the games and players it manages, is in its own store file (`--store`, `internal/gmstore`), which `olympia store create` and `store migrate` manage; every other command only opens an existing, current one.
-  It is specific to Olympia G3; do not generalize it into a framework for other engines.
-  Its environment variables use the prefix `OLYMPIA_` instead of `FUINGO_` (through `cli.ParsePrefix`), and its secret, `OLYMPIA_PASSWORD`, has no flag.
-- In `olympia`'s store, a player is an Olympia G3 faction (the entity code on its `BEGIN` line) in a game, played by a fuingo account.
-  One account may play several factions; never assume one account is one faction.
-  Fuingo knows nothing of factions: `olympia` maps them to Fuingo's player numbers and names each faction's files.
-  Rows have `AUTOINCREMENT` IDs and `ON DELETE RESTRICT` foreign keys, as in fuingo.
-  Delete removes a game or player only while nothing refers to it; otherwise disable it.
+- **A game's own tool is a separate program**, outside this repository's commands.
+  It reaches Fuingo only through `/api/`, as an account that is a GM of the game, and never opens Fuingo's database.
+  Fuingo knows nothing of a game's own ideas, such as Olympia's factions: the tool maps them to Fuingo's player numbers and names each file.
+  `cmd/olympia`, the Olympia G3 tool built for the previous design, was removed on 2026-11-22; build a replacement only if the user asks.
 
 `fuingo` commands follow the noun-verb pattern, `fuingo <noun> <verb>`: each noun has only the verbs that make sense for it, and `fuingo <noun> --help` lists them.
 `--db` is a root flag, as in `fuingo --db PATH game create CODE`, because almost every command uses the database.
@@ -307,7 +298,7 @@ These rules hold whatever its tables are:
 
 ## The `/api/` routes
 
-The `/api/` routes serve the GMs' tools, such as `olympia`.
+The `/api/` routes serve the GMs' tools.
 A tool can do through them what its GM can do on the web: list and download a game's files, upload files to its folders, withdraw the GM's own files, manage its players, and create and close its turns.
 [API.md](API.md) is the reference for clients: every route's request, response, status codes, and an example.
 Keep it current with every change to a route, and keep the route table in [README.md](README.md#api) in step with it.
@@ -341,7 +332,7 @@ Settle each of these with the user before building what depends on it.
 - Renaming a system or game.
 - Naming a turn, as a later feature.
 - Pagination of listings.
-- Whether `cmd/olympia` and issue #1 continue under this design, and if so how the tool stages orders and pushes reports.
+- Whether to build a new Olympia G3 tool against this design (issue #1).
 
 ## Verification
 

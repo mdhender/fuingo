@@ -37,9 +37,8 @@ The database application ID is the ASCII bytes `fuin`, interpreted as a big-endi
 const applicationID int32 = 0x6675696E // 1718970734, ASCII "fuin"
 ```
 
-`olympia`'s store follows the same contract with its own ID, the ASCII bytes
-`olym` (`0x6F6C796D`), so neither program can open the other's file.
-`internal/sqlitedb` implements the contract for both.
+`internal/sqlitedb` implements the contract for any schema; another
+program's store would use it with an ID of its own.
 
 - Store this value in `PRAGMA application_id` when creating a new database.
 - When opening an existing database, read and require this exact value before

@@ -117,7 +117,8 @@ Olympia / G3 / 1 / 5    player 5's folder in turn 1
 - Empty files are refused.
   A player with no orders for a turn withdraws their file rather than uploading a blank one.
 - Every upload may start with one optional UTF-8 BOM (`EF BB BF`) and must be valid UTF-8, whoever uploads it.
-- There are three size limits, each configurable on its own: a player's upload on the web, 64 KiB (65,536 bytes) by default; a GM's upload on the web, 1 MiB (1,048,576 bytes) by default; and an upload through `/api/`.
+  The only control characters it may hold are tab (`0x09`), LF (`0x0A`), and CR (`0x0D`); any other, such as NUL, is refused.
+- There are three size limits, each configurable on its own: a player's upload on the web, 64 KiB (65,536 bytes) by default; a GM's upload on the web, 1 MiB (1,048,576 bytes) by default; and an upload through `/api/`, 1 MiB by default.
 - Check the whole file, never a sample of it.
   A file containing only a BOM is empty.
 - Enforce a size limit while reading the request (for example, with `http.MaxBytesReader`), not after buffering an unbounded body.
@@ -155,6 +156,7 @@ Olympia / G3 / 1 / 5    player 5's folder in turn 1
 - Fuingo sends its mail through Mailgun.
   The Mailgun credentials are secrets: they come from the environment and have no flags.
 - The administrator creates each system, creates each game in it, and assigns the game's GMs.
+  A GM is assigned to a game, never to a system: a system has no GMs of its own.
   GMs do not create games or systems.
 - Every upload, download, and listing needs a signed-in account.
   Nothing is open to an anonymous client except signing in and the account mail flows.
@@ -268,7 +270,10 @@ These rules hold whatever its tables are:
 - A game's code is unique within its system.
   Codes and emails are stored lowercased.
   The code of a system or a game is at most 32 UTF-8 characters.
-- Codes and file names appear in URLs and on the page, so they hold no hinky characters; the exact set allowed is an [open question](#open-questions).
+- Codes and file names appear in URLs and on the page, so they hold only safe characters.
+  A code holds letters and digits in any script, `-`, and `_`.
+  A file name holds the same, and `.` and single spaces inside it, never at its start or end.
+  Everything else is refused, including control characters, `/`, `\`, the HTML special characters `<`, `>`, `&`, and `;`, and every kind of quote.
 - A system has no settings of its own.
   Every system shares the server's settings, such as the size limits.
 - `accounts` has one row per email, for players and GMs alike.
@@ -331,12 +336,7 @@ A tool can ask for the uploads that arrived after the last one it saw, so a game
 
 Settle each of these with the user before building what depends on it.
 
-- The default for the `/api/` size limit.
-- Which characters a code and a file name may hold.
-  Proposed and not yet confirmed: letters and digits in any script, with `-` and `_` in a code, and `-`, `_`, `.`, and single spaces inside a file name; never a control character, `/`, `\`, or a leading `.`.
-- Whether a file that is valid UTF-8 may hold control characters other than tab, LF, and CR, such as NUL.
 - Which normalizations a download offers, how a client asks for them, and which contents `X-Content-SHA256` describes when it does.
-- Whether a system has GMs of its own.
 - Renaming a system or game.
 - Naming a turn, as a later feature.
 - Pagination of listings.
@@ -347,8 +347,8 @@ Settle each of these with the user before building what depends on it.
 - Test observable HTTP and command behavior, not private implementation details.
 - Cover access: that a player reaches only their own folders, that a GM reaches only the games they manage, that an inactive account, player, GM, or game is refused, and that what an account may not reach is indistinguishable from what does not exist.
 - Cover turns: uploads to a turn that does not exist, to an open turn, to a closed one, and to a reopened one; that closing blocks only players; and several open turns.
-- Cover uploads: each of the three size limits at its boundary, at its default and at a configured value, and that each is independent of the others; empty and BOM-only files; a BOM followed by a valid file; bytes above `0x7F` in valid UTF-8 (accepted); and invalid UTF-8 at the start, in the middle, and at the end of a file (rejected), for a player and for a GM.
-- Cover names: a 32-character code and a 33-character one, counted in characters and not bytes; a 48-byte file name and a 49-byte one; and each kind of refused character.
+- Cover uploads: each of the three size limits at its boundary, at its default and at a configured value, and that each is independent of the others; empty and BOM-only files; a BOM followed by a valid file; bytes above `0x7F` in valid UTF-8 (accepted); invalid UTF-8 at the start, in the middle, and at the end of a file (rejected); and NUL and other control characters (rejected) beside tab, LF, and CR (accepted), for a player and for a GM.
+- Cover names: a 32-character code and a 33-character one, counted in characters and not bytes; a 48-byte file name and a 49-byte one; non-ASCII letters (accepted); and each kind of refused character, including `<`, `>`, `&`, `;`, quotes, `/`, `\`, and a leading or trailing `.` or space in a file name.
 - Cover storage: that a download returns exactly the bytes uploaded, including a BOM and CRLF line endings, that a normalized download leaves the stored file unchanged, and that lowering a size limit leaves stored files readable.
 - Cover repeated and withdrawn files: that a second upload replaces nothing, that a withdrawn file leaves the listings and its record remains, that a player cannot withdraw after the turn closes or withdraw a GM's file, and that a GM can withdraw their own file in a closed turn.
 - For duplicate content, cover players in the same game and in different games with identical files, concurrent uploads, and that stored contents are not rewritten.

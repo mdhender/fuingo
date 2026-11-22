@@ -50,7 +50,7 @@ func serve(h http.Handler, r *http.Request) *httptest.ResponseRecorder {
 	return w
 }
 
-// Files arrive only through /api/, as a signed-in GM: the previous design's
+// Files arrive only from a signed-in account: the previous design's
 // unauthenticated form is gone, and so is its helper.
 func TestThereIsNoUploadRoute(t *testing.T) {
 	t.Parallel()

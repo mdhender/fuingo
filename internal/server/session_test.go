@@ -56,14 +56,19 @@ func (f *accountFixture) signIn(t *testing.T, email, password, remote string) *h
 	return c
 }
 
-// signedIn reports whether the cookie's session reaches the home page.
+// game01Path is the page of the default game that acct01 manages. An
+// account with one game is sent there from the home page.
+const game01Path = "/systems/system01/games/game01"
+
+// signedIn reports whether the cookie's session reaches the home page,
+// which sends an account with one game on to it.
 func (f *accountFixture) signedIn(t *testing.T, cookie *http.Cookie) bool {
 	t.Helper()
 	w := f.get("/", cookie)
-	switch {
-	case w.Code == http.StatusOK:
+	switch location := w.Header().Get("Location"); {
+	case w.Code == http.StatusOK, w.Code == http.StatusSeeOther && strings.HasPrefix(location, "/systems/"):
 		return true
-	case w.Code == http.StatusSeeOther && w.Header().Get("Location") == server.SignInPath:
+	case w.Code == http.StatusSeeOther && location == server.SignInPath:
 		return false
 	}
 	t.Fatalf("GET /: %d, Location %q", w.Code, w.Header().Get("Location"))
@@ -95,7 +100,7 @@ func TestSignIn(t *testing.T) {
 	if len(c.Value) < 20 {
 		t.Errorf("token %q is too short to be random", c.Value)
 	}
-	home := f.get("/", c)
+	home := f.get(game01Path, c)
 	if home.Code != http.StatusOK || !strings.Contains(home.Body.String(), acct01.Email) || home.Header().Get("Cache-Control") != "no-store" {
 		t.Fatalf("home: %d %s", home.Code, home.Body)
 	}
@@ -252,7 +257,7 @@ func TestSessionIsRenewedByUse(t *testing.T) {
 	idle := f.signIn(t, acct01.Email, acct01.Password, "")
 
 	f.now = f.now.Add(server.SessionLifetime - time.Second)
-	w := f.get("/", used)
+	w := f.get(game01Path, used)
 	if w.Code != http.StatusOK {
 		t.Fatalf("a second before 30 days: %d", w.Code)
 	}

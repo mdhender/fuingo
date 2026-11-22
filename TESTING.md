@@ -31,6 +31,13 @@ games, or both.
 `fuingo account create`, `fuingo game add --manager`, and `fuingo game add
 --player` add to the tables. No command sets a password.
 
+The default accounts with passwords sign in to the web pages too, as the GMs
+of their games. The default players have no password, so a test that needs a
+signed-in player has it choose one through a mailed link, read from a
+`mailtest.Recorder`, with a password the test makes up. By hand, in
+`development` or `agent`, create an account with the
+[helper](#create-an-api-account) below and add it to a game as a player.
+
 ## Mail in tests
 
 Tests never reach Mailgun. Give the code under test a

@@ -36,6 +36,13 @@ type accountFixture struct {
 
 func newAccountFixture(t *testing.T) *accountFixture {
 	t.Helper()
+	return newConfiguredFixture(t, nil)
+}
+
+// newConfiguredFixture is newAccountFixture with a server whose
+// configuration the test adjusts.
+func newConfiguredFixture(t *testing.T, adjust func(*server.Config)) *accountFixture {
+	t.Helper()
 	s, err := store.OpenPrivateMemory(t.Context(), t.Name())
 	if err != nil {
 		t.Fatal(err)
@@ -46,7 +53,7 @@ func newAccountFixture(t *testing.T) *accountFixture {
 	}
 	f := &accountFixture{s: s, mail: &mailtest.Recorder{}, logs: &bytes.Buffer{}, now: time.Date(2026, 11, 22, 12, 0, 0, 0, time.UTC)}
 	clock := func() time.Time { return f.now }
-	f.h, err = server.New(server.Config{
+	cfg := server.Config{
 		Env:           "production",
 		Store:         s,
 		Logger:        slog.New(slog.NewTextHandler(f.logs, nil)),
@@ -54,7 +61,11 @@ func newAccountFixture(t *testing.T) *accountFixture {
 		ResetRequests: ratelimit.New(server.ResetBurst, server.ResetInterval, clock),
 		Background:    func(work func()) { work() },
 		Now:           clock,
-	})
+	}
+	if adjust != nil {
+		adjust(&cfg)
+	}
+	f.h, err = server.New(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

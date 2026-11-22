@@ -38,6 +38,7 @@ type Upload struct {
 	Name          string
 	Size          int64
 	SHA256        string // lowercase hex
+	UploaderID    int64  // the uploader's account
 	UploaderEmail string // as it was when the file was uploaded
 	UploadedAt    time.Time
 	WithdrawnAt   time.Time
@@ -59,10 +60,13 @@ type NewUpload struct {
 	AccountID int64
 	Email     string
 	Now       time.Time
+	// OpenTurnOnly refuses the upload with ErrTurnClosed if the folder's
+	// turn is closed, as for a player's upload.
+	OpenTurnOnly bool
 }
 
 const selectUploads = `
-SELECT u.id, t.turn_no, u.player_id, u.name, c.size, u.sha256, u.uploader_email, u.uploaded_at, u.withdrawn_at
+SELECT u.id, t.turn_no, u.player_id, u.name, c.size, u.sha256, u.uploader_email, u.uploaded_at, u.withdrawn_at, u.uploader_account_id
 FROM uploads u
 JOIN file_contents c ON c.sha256 = u.sha256
 LEFT JOIN turns t ON t.id = u.turn_id
@@ -76,6 +80,7 @@ func scanUpload(stmt *sqlite.Stmt) Upload {
 		SHA256:        stmt.ColumnText(5),
 		UploaderEmail: stmt.ColumnText(6),
 		UploadedAt:    parseTime(stmt.ColumnText(7)),
+		UploaderID:    stmt.ColumnInt64(9),
 	}
 	if stmt.ColumnType(1) != sqlite.TypeNull {
 		u.Turn = new(stmt.ColumnInt64(1))
@@ -94,26 +99,33 @@ func scanUpload(stmt *sqlite.Stmt) Upload {
 // has no such turn and ErrUnknownPlayer if it has no such player, active or
 // not.
 func folderIDs(conn *sqlite.Conn, gameID int64, f Folder) (turnID, playerID any, err error) {
+	turnID, playerID, _, err = folderState(conn, gameID, f)
+	return turnID, playerID, err
+}
+
+// folderState is folderIDs, and also reports whether the folder's turn is
+// closed.
+func folderState(conn *sqlite.Conn, gameID int64, f Folder) (turnID, playerID any, closed bool, err error) {
 	if f.Turn == nil {
 		if f.Player != nil {
-			return nil, nil, ErrUnknownTurn
+			return nil, nil, false, ErrUnknownTurn
 		}
-		return nil, nil, nil
+		return nil, nil, false, nil
 	}
-	err = sqlitex.Execute(conn, "SELECT id FROM turns WHERE game_id = ? AND turn_no = ?;", &sqlitex.ExecOptions{
+	err = sqlitex.Execute(conn, "SELECT id, closed_at IS NOT NULL FROM turns WHERE game_id = ? AND turn_no = ?;", &sqlitex.ExecOptions{
 		Args: []any{gameID, *f.Turn},
 		ResultFunc: func(stmt *sqlite.Stmt) error {
-			turnID = stmt.ColumnInt64(0)
+			turnID, closed = stmt.ColumnInt64(0), stmt.ColumnBool(1)
 			return nil
 		},
 	})
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, false, err
 	} else if turnID == nil {
-		return nil, nil, ErrUnknownTurn
+		return nil, nil, false, ErrUnknownTurn
 	}
 	if f.Player == nil {
-		return turnID, nil, nil
+		return turnID, nil, closed, nil
 	}
 	err = sqlitex.Execute(conn, "SELECT id FROM game_players WHERE game_id = ? AND id = ?;", &sqlitex.ExecOptions{
 		Args: []any{gameID, *f.Player},
@@ -123,18 +135,20 @@ func folderIDs(conn *sqlite.Conn, gameID int64, f Folder) (turnID, playerID any,
 		},
 	})
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, false, err
 	} else if playerID == nil {
-		return nil, nil, ErrUnknownPlayer
+		return nil, nil, false, ErrUnknownPlayer
 	}
-	return turnID, playerID, nil
+	return turnID, playerID, closed, nil
 }
 
 // CreateUpload stores the file in the game's folder and returns its record.
 // The contents are kept once, under their SHA-256, however many uploads hold
 // the same bytes; contents already stored are not rewritten. The contents
 // and the record are stored in one transaction. It fails with
-// ErrUnknownTurn or ErrUnknownPlayer if the game has no such folder.
+// ErrUnknownTurn or ErrUnknownPlayer if the game has no such folder, and
+// with ErrTurnClosed if n.OpenTurnOnly is set and the folder's turn is
+// closed.
 func (s *Store) CreateUpload(ctx context.Context, n NewUpload) (u Upload, err error) {
 	conn, err := s.take(ctx)
 	if err != nil {
@@ -150,9 +164,11 @@ func (s *Store) CreateUpload(ctx context.Context, n NewUpload) (u Upload, err er
 	}
 	defer end(&err)
 
-	turnID, playerID, err := folderIDs(conn, n.GameID, n.Folder)
+	turnID, playerID, closed, err := folderState(conn, n.GameID, n.Folder)
 	if err != nil {
 		return Upload{}, err
+	} else if closed && n.OpenTurnOnly {
+		return Upload{}, ErrTurnClosed
 	}
 	sum := sha256.Sum256(n.Contents)
 	hash := hex.EncodeToString(sum[:])
@@ -182,6 +198,7 @@ SELECT g.system_id, g.id, ?2, ?3, ?4, ?5, ?6, ?7, ?8 FROM games g WHERE g.id = ?
 		Name:          n.Name,
 		Size:          int64(len(n.Contents)),
 		SHA256:        hash,
+		UploaderID:    n.AccountID,
 		UploaderEmail: n.Email,
 		UploadedAt:    parseTime(now),
 	}, nil

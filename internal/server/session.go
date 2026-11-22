@@ -60,20 +60,18 @@ func newSessions(db *store.Store, logger *slog.Logger, clients clientip.Resolver
 	return &sessions{db: db, logger: logger, clients: clients, failures: failures, now: now, dummyHash: dummy}, nil
 }
 
-// sessionPage is the data of the sign-in and home templates.
+// sessionPage is the data of the sign-in template.
 type sessionPage struct {
-	HTMX, Tailwind string
-	State          string
-	SignInPath     string
-	SignOutPath    string
-	ResetPath      string
-	Email          string
-	Error          string
+	Tailwind   string
+	State      string
+	SignInPath string
+	ResetPath  string
+	Error      string
 }
 
 func (s *sessions) render(w http.ResponseWriter, status int, name string, data sessionPage) {
-	data.HTMX, data.Tailwind = HTMXPath, TailwindURL
-	data.SignInPath, data.SignOutPath, data.ResetPath = SignInPath, SignOutPath, links.ResetPath
+	data.Tailwind = TailwindURL
+	data.SignInPath, data.ResetPath = SignInPath, links.ResetPath
 	var buf bytes.Buffer
 	if err := pageTemplates.ExecuteTemplate(&buf, name, data); err != nil {
 		s.logger.Error("page", "page", name, "err", err)
@@ -137,21 +135,6 @@ func (s *sessions) account(w http.ResponseWriter, r *http.Request) (store.Accoun
 	c, _ := r.Cookie(SessionCookie)
 	setCookie(w, c.Value)
 	return account, true, nil
-}
-
-// home serves the page at /: the signed-in account's, or the way to the
-// sign-in page.
-func (s *sessions) home(w http.ResponseWriter, r *http.Request) {
-	account, ok, err := s.account(w, r)
-	if err != nil {
-		s.serverError(w, "home: find session", err)
-		return
-	} else if !ok {
-		w.Header().Set("Cache-Control", "no-store")
-		http.Redirect(w, r, SignInPath, http.StatusSeeOther)
-		return
-	}
-	s.render(w, http.StatusOK, "home.html", sessionPage{Email: account.Email})
 }
 
 func (s *sessions) showSignIn(w http.ResponseWriter, r *http.Request) {

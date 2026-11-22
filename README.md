@@ -1,16 +1,17 @@
 # fuingo
 
-A file exchange for play-by-email games, replacing the e-mail: players will
+A file exchange for play-by-email games, replacing the e-mail: players
 upload their orders and download their reports over HTTPS, and game masters
 (GMs) the reverse. [AGENTS.md](AGENTS.md) describes the design.
 
 The design is being built in steps. What exists today is the hierarchy
-(systems, games, a game's GMs and players, and turns) and the `/api/` routes
-a GM's tool uses: to manage a game's players and turns, and to upload, list,
-download, and withdraw its files. Accounts are by invitation: a new account
-is mailed a link to choose its password, and its owner resets a forgotten
-password the same way. An account can sign in to the web, but the pages for
-a game's files are not built, so only GMs exchange files, through `/api/`.
+(systems, games, a game's GMs and players, and turns), the [pages](#pages)
+where players and GMs exchange a game's files, and the `/api/` routes a GM's
+tool uses for the same: to manage a game's players and turns, and to upload,
+list, download, and withdraw its files. Accounts are by invitation: a new
+account is mailed a link to choose its password, and its owner resets a
+forgotten password the same way. Files at a system's level, and normalized
+downloads, are not built.
 
 ## Commands
 
@@ -71,7 +72,7 @@ chooses one through a link mailed to the account's address.
 
 | Page | Does |
 | --- | --- |
-| `/` | The signed-in account's page, for now only its email and a sign-out button. Sends anyone else to `/sign-in`. |
+| `/` | The signed-in account's games; see [Pages](#pages). Sends anyone else to `/sign-in`. |
 | `/sign-in` | Signs an account in with its email and password. |
 | `/sign-out` | Ends the browser's session. `POST` only. |
 | `/account/password?token=...` | Where a mailed link leads: a form to choose the password. |
@@ -117,6 +118,53 @@ secrets: they come only from the environment, and have no flags.
   `production`, `fuingod` does not start without them.
 - Fuingo does not handle mail that fails later. Bounces show in Mailgun.
 
+## Pages
+
+Every page needs a signed-in account, and sends anyone else to `/sign-in`.
+An account sees only what it may reach: anything else gets the same "not
+found" page as something that does not exist.
+
+| Page | Shows |
+| --- | --- |
+| `/` | The account's games, by system. An account with one game is sent straight to it. |
+| `/systems/{system}` | The games of one system that the account may reach. |
+| `/systems/{system}/games/{game}` | The game's files and its turns, newest first. |
+| `.../games/{game}/turns/{turn}` | The turn's files and whether it is open. A player also sees their own folder for the turn; a GM sees every player's folder, with how many files each holds. |
+| `.../turns/{turn}/players/{number}` | One player's folder in the turn, for a GM and for that player. |
+| `.../games/{game}/uploads/{id}` | Downloads a file, exactly as it was uploaded. |
+| `.../games/{game}/players` | For a GM: the game's players, with a form to add one. |
+
+- **Uploading.** A folder the account may add to shows a drop zone: drop a
+  file on it, or click it and choose one, and the file is sent at once. The
+  zone names the system, game, and turn the file goes to, and so does the
+  receipt that follows. A player adds only to their own folder, and only
+  while its turn is open; a GM adds to the game, to a turn, and to any
+  player's folder, at any time.
+- **Files.** A file is text: valid UTF-8, not empty, with no control
+  characters but tab, line feed, and carriage return. Its name is 1 to 48
+  ASCII letters, digits, `-`, `_`, and `.`, with no `.` at its start or end.
+  The page refuses a file it can see is wrong before sending it; the server
+  checks every file whatever the page did. Every upload is kept: a second
+  file with the same name replaces nothing.
+- **Size limits.** A player's file is at most `--max-player-upload` bytes
+  (64 KiB by default) and a GM's at most `--max-gm-upload` (1 MiB). Each is
+  separate from the other and from the API's `--max-api-upload`.
+- **Withdrawing.** The account that uploaded a file may withdraw it: a
+  player while the turn is open, a GM at any time. A withdrawn file leaves
+  the player's lists and can no longer be downloaded by the player. A GM
+  still sees it, marked withdrawn, and can download it. Nothing is deleted.
+- **Turns.** A GM creates the game's next turn from the game's page, and
+  closes or reopens a turn from the turn's page. Closing a turn stops its
+  players adding and withdrawing files, and nothing else.
+- **Players.** A GM adds a player by email. An address without an account
+  gets one and is mailed an invitation. A GM can disable and enable a
+  player, and can do nothing else to an account.
+- **Downloads.** Every file is served as a download
+  (`Content-Disposition: attachment`, `application/octet-stream`), never
+  displayed, so an HTML report cannot run on Fuingo's origin.
+- A player is shown their own uploads as from "you" and any other file as
+  from "the GM". A GM is shown each uploader's email.
+
 ## Configuration
 
 Every flag can be set with an environment variable instead. Explicit flags
@@ -129,6 +177,8 @@ override environment variables, which override the defaults.
 | `--addr` | `FUINGO_ADDR` | `fuingod` | Backend listen address, `host:port`. Default `127.0.0.1:18443`. |
 | `--trusted-proxies` | `FUINGO_TRUSTED_PROXIES` | `fuingod` | Comma-separated addresses and CIDR prefixes of the reverse proxies whose `X-Forwarded-For` header is trusted. Default `127.0.0.0/8,::1` (loopback); empty trusts none. |
 | `--max-api-upload` | `FUINGO_MAX_API_UPLOAD` | `fuingod` | Largest file accepted through `/api/`, in bytes. Default `1048576` (1 MiB). Changing it never affects a file already stored. |
+| `--max-player-upload` | `FUINGO_MAX_PLAYER_UPLOAD` | `fuingod` | Largest file a player may upload on the web, in bytes. Default `65536` (64 KiB). Changing it never affects a file already stored. |
+| `--max-gm-upload` | `FUINGO_MAX_GM_UPLOAD` | `fuingod` | Largest file a GM may upload on the web, in bytes. Default `1048576` (1 MiB). Changing it never affects a file already stored. |
 | `--schema` | (none) | `fuingo version` | Print the database's schema version. Command line only. |
 | `--public-url` | `FUINGO_PUBLIC_URL` | `fuingod`, `fuingo` | The origin players reach Fuingo at, such as `https://fuingo.example.com`, which mailed links point to: `https`, with no path. Defaults to `https://htmx-app.localhost:8443` in `development` and `agent`; required elsewhere by `fuingod` and by the `fuingo` commands that send mail. |
 | `--system` | (none) | `fuingo game` commands | The code of the game's system. Required. Command line only. |

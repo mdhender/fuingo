@@ -59,6 +59,11 @@ type Config struct {
 	// MaxAPIUpload is the most bytes a file uploaded through /api/ may
 	// hold. If zero, the api package's default applies.
 	MaxAPIUpload int64
+	// MaxPlayerUpload and MaxGMUpload are the most bytes a file may hold
+	// when a player, or a GM, uploads it on the web. If zero, the defaults
+	// apply.
+	MaxPlayerUpload int64
+	MaxGMUpload     int64
 }
 
 // HelperPrefix returns the path prefix of the account helpers in env, or ""
@@ -108,7 +113,32 @@ func New(cfg Config) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	mux.HandleFunc("GET /{$}", web.home)
+	if cfg.MaxPlayerUpload == 0 {
+		cfg.MaxPlayerUpload = DefaultMaxPlayerUpload
+	}
+	if cfg.MaxGMUpload == 0 {
+		cfg.MaxGMUpload = DefaultMaxGMUpload
+	}
+	p := &pages{sessions: web, db: cfg.Store, logger: cfg.Logger, now: cfg.Now, links: cfg.Links, maxPlayer: cfg.MaxPlayerUpload, maxGM: cfg.MaxGMUpload}
+	mux.HandleFunc("GET /{$}", p.signedIn(p.home))
+	mux.HandleFunc("GET /systems/{system}", p.signedIn(p.system))
+	const game = "/systems/{system}/games/{game}"
+	mux.HandleFunc("GET "+game, p.signedIn(p.gamePage))
+	mux.HandleFunc("GET "+game+"/turns/{turn}", p.signedIn(p.turnPage))
+	mux.HandleFunc("GET "+game+"/turns/{turn}/players/{id}", p.signedIn(p.folderPage))
+	for _, folder := range []string{game, game + "/turns/{turn}", game + "/turns/{turn}/players/{id}"} {
+		mux.HandleFunc("POST "+folder+"/files", p.signedIn(p.upload))
+	}
+	mux.HandleFunc("GET "+game+"/uploads/{upload}", p.signedIn(p.download))
+	mux.HandleFunc("POST "+game+"/uploads/{upload}/withdraw", p.signedIn(p.withdraw))
+	// What only a GM may do.
+	mux.HandleFunc("POST "+game+"/turns", p.signedIn(p.createTurn))
+	mux.HandleFunc("POST "+game+"/turns/{turn}/close", p.signedIn(p.setTurnClosed(true)))
+	mux.HandleFunc("POST "+game+"/turns/{turn}/open", p.signedIn(p.setTurnClosed(false)))
+	mux.HandleFunc("GET "+game+"/players", p.signedIn(p.playersPage))
+	mux.HandleFunc("POST "+game+"/players", p.signedIn(p.addPlayer))
+	mux.HandleFunc("POST "+game+"/players/{id}/disable", p.signedIn(p.setPlayerActive(false)))
+	mux.HandleFunc("POST "+game+"/players/{id}/enable", p.signedIn(p.setPlayerActive(true)))
 	mux.HandleFunc("GET "+SignInPath, web.showSignIn)
 	mux.HandleFunc("POST "+SignInPath, web.signIn)
 	mux.HandleFunc("POST "+SignOutPath, web.signOut)

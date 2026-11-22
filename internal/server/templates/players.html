@@ -1,0 +1,39 @@
+{{template "head" .}}
+    <h1 class="text-2xl font-semibold tracking-tight text-gray-900">{{.Game.System}} / {{.Game.Code}} / players</h1>
+    {{with .Notice}}<p id="notice" class="mt-4 rounded-md bg-green-50 p-3 text-sm text-green-800" role="status">{{.}}</p>{{end}}
+    {{with .Error}}<p id="error" class="mt-4 rounded-md bg-red-50 p-3 text-sm text-red-800" role="alert">{{.}}</p>{{end}}
+    <section id="players" class="mt-6 rounded-lg border border-gray-200 bg-white p-4">
+{{- if .Players}}
+      <table class="w-full text-left text-sm">
+        <thead class="text-xs text-gray-500">
+          <tr><th class="py-1 font-medium">Number</th><th class="py-1 font-medium">Email</th><th class="py-1 font-medium">State</th><th class="py-1"></th></tr>
+        </thead>
+        <tbody class="divide-y divide-gray-100">
+{{- range .Players}}
+          <tr>
+            <td class="py-2">{{.ID}}</td>
+            <td class="py-2">{{.Email}}</td>
+            <td class="py-2">{{if .Active}}active{{else}}disabled{{end}}{{if not .AccountActive}} · account disabled{{end}}</td>
+            <td class="py-2 text-right">
+              <form method="post" action="{{if .Active}}{{.DisableURL}}{{else}}{{.EnableURL}}{{end}}">
+                <button type="submit" class="text-sm font-medium text-indigo-600 hover:text-indigo-500">{{if .Active}}Disable{{else}}Enable{{end}}</button>
+              </form>
+            </td>
+          </tr>
+{{- end}}
+        </tbody>
+      </table>
+{{- else}}
+      <p class="text-sm text-gray-500">The game has no players.</p>
+{{- end}}
+    </section>
+    <form method="post" action="{{.AddURL}}" class="mt-6 rounded-lg border border-gray-200 bg-white p-4">
+      <label for="email" class="block text-sm font-medium text-gray-900">Add a player</label>
+      <div class="mt-2 flex gap-3">
+        <input id="email" name="email" type="email" required autocomplete="off" placeholder="player@example.com"
+               class="block w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-gray-900 focus:outline-2 focus:outline-indigo-600">
+        <button type="submit" class="rounded-md bg-indigo-600 px-3 py-2 text-sm font-semibold text-white hover:bg-indigo-500">Add</button>
+      </div>
+      <p class="mt-2 text-xs text-gray-500">An address without an account gets one, and is mailed an invitation to choose a password.</p>
+    </form>
+{{template "foot" .}}

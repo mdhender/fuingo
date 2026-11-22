@@ -1,29 +1,21 @@
-<!doctype html>
-<html lang="en" class="h-full bg-gray-50">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Fuingo</title>
-  <script src="{{.HTMX}}"></script>
-  <script src="{{.Tailwind}}"></script>
-</head>
-<body class="h-full">
-  <header class="border-b border-gray-200 bg-white">
-    <div class="mx-auto flex max-w-3xl items-center justify-between px-4 py-3">
-      <span class="text-lg font-semibold tracking-tight text-gray-900">Fuingo</span>
-      <div class="flex items-center gap-4">
-        <span id="account" class="text-sm text-gray-600">{{.Email}}</span>
-        <form method="post" action="{{.SignOutPath}}">
-          <button type="submit" class="rounded-md bg-white px-3 py-1.5 text-sm font-semibold text-gray-900 ring-1 ring-gray-300 ring-inset hover:bg-gray-50">Sign out</button>
-        </form>
-      </div>
-    </div>
-  </header>
-  <main class="mx-auto max-w-3xl px-4 py-12">
-    <p id="status" class="rounded-md bg-yellow-50 p-4 text-sm text-yellow-800" role="status">
-      You are signed in. Your games' files are not available on this site
-      yet; your game master will tell you when they are.
+{{template "head" .}}
+    <h1 class="text-2xl font-semibold tracking-tight text-gray-900">{{.Heading}}</h1>
+{{- range .Systems}}
+    <section class="mt-6">
+      <h2 class="text-base font-semibold text-gray-900"><a href="{{.URL}}" class="hover:text-indigo-600">{{.Code}}</a></h2>
+      <ul class="mt-2 divide-y divide-gray-100 rounded-lg border border-gray-200 bg-white">
+{{- range .Games}}
+        <li class="flex items-center justify-between px-4 py-3">
+          <a href="{{.URL}}" class="font-medium text-indigo-600 hover:text-indigo-500">{{.Code}}</a>
+          <span class="text-sm text-gray-500">{{.Role}}{{if .Inactive}} · inactive{{end}}</span>
+        </li>
+{{- end}}
+      </ul>
+    </section>
+{{- else}}
+    <p id="status" class="mt-6 rounded-md bg-yellow-50 p-4 text-sm text-yellow-800" role="status">
+      You are signed in, but you are not in any game yet. Your game master
+      adds you to one.
     </p>
-  </main>
-</body>
-</html>
+{{- end}}
+{{template "foot" .}}

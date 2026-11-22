@@ -1,0 +1,33 @@
+{{template "head" .}}
+    <h1 class="text-2xl font-semibold tracking-tight text-gray-900">{{.Game.System}} / {{.Game.Code}}</h1>
+{{- if .Inactive}}
+    <p id="inactive" class="mt-4 rounded-md bg-yellow-50 p-3 text-sm text-yellow-800">This game is inactive: its players cannot reach it.</p>
+{{- end}}
+    <section id="turns" class="mt-8 rounded-lg border border-gray-200 bg-white p-4">
+      <div class="flex items-center justify-between">
+        <h2 class="text-base font-semibold text-gray-900">Turns</h2>
+{{- if .Manager}}
+        <div class="flex items-center gap-4">
+          <a href="{{.PlayersURL}}" class="text-sm font-medium text-indigo-600 hover:text-indigo-500">Players</a>
+          <form method="post" action="{{.TurnsURL}}">
+            <input type="hidden" name="turn" value="{{.NextTurn}}">
+            <button type="submit" class="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-indigo-500">Create turn {{.NextTurn}}</button>
+          </form>
+        </div>
+{{- end}}
+      </div>
+{{- if .Turns}}
+      <ul class="mt-3 divide-y divide-gray-100">
+{{- range .Turns}}
+        <li class="flex items-center justify-between py-2 text-sm">
+          <a href="{{.URL}}" class="font-medium text-indigo-600 hover:text-indigo-500">Turn {{.Number}}</a>
+          <span class="{{if .Closed}}text-gray-500{{else}}text-green-700{{end}}">{{if .Closed}}closed{{else}}open{{end}}</span>
+        </li>
+{{- end}}
+      </ul>
+{{- else}}
+      <p class="mt-3 text-sm text-gray-500">No turns yet.</p>
+{{- end}}
+    </section>
+{{template "folder" .Files}}
+{{template "foot" .}}

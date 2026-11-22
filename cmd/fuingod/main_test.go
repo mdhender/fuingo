@@ -32,7 +32,7 @@ var acct01 = devdata.Accounts[0]
 func clearEnv(t *testing.T) {
 	t.Helper()
 	for _, key := range []string{
-		"FUINGO_ENV", "FUINGO_ADDR", "FUINGO_DB", "FUINGO_TRUSTED_PROXIES", "FUINGO_MAX_API_UPLOAD", "FUINGO_PUBLIC_URL",
+		"FUINGO_ENV", "FUINGO_ADDR", "FUINGO_DB", "FUINGO_TRUSTED_PROXIES", "FUINGO_MAX_API_UPLOAD", "FUINGO_MAX_PLAYER_UPLOAD", "FUINGO_MAX_GM_UPLOAD", "FUINGO_PUBLIC_URL",
 		"FUINGO_MAILGUN_DOMAIN", "FUINGO_MAILGUN_API_KEY", "FUINGO_MAILGUN_FROM", "FUINGO_MAILGUN_API_BASE", "FUINGO_MAILGUN_SANDBOX_TO_ADDR",
 	} {
 		t.Setenv(key, "")
@@ -445,6 +445,32 @@ func TestMaxAPIUpload(t *testing.T) {
 	for _, bad := range []string{"0", "-1"} {
 		if _, err := loadConfig(append(base, "--max-api-upload", bad), io.Discard); !errors.Is(err, ErrInvalidUploadLimit) {
 			t.Errorf("--max-api-upload %s: %v, want ErrInvalidUploadLimit", bad, err)
+		}
+	}
+}
+
+// The three upload limits are set independently of one another.
+func TestWebUploadLimits(t *testing.T) {
+	clearEnv(t)
+	base := []string{"--env", "development", "--db", ":memory:"}
+	cfg, err := loadConfig(base, io.Discard)
+	if err != nil || cfg.maxPlayerUpload != 64<<10 || cfg.maxGMUpload != 1<<20 {
+		t.Errorf("defaults = %d, %d, %v; want 64 KiB and 1 MiB", cfg.maxPlayerUpload, cfg.maxGMUpload, err)
+	}
+	cfg, err = loadConfig(append(base, "--max-player-upload", "100", "--max-gm-upload", "200"), io.Discard)
+	if err != nil || cfg.maxPlayerUpload != 100 || cfg.maxGMUpload != 200 || cfg.maxAPIUpload != 1<<20 {
+		t.Errorf("flags = %d, %d, %d, %v", cfg.maxPlayerUpload, cfg.maxGMUpload, cfg.maxAPIUpload, err)
+	}
+	t.Setenv("FUINGO_MAX_PLAYER_UPLOAD", "300")
+	t.Setenv("FUINGO_MAX_GM_UPLOAD", "400")
+	if cfg, err = loadConfig(base, io.Discard); err != nil || cfg.maxPlayerUpload != 300 || cfg.maxGMUpload != 400 || cfg.maxAPIUpload != 1<<20 {
+		t.Errorf("environment = %d, %d, %d, %v", cfg.maxPlayerUpload, cfg.maxGMUpload, cfg.maxAPIUpload, err)
+	}
+	for _, flag := range []string{"--max-player-upload", "--max-gm-upload"} {
+		for _, bad := range []string{"0", "-1"} {
+			if _, err := loadConfig(append(base, flag, bad), io.Discard); !errors.Is(err, ErrInvalidUploadLimit) {
+				t.Errorf("%s %s: %v, want ErrInvalidUploadLimit", flag, bad, err)
+			}
 		}
 	}
 }

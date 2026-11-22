@@ -7,6 +7,8 @@ that govern changing the server, see [AGENTS.md](AGENTS.md).
 The API is for **game masters (GMs)** and their tools. Today it lists the
 games an account manages, manages each game's players, creates, closes, and
 reopens its turns, and uploads, lists, downloads, and withdraws its files.
+Players have no routes here: they use the web pages, and what they upload
+there appears in these listings like any other file.
 
 ## Quick start
 
@@ -293,8 +295,9 @@ other games, are untouched.
 ## Turns
 
 A turn is a numbered step of a game. Turn 0 is the setup, and the numbers
-go up by one with no gaps. A turn is open when created; closing it will
-stop players uploading to it, and nothing else. Any number of turns may be
+go up by one with no gaps. A turn is open when created; closing it stops
+its players uploading to it and withdrawing from it on the web pages, and
+nothing else: a GM, and so every route here, is unaffected. Any number of turns may be
 open at once, so a GM can open later turns for a player who will be away.
 
 Only the game's GMs reach these routes. A player's account gets `404`.

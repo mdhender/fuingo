@@ -15,14 +15,14 @@ import (
 	"github.com/mdhender/fuingo/internal/server"
 )
 
-// The signed-in page loads the vendored HTMX and the pinned Tailwind.
+// A signed-in page loads the vendored HTMX and the pinned Tailwind.
 func TestHomePage(t *testing.T) {
 	t.Parallel()
 	f := newAccountFixture(t)
 	cookie := f.signIn(t, acct01.Email, acct01.Password, "")
-	w := f.get("/", cookie)
+	w := f.get(game01Path, cookie)
 	if w.Code != http.StatusOK {
-		t.Fatalf("GET /: %d", w.Code)
+		t.Fatalf("GET %s: %d", game01Path, w.Code)
 	}
 	if ct := w.Header().Get("Content-Type"); ct != "text/html; charset=utf-8" {
 		t.Errorf("Content-Type = %q", ct)
@@ -31,7 +31,7 @@ func TestHomePage(t *testing.T) {
 	for _, want := range []string{
 		`<script src="` + server.HTMXPath + `"></script>`,
 		`<script src="` + server.TailwindURL + `"></script>`,
-		`id="status"`,
+		`id="files-game"`,
 		acct01.Email,
 		`<form method="post" action="` + server.SignOutPath + `">`,
 	} {

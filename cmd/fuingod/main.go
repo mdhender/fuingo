@@ -3,7 +3,7 @@
 
 // Command fuingod is the Fuingo server.
 //
-//	fuingod [--env ENV] [--addr HOST:PORT] [--trusted-proxies LIST] [--max-api-upload BYTES] [--public-url URL] --db PATH
+//	fuingod [--env ENV] [--addr HOST:PORT] [--trusted-proxies LIST] [--max-api-upload BYTES] [--max-player-upload BYTES] [--max-gm-upload BYTES] [--public-url URL] --db PATH
 //
 // Every flag can also be set with a FUINGO_ environment variable. Explicit
 // flags override the environment, which overrides the defaults:
@@ -15,6 +15,10 @@
 //	        CIDR prefixes whose X-Forwarded-For is trusted (default loopback)
 //	--max-api-upload   FUINGO_MAX_API_UPLOAD   largest file accepted through /api/,
 //	        in bytes (default 1048576)
+//	--max-player-upload  FUINGO_MAX_PLAYER_UPLOAD  largest file a player may
+//	        upload on the web, in bytes (default 65536)
+//	--max-gm-upload    FUINGO_MAX_GM_UPLOAD    largest file a GM may upload on
+//	        the web, in bytes (default 1048576)
 //	--public-url       FUINGO_PUBLIC_URL       the server's public origin, such as
 //	        https://fuingo.example.com, for the links in mail (required except in
 //	        development and agent, where it is https://htmx-app.localhost:8443)
@@ -73,7 +77,7 @@ const (
 	ErrInvalidAddress     = cerrs.Error("invalid listen address")
 	ErrShutdownTimeout    = cerrs.Error("requests still running at the shutdown deadline were cut off")
 	ErrMissingPublicURL   = cerrs.Error("--public-url (FUINGO_PUBLIC_URL) is required")
-	ErrInvalidUploadLimit = cerrs.Error("--max-api-upload (FUINGO_MAX_API_UPLOAD) must be 1 or more")
+	ErrInvalidUploadLimit = cerrs.Error("an upload limit must be 1 or more")
 	ErrMemoryDatabase     = cerrs.Error(":memory: is allowed only in development and agent")
 	ErrMissingDatabase    = cerrs.Error("--db (FUINGO_DB) is required")
 )
@@ -114,7 +118,9 @@ type config struct {
 	trustedProxies string
 	proxies        []netip.Prefix
 
-	maxAPIUpload int64
+	maxAPIUpload    int64
+	maxPlayerUpload int64
+	maxGMUpload     int64
 
 	publicURL string
 	sender    mail.Sender
@@ -129,10 +135,12 @@ func loadConfig(args []string, stderr io.Writer) (config, error) {
 	fs.StringVar(&cfg.db, 0, "db", "", "existing database file, or :memory: in development and agent (FUINGO_DB)")
 	fs.StringVar(&cfg.trustedProxies, 0, "trusted-proxies", defaultTrustedProxies, "comma-separated proxy addresses and CIDR prefixes whose X-Forwarded-For is trusted; empty trusts none (FUINGO_TRUSTED_PROXIES)")
 	fs.Int64Var(&cfg.maxAPIUpload, 0, "max-api-upload", api.DefaultMaxUpload, "largest file accepted through /api/, in bytes (FUINGO_MAX_API_UPLOAD)")
+	fs.Int64Var(&cfg.maxPlayerUpload, 0, "max-player-upload", server.DefaultMaxPlayerUpload, "largest file a player may upload on the web, in bytes (FUINGO_MAX_PLAYER_UPLOAD)")
+	fs.Int64Var(&cfg.maxGMUpload, 0, "max-gm-upload", server.DefaultMaxGMUpload, "largest file a GM may upload on the web, in bytes (FUINGO_MAX_GM_UPLOAD)")
 	fs.StringVar(&cfg.publicURL, 0, "public-url", "", "the server's public origin, for the links in mail; required except in development and agent (FUINGO_PUBLIC_URL)")
 	cmd := &ff.Command{
 		Name:     "fuingod",
-		Usage:    "fuingod [--env ENV] [--addr HOST:PORT] [--trusted-proxies LIST] [--max-api-upload BYTES] [--public-url URL] --db PATH",
+		Usage:    "fuingod [--env ENV] [--addr HOST:PORT] [--trusted-proxies LIST] [--max-api-upload BYTES] [--max-player-upload BYTES] [--max-gm-upload BYTES] [--public-url URL] --db PATH",
 		LongHelp: "fuingod " + fuingo.Version().String(),
 		Flags:    fs,
 	}
@@ -153,8 +161,17 @@ func loadConfig(args []string, stderr io.Writer) (config, error) {
 	if cfg.proxies, err = clientip.ParsePrefixes(cfg.trustedProxies); err != nil {
 		return cfg, err
 	}
-	if cfg.maxAPIUpload < 1 {
-		return cfg, fmt.Errorf("%w: %d", ErrInvalidUploadLimit, cfg.maxAPIUpload)
+	for _, limit := range []struct {
+		flag  string
+		bytes int64
+	}{
+		{"--max-api-upload (FUINGO_MAX_API_UPLOAD)", cfg.maxAPIUpload},
+		{"--max-player-upload (FUINGO_MAX_PLAYER_UPLOAD)", cfg.maxPlayerUpload},
+		{"--max-gm-upload (FUINGO_MAX_GM_UPLOAD)", cfg.maxGMUpload},
+	} {
+		if limit.bytes < 1 {
+			return cfg, fmt.Errorf("%s: %w: %d", limit.flag, ErrInvalidUploadLimit, limit.bytes)
+		}
 	}
 	if cfg.publicURL == "" {
 		if cfg.publicURL = links.DefaultPublicURL(cfg.env); cfg.publicURL == "" {
@@ -216,9 +233,11 @@ func run(ctx context.Context, args []string, stderr io.Writer, ready func(net.Ad
 		Store:  s,
 		Logger: logger,
 
-		TrustedProxies: cfg.proxies,
-		MaxAPIUpload:   cfg.maxAPIUpload,
-		Links:          &links.Service{Store: s, Sender: cfg.sender, PublicURL: cfg.publicURL},
+		TrustedProxies:  cfg.proxies,
+		MaxAPIUpload:    cfg.maxAPIUpload,
+		MaxPlayerUpload: cfg.maxPlayerUpload,
+		MaxGMUpload:     cfg.maxGMUpload,
+		Links:           &links.Service{Store: s, Sender: cfg.sender, PublicURL: cfg.publicURL},
 	})
 	if err != nil {
 		return err

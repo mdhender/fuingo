@@ -1,0 +1,142 @@
+{{define "head"}}<!doctype html>
+<html lang="en" class="h-full bg-gray-50">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="htmx-config" content='{"responseHandling":[{"code":"204","swap":false},{"code":"[23]..","swap":true},{"code":"4(00|03|09|13)","swap":true,"error":true},{"code":"[45]..","swap":false,"error":true}]}'>
+  <title>{{.Title}} · Fuingo</title>
+  <script src="{{.HTMX}}"></script>
+  <script src="{{.Tailwind}}"></script>
+</head>
+<body class="h-full">
+  <header class="border-b border-gray-200 bg-white">
+    <div class="mx-auto flex max-w-3xl items-center justify-between px-4 py-3">
+      <a href="/" class="text-lg font-semibold tracking-tight text-gray-900">Fuingo</a>
+      <div class="flex items-center gap-4">
+        <span id="account" class="text-sm text-gray-600">{{.Email}}</span>
+        <form method="post" action="{{.SignOutPath}}">
+          <button type="submit" class="rounded-md bg-white px-3 py-1.5 text-sm font-semibold text-gray-900 ring-1 ring-gray-300 ring-inset hover:bg-gray-50">Sign out</button>
+        </form>
+      </div>
+    </div>
+  </header>
+  <main class="mx-auto max-w-3xl px-4 py-8">
+{{- if .Crumbs}}
+    <nav id="crumbs" aria-label="Breadcrumb" class="mb-6 text-sm text-gray-500">
+      <ol class="flex flex-wrap items-center gap-2">
+{{- range $i, $c := .Crumbs}}
+        {{if $i}}<li aria-hidden="true">/</li>{{end}}
+        <li>{{if $c.URL}}<a href="{{$c.URL}}" class="font-medium text-indigo-600 hover:text-indigo-500">{{$c.Name}}</a>{{else}}<span aria-current="page" class="font-medium text-gray-900">{{$c.Name}}</span>{{end}}</li>
+{{- end}}
+      </ol>
+    </nav>
+{{- end}}
+{{end}}
+
+{{define "foot"}}
+  </main>
+  <script>
+  // The drop zones. These checks are conveniences: the server enforces the
+  // rules. Messages go in the page, never in a browser dialog.
+  (function () {
+    function say(form, text) {
+      var m = form.querySelector('[data-message]');
+      m.textContent = text;
+      m.hidden = !text;
+    }
+    function offer(form) {
+      var input = form.querySelector('input[type=file]');
+      var file = input.files[0];
+      var problem = '';
+      if (!file) { return; }
+      if (!/^[A-Za-z0-9._-]{1,48}$/.test(file.name) || file.name[0] === '.' || file.name[file.name.length - 1] === '.') {
+        problem = '“' + file.name + '” was not sent: a file name must be 1 to 48 letters, digits, hyphens, underscores, or periods, with no spaces, and must not start or end with a period. Rename the file and try again.';
+      } else if (file.size === 0) {
+        problem = file.name + ' was not sent: it is empty.';
+      } else if (file.size > Number(form.dataset.max)) {
+        problem = file.name + ' was not sent: it is larger than the limit of ' + form.dataset.maxText + '.';
+      }
+      if (problem) {
+        input.value = '';
+        say(form, problem);
+        return;
+      }
+      say(form, '');
+      htmx.trigger(form, 'fuingo:send');
+    }
+    document.addEventListener('change', function (e) {
+      var form = e.target.closest && e.target.closest('form[data-drop]');
+      if (form) { offer(form); }
+    });
+    // A file dropped outside a zone must not replace the page.
+    document.addEventListener('dragover', function (e) {
+      e.preventDefault();
+      var form = e.target.closest && e.target.closest('form[data-drop]');
+      e.dataTransfer.dropEffect = form ? 'copy' : 'none';
+    });
+    document.addEventListener('drop', function (e) {
+      e.preventDefault();
+      var form = e.target.closest && e.target.closest('form[data-drop]');
+      if (!form) { return; }
+      if (e.dataTransfer.files.length !== 1) {
+        say(form, 'Drop one file at a time.');
+        return;
+      }
+      form.querySelector('input[type=file]').files = e.dataTransfer.files;
+      offer(form);
+    });
+    document.addEventListener('htmx:sendError', function (e) {
+      var form = e.target.closest && e.target.closest('form[data-drop]');
+      if (form) { say(form, 'The file could not be sent. Check your connection and try again.'); }
+    });
+  })();
+  </script>
+</body>
+</html>
+{{end}}
+
+{{define "folder"}}
+<section id="{{.ID}}" data-folder class="mt-8 rounded-lg border border-gray-200 bg-white p-4">
+  <h2 class="text-base font-semibold text-gray-900">{{.Title}}</h2>
+  <p class="text-xs text-gray-500">{{.Where}}</p>
+  {{with .Receipt}}<p data-receipt class="mt-3 rounded-md bg-green-50 p-3 text-sm text-green-800" role="status">Received <span class="font-semibold">{{.Name}}</span> ({{.Size}}) in <span class="font-semibold">{{$.Where}}</span> at {{.At}}.</p>{{end}}
+  {{with .Notice}}<p data-notice class="mt-3 rounded-md bg-green-50 p-3 text-sm text-green-800" role="status">{{.}}</p>{{end}}
+  {{with .Error}}<p data-error class="mt-3 rounded-md bg-red-50 p-3 text-sm text-red-800" role="alert">{{.}}</p>{{end}}
+{{- if .Files}}
+  <table class="mt-3 w-full text-left text-sm">
+    <thead class="text-xs text-gray-500">
+      <tr><th class="py-1 font-medium">File</th><th class="py-1 font-medium">Size</th><th class="py-1 font-medium">From</th><th class="py-1 font-medium">Arrived</th><th class="py-1"></th></tr>
+    </thead>
+    <tbody class="divide-y divide-gray-100">
+{{- range .Files}}
+      <tr{{if .WithdrawnAt}} data-withdrawn class="text-gray-400"{{end}}>
+        <td class="py-2"><a href="{{.DownloadURL}}" download class="font-medium {{if .WithdrawnAt}}line-through{{else}}text-indigo-600 hover:text-indigo-500{{end}}">{{.Name}}</a></td>
+        <td class="py-2">{{.Size}}</td>
+        <td class="py-2">{{.By}}</td>
+        <td class="py-2">{{.At}}</td>
+        <td class="py-2 text-right">
+          {{- if .WithdrawnAt}}withdrawn {{.WithdrawnAt}}
+          {{- else if .WithdrawURL}}<form method="post" action="{{.WithdrawURL}}" hx-post="{{.WithdrawURL}}" hx-target="closest [data-folder]" hx-swap="outerHTML"><button type="submit" class="text-sm font-medium text-red-700 hover:text-red-600">Withdraw</button></form>
+          {{- end}}</td>
+      </tr>
+{{- end}}
+    </tbody>
+  </table>
+{{- else}}
+  <p data-empty class="mt-3 text-sm text-gray-500">No files.</p>
+{{- end}}
+{{- if .UploadURL}}
+  <form data-drop data-max="{{.MaxBytes}}" data-max-text="{{.MaxText}}" hx-post="{{.UploadURL}}" hx-encoding="multipart/form-data" hx-trigger="fuingo:send" hx-target="closest [data-folder]" hx-swap="outerHTML" class="mt-4">
+    <label class="block cursor-pointer rounded-lg border-2 border-dashed border-gray-300 p-6 text-center hover:border-indigo-400">
+      <input type="file" name="file" class="sr-only">
+      <span class="block text-sm font-semibold text-gray-900">Drop a file here, or click to choose one</span>
+      <span class="mt-1 block text-sm text-gray-600">It goes to <span class="font-semibold">{{.Where}}</span> as soon as you choose it.</span>
+      <span class="mt-1 block text-xs text-gray-500">A text file of up to {{.MaxText}}. Sending another file does not replace this one.</span>
+    </label>
+    <p data-message class="mt-3 rounded-md bg-red-50 p-3 text-sm text-red-800" role="alert" hidden></p>
+  </form>
+{{- else if .ClosedTo}}
+  <p data-closed class="mt-4 rounded-md bg-yellow-50 p-3 text-sm text-yellow-800">This turn is closed, so your folder takes no more files and none can be withdrawn.</p>
+{{- end}}
+</section>
+{{end}}

@@ -52,8 +52,17 @@ The user agreed this design on 2026-11-22, and it is being built in the steps th
   Sessions are rows of `web_sessions`, deleted when signed out, expired, or ended by a password reset.
   An inactive account's session is refused but kept, so it works again if the account is enabled before it expires.
   The failure limit is one limiter shared by `/sign-in` and `/api/login`.
-- Not built: anything for players (their uploads, withdrawals, and the two web size limits), the pages for systems, games, turns, and files, and system-level files.
-  Closing a turn has no effect yet, because only players are stopped by it.
+- The pages, built on 2026-11-22: `/` (the account's games, or its only game), `/systems/{system}`, the game's page, a turn's page, a player's folder, the download of a file, and a GM's page of players.
+  They are in `internal/server`: `files.go` (folders, uploads, downloads, withdrawals) and `browse.go` (the pages, and a GM's changes to turns and players).
+  A page's paths mirror the `/api/` ones without the `/api` prefix; a file downloads at `.../uploads/{id}`.
+  A folder is one template, `folder`, which is also the fragment HTMX swaps in after an upload or a withdrawal; a request without `HX-Request` is redirected to the folder's page instead.
+  A player's own folder is part of the turn's page.
+  An upload is a `multipart/form-data` post of one part named `file`, whose file name is the upload's name.
+  The limits are `--max-player-upload` (`FUINGO_MAX_PLAYER_UPLOAD`) and `--max-gm-upload` (`FUINGO_MAX_GM_UPLOAD`).
+  A closed turn refuses a player's upload and withdrawal with `409`, checked inside the transaction that would store them.
+  A player is shown "you" or "the GM" as a file's uploader, never the GM's email.
+  A signed-out HTMX request gets `401` with `HX-Redirect`; anything unreachable gets `404` with `HX-Refresh`.
+- Not built: system-level files, normalized downloads, and a way back to the page a signed-out visitor asked for.
 - Migration 3 moved the games of a database made under the previous design into a system named `legacy` and dropped its stored uploads.
 - No deployment holds live data.
   The server called production is a test server, so no step needs a cutover.
@@ -224,7 +233,7 @@ Olympia / G3 / 1 / 5    player 5's folder in turn 1
 - `internal/devdata` holds the default system, games, players, and accounts; `internal/cli` holds the flag and environment-file parsing shared by the commands.
 - `internal/clientip` finds the client's address behind trusted proxies; `internal/ratelimit` limits failures per client.
   Both carry over to sign-in unchanged.
-- `internal/server` assembles the routes (the page at `/` and the sign-in and sign-out routes in `session.go`, the account pages `/account/password` and `/account/reset` in `account.go`, the vendored HTMX under `/static/`, the `/api/` routes, and the development/agent helpers) behind `http.NewCrossOriginProtection`.
+- `internal/server` assembles the routes (the sign-in and sign-out routes in `session.go`, the signed-in pages in `files.go` and `browse.go`, the account pages `/account/password` and `/account/reset` in `account.go`, the vendored HTMX under `/static/`, the `/api/` routes, and the development/agent helpers) behind `http.NewCrossOriginProtection`.
   HTMX 2.0.11 is vendored as `internal/server/static/htmx-2.0.11.min.js`.
 - `internal/api` is the `/api/` handler.
 - `internal/mail` sends mail through Mailgun, and reads its settings from the environment; `internal/mail/mailtest` records mail for tests.

@@ -11,9 +11,8 @@
 //	--env  FUINGO_ENV  development, test, production, or agent (required)
 //	--db   FUINGO_DB   path to the database file (required; :memory: is refused)
 //
-// create also requires FUINGO_PEPPER. In development and agent, it seeds the
-// new database with the default games, upload accounts, and API accounts in
-// TESTING.md.
+// In development and agent, create seeds the new database with the default
+// system, games, players, and accounts in TESTING.md.
 package main
 
 import (
@@ -105,17 +104,13 @@ func createDatabase(ctx context.Context, stdout io.Writer, env, db string) (err 
 	if err := checkDatabasePath(db); err != nil {
 		return err
 	}
-	pepper, err := cli.Pepper()
-	if err != nil {
-		return err
-	}
 	s, err := store.Create(ctx, db)
 	if err != nil {
 		return err
 	}
 	defer func() { err = errors.Join(err, s.Close()) }()
 	if devdata.Allowed(env) {
-		if err := devdata.Seed(ctx, s, env, pepper); err != nil {
+		if err := devdata.Seed(ctx, s, env); err != nil {
 			// The database was made by this call; do not leave it unseeded.
 			err = errors.Join(err, s.Close())
 			for _, name := range []string{db, db + "-wal", db + "-shm"} {

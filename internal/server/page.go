@@ -30,7 +30,7 @@ var pageTemplates = template.Must(template.ParseFS(templates, "templates/*.html"
 // startTime is the modification time reported for embedded files.
 var startTime = time.Now()
 
-// servePage returns a handler for the upload page in the named template.
+// servePage returns a handler for the page in the named template.
 func servePage(name string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var buf bytes.Buffer

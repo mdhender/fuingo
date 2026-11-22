@@ -216,12 +216,12 @@ func TestPrivateMemoryIsIsolated(t *testing.T) {
 	}
 	defer b.Close()
 	checkPoolInvariants(t, a, 1, "memory")
-	exec(t, a, "INSERT INTO games (code) VALUES ('game01');")
-	if n := countGames(t, a); n != 1 {
-		t.Errorf("a has %d games, want 1", n)
+	exec(t, a, "INSERT INTO systems (code) VALUES ('system01');")
+	if n := countSystems(t, a); n != 1 {
+		t.Errorf("a has %d systems, want 1", n)
 	}
-	if n := countGames(t, b); n != 0 {
-		t.Errorf("b has %d games, want 0", n)
+	if n := countSystems(t, b); n != 0 {
+		t.Errorf("b has %d systems, want 0", n)
 	}
 }
 
@@ -240,17 +240,17 @@ func TestSharedMemory(t *testing.T) {
 		t.Fatalf("OpenSharedMemory: %v", err)
 	}
 	checkPoolInvariants(t, b, 3, "memory")
-	exec(t, a, "INSERT INTO games (code) VALUES ('game01');")
-	if n := countGames(t, b); n != 1 {
-		t.Errorf("b has %d games, want 1", n)
+	exec(t, a, "INSERT INTO systems (code) VALUES ('system01');")
+	if n := countSystems(t, b); n != 1 {
+		t.Errorf("b has %d systems, want 1", n)
 	}
 
 	// The database outlives a's pool while b still holds it.
 	if err := a.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if n := countGames(t, b); n != 1 {
-		t.Errorf("after closing a, b has %d games, want 1", n)
+	if n := countSystems(t, b); n != 1 {
+		t.Errorf("after closing a, b has %d systems, want 1", n)
 	}
 	if err := b.Close(); err != nil {
 		t.Fatal(err)
@@ -293,10 +293,10 @@ func TestParallelPrivateMemoryIsolation(t *testing.T) {
 			}
 			defer s.Close()
 			for range i + 1 {
-				exec(t, s, "INSERT INTO games (code) VALUES (hex(randomblob(8)));")
+				exec(t, s, "INSERT INTO systems (code) VALUES (hex(randomblob(8)));")
 			}
-			if n := countGames(t, s); n != i+1 {
-				t.Errorf("%d games, want %d", n, i+1)
+			if n := countSystems(t, s); n != i+1 {
+				t.Errorf("%d systems, want %d", n, i+1)
 			}
 		})
 	}
@@ -326,7 +326,7 @@ func checkPoolInvariants(t *testing.T, s *Store, n int, journalMode string) {
 		if fk, err := pragmaText(conn, "PRAGMA foreign_keys;"); err != nil || fk != "1" {
 			t.Errorf("conn %d: foreign_keys = %q, %v; want 1", i, fk, err)
 		}
-		err := sqlitex.ExecuteTransient(conn, "INSERT INTO game_uploaders (game_id, account_id, hashed_credentials) VALUES (-1, -1, x'00');", nil)
+		err := sqlitex.ExecuteTransient(conn, "INSERT INTO game_players (game_id, account_id) VALUES (-1, -1);", nil)
 		if sqlite.ErrCode(err) != sqlite.ResultConstraintForeignKey {
 			t.Errorf("conn %d: insert with unknown game = %v, want foreign key error", i, err)
 		}
@@ -345,14 +345,14 @@ func exec(t *testing.T, s *Store, query string) {
 	}
 }
 
-func countGames(t *testing.T, s *Store) int {
+func countSystems(t *testing.T, s *Store) int {
 	t.Helper()
 	conn, err := s.take(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer s.pool.Put(conn)
-	n, err := sqlitex.ResultInt(conn.Prep("SELECT count(*) FROM games;"))
+	n, err := sqlitex.ResultInt(conn.Prep("SELECT count(*) FROM systems;"))
 	if err != nil {
 		t.Fatal(err)
 	}

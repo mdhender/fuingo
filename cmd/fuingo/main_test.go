@@ -9,14 +9,13 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
 
-	"github.com/google/uuid"
 	"github.com/mdhender/fuingo"
-	"github.com/mdhender/fuingo/internal/cli"
-	"github.com/mdhender/fuingo/internal/credential"
+	"github.com/mdhender/fuingo/internal/names"
 	"github.com/mdhender/fuingo/internal/store"
 	"golang.org/x/crypto/bcrypt"
 	"zombiezen.com/go/sqlite"
@@ -26,7 +25,7 @@ import (
 // clearEnv keeps the developer's environment out of the test.
 func clearEnv(t *testing.T) {
 	t.Helper()
-	for _, key := range []string{"FUINGO_ENV", "FUINGO_DB", "FUINGO_PEPPER", "FUINGO_SCHEMA", "FUINGO_TOKEN", "FUINGO_GENERATE_PASSWORD", "FUINGO_MANAGER", "FUINGO_UPLOADER", "FUINGO_CODE"} {
+	for _, key := range []string{"FUINGO_ENV", "FUINGO_DB", "FUINGO_SCHEMA", "FUINGO_GENERATE_PASSWORD", "FUINGO_MANAGER", "FUINGO_PLAYER", "FUINGO_SYSTEM", "FUINGO_CODE"} {
 		t.Setenv(key, "")
 		os.Unsetenv(key)
 	}
@@ -188,117 +187,453 @@ func TestSchemaVersionRequiresEnvironment(t *testing.T) {
 	}
 }
 
-// games returns the codes of the games in the database at path.
-func games(t *testing.T, path string) []string {
+// Games used throughout the tests.
+var (
+	game01 = store.GameRef{System: "system01", Code: "game01"}
+	game02 = store.GameRef{System: "system01", Code: "game02"}
+)
+
+// open opens the database at path for the test.
+func open(t *testing.T, path string) *store.Store {
 	t.Helper()
 	s, err := store.Open(t.Context(), path)
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
 	}
-	defer s.Close()
-	codes, err := s.Games(t.Context())
+	t.Cleanup(func() { s.Close() })
+	return s
+}
+
+// systems returns the codes of the systems in the database at path.
+func systems(t *testing.T, path string) []string {
+	t.Helper()
+	got, err := open(t, path).Systems(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
-	return codes
+	return got
+}
+
+// games returns the games in the database at path, as system/code.
+func games(t *testing.T, path string) []string {
+	t.Helper()
+	refs, err := open(t, path).Games(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, g := range refs {
+		got = append(got, g.String())
+	}
+	return got
+}
+
+// managers returns the emails of the game's active managers.
+func managers(t *testing.T, path string, game store.GameRef) []string {
+	t.Helper()
+	got, err := open(t, path).Managers(t.Context(), game)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return got
+}
+
+// players returns the emails of the game's active players.
+func players(t *testing.T, path string, game store.GameRef) []string {
+	t.Helper()
+	got, err := open(t, path).Players(t.Context(), game)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return got
+}
+
+// mustRun runs the command and checks what it printed.
+func mustRun(t *testing.T, want string, args ...string) {
+	t.Helper()
+	out, err := runCommand(t, args...)
+	if err != nil {
+		t.Fatalf("%q: %v\n%s", args, err, out)
+	}
+	if out != want {
+		t.Errorf("%q printed %q, want %q", args, out, want)
+	}
+}
+
+// createDatabaseWithGames makes a current database holding system01 and
+// system02, game01 and game02 in system01, and the given accounts.
+func createDatabaseWithGames(t *testing.T, emails ...string) string {
+	t.Helper()
+	path := createDatabase(t)
+	rows := store.Rows{Systems: []string{"system01", "system02"}, Games: []store.GameRef{game01, game02}}
+	for _, email := range emails {
+		rows.Accounts = append(rows.Accounts, store.NewAccount{Email: email, HashedSecret: []byte("hash")})
+	}
+	if err := open(t, path).CreateRows(t.Context(), rows); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// toggleFixture makes a database with game01 and game02 in system01, players
+// catbird and spoonbill in game01, and account acct01 managing both games.
+func toggleFixture(t *testing.T) string {
+	t.Helper()
+	path := createDatabaseWithGames(t, "acct01@example.com")
+	if err := open(t, path).CreateRows(t.Context(), store.Rows{
+		Players:  []store.Member{{Game: game01, Email: "catbird@example.com"}, {Game: game01, Email: "spoonbill@example.com"}},
+		Managers: []store.Member{{Game: game01, Email: "acct01@example.com"}, {Game: game02, Email: "acct01@example.com"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestSystemCreate(t *testing.T) {
+	clearEnv(t)
+	path := createDatabase(t)
+	mustRun(t, "created system olympia (id 1)\n", "--env", "test", "--db", path, "system", "create", "Olympia")
+	mustRun(t, "created system atlantis (id 2)\n", "--env", "test", "--db", path, "system", "create", "atlantis")
+	if got := systems(t, path); !slices.Equal(got, []string{"olympia", "atlantis"}) {
+		t.Errorf("systems = %v", got)
+	}
+	for _, tc := range []struct {
+		args []string
+		want error
+	}{
+		{[]string{"OLYMPIA"}, store.ErrSystemExists},
+		{[]string{}, ErrUsage},
+		{[]string{"a", "b"}, ErrUsage},
+	} {
+		args := append([]string{"--env", "test", "--db", path, "system", "create"}, tc.args...)
+		if out, err := runCommand(t, args...); !errors.Is(err, tc.want) {
+			t.Errorf("%q: err = %v, want %v\n%s", args, err, tc.want, out)
+		}
+	}
+	if got := systems(t, path); len(got) != 2 {
+		t.Errorf("a refused command changed the systems to %v", got)
+	}
+}
+
+// invalidCodes are refused as the code of a system or a game.
+var invalidCodes = []string{
+	"a b", " ab", "ab ", "a\tb", "a/b", "a\\b", "a<b", "a>b", "a&b", "a;b", "a'b", "a\"b", "a`b", "a.b", "a\x00b",
+	strings.Repeat("a", 33), strings.Repeat("é", 33),
+}
+
+func TestCodes(t *testing.T) {
+	clearEnv(t)
+	path := createDatabase(t)
+	// 32 characters, counted in characters and not bytes; letters of any
+	// script, digits, hyphens, and underscores.
+	for _, code := range []string{strings.Repeat("a", 32), strings.Repeat("é", 32), "été-2_ω", "Ωmega"} {
+		lower := strings.ToLower(code)
+		out, err := runCommand(t, "--env", "test", "--db", path, "system", "create", code)
+		if err != nil || !strings.HasPrefix(out, "created system "+lower+" ") {
+			t.Errorf("system create %q: %q, %v", code, out, err)
+		}
+		out, err = runCommand(t, "--env", "test", "--db", path, "game", "create", "--system", code, code)
+		if err != nil || !strings.HasPrefix(out, "created game "+lower+"/"+lower+" ") {
+			t.Errorf("game create %q: %q, %v", code, out, err)
+		}
+	}
+	mustRun(t, "created system system01 (id 5)\n", "--env", "test", "--db", path, "system", "create", "system01")
+	before := games(t, path)
+	for _, code := range invalidCodes {
+		if out, err := runCommand(t, "--env", "test", "--db", path, "system", "create", code); !errors.Is(err, names.ErrCode) {
+			t.Errorf("system create %q: err = %v, want ErrCode\n%s", code, err, out)
+		}
+		if out, err := runCommand(t, "--env", "test", "--db", path, "game", "create", "--system", "system01", code); !errors.Is(err, names.ErrCode) {
+			t.Errorf("game create %q: err = %v, want ErrCode\n%s", code, err, out)
+		}
+		if out, err := runCommand(t, "--env", "test", "--db", path, "game", "create", "--system", code, "game01"); !errors.Is(err, names.ErrCode) {
+			t.Errorf("game create --system %q: err = %v, want ErrCode\n%s", code, err, out)
+		}
+	}
+	if got := systems(t, path); len(got) != 5 {
+		t.Errorf("a refused command changed the systems to %v", got)
+	}
+	if got := games(t, path); !slices.Equal(got, before) {
+		t.Errorf("a refused command changed the games to %v", got)
+	}
 }
 
 func TestGameCreate(t *testing.T) {
 	clearEnv(t)
 	path := createDatabase(t)
-	out, err := runCommand(t, "--env", "test", "--db", path, "game", "create", "Game-01")
-	if err != nil {
-		t.Fatalf("game create: %v\n%s", err, out)
+	mustRun(t, "created system olympia (id 1)\n", "--env", "test", "--db", path, "system", "create", "olympia")
+	mustRun(t, "created system atlantis (id 2)\n", "--env", "test", "--db", path, "system", "create", "atlantis")
+	mustRun(t, "created game olympia/g3 (id 1)\n", "--env", "test", "--db", path, "game", "create", "--system", "Olympia", "G3")
+	// A code is unique within its system, not across systems.
+	mustRun(t, "created game atlantis/g3 (id 2)\n", "--env", "test", "--db", path, "game", "create", "--system", "atlantis", "g3")
+	mustRun(t, "created game olympia/g4 (id 3)\n", "--db", path, "--env", "test", "game", "create", "--system", "olympia", "g4")
+	for _, tc := range []struct {
+		args []string
+		want error
+	}{
+		{[]string{"--system", "olympia", "G3"}, store.ErrGameExists},
+		{[]string{"--system", "nowhere", "g3"}, store.ErrUnknownSystem},
+		{[]string{"g5"}, ErrMissingSystem},
+		{[]string{"--system", "olympia"}, ErrUsage},
+		{[]string{"--system", "olympia", "g5", "g6"}, ErrUsage},
+	} {
+		args := append([]string{"--env", "test", "--db", path, "game", "create"}, tc.args...)
+		if out, err := runCommand(t, args...); !errors.Is(err, tc.want) {
+			t.Errorf("%q: err = %v, want %v\n%s", args, err, tc.want, out)
+		}
 	}
-	if want := "created game game-01 (id 1)\n"; out != want {
-		t.Errorf("game create printed %q, want %q", out, want)
+	if got := games(t, path); !slices.Equal(got, []string{"olympia/g3", "atlantis/g3", "olympia/g4"}) {
+		t.Errorf("games = %v", got)
 	}
-	if got := games(t, path); len(got) != 1 || got[0] != "game-01" {
-		t.Errorf("games = %q, want [game-01]", got)
+	// A new game is active: a player added to it is an active player.
+	mustRun(t, "added player wren@example.com to game olympia/g3 (id 1)\n", "--env", "test", "--db", path, "game", "add", "--player", "wren@example.com", "--system", "olympia", "--code", "g3")
+	if got := players(t, path, store.GameRef{System: "olympia", Code: "g3"}); len(got) != 1 {
+		t.Errorf("players of a new game = %v", got)
 	}
 }
 
-func TestGameCreateRefusesExistingCode(t *testing.T) {
+func TestCommandsRefuseOtherSchemaVersions(t *testing.T) {
 	clearEnv(t)
-	path := createDatabase(t)
-	if out, err := runCommand(t, "--env", "test", "--db", path, "game", "create", "game01"); err != nil {
-		t.Fatalf("game create: %v\n%s", err, out)
-	}
-	for _, code := range []string{"game01", "GAME01"} {
-		out, err := runCommand(t, "--env", "test", "--db", path, "game", "create", code)
-		if !errors.Is(err, store.ErrGameExists) {
-			t.Errorf("game create %s: err = %v, want ErrGameExists\n%s", code, err, out)
+	for _, version := range []int{store.CurrentSchemaVersion() - 1, store.CurrentSchemaVersion() + 1} {
+		path := createDatabase(t)
+		setSchemaVersion(t, path, version)
+		for _, args := range [][]string{
+			{"system", "create", "system01"},
+			{"game", "create", "--system", "system01", "game01"},
+		} {
+			if out, err := runCommand(t, append([]string{"--env", "test", "--db", path}, args...)...); err == nil {
+				t.Errorf("schema %d: %q succeeded\n%s", version, args, out)
+			}
 		}
-	}
-	if got := games(t, path); len(got) != 1 {
-		t.Errorf("games = %q, want only game01", got)
 	}
 }
 
-func TestGameCreateRefusesInvalidCodes(t *testing.T) {
+func TestGameAddManager(t *testing.T) {
 	clearEnv(t)
-	path := createDatabase(t)
-	for _, code := range []string{"", " ", "game 01", "game\t01", "game\x7f", "game\x1f", "gämé"} {
-		out, err := runCommand(t, "--env", "test", "--db", path, "game", "create", code)
-		if !errors.Is(err, ErrGameCode) {
-			t.Errorf("game create %q: err = %v, want ErrGameCode\n%s", code, err, out)
+	path := createDatabaseWithGames(t, "acct01@example.com", "acct02@example.com")
+	base := []string{"--env", "test", "--db", path, "game", "add"}
+	mustRun(t, "added manager acct01@example.com to game system01/game01\n", append(base, "--manager", "ACCT01@example.com", "--system", "SYSTEM01", "--code", "GAME01")...)
+	mustRun(t, "added manager acct02@example.com to game system01/game01\n", append(base, "--code", "game01", "--system", "system01", "--manager", "acct02@example.com")...)
+	mustRun(t, "added manager acct01@example.com to game system01/game02\n", append(base, "--manager", "acct01@example.com", "--system", "system01", "--code", "game02")...)
+	if got := managers(t, path, game01); !slices.Equal(got, []string{"acct01@example.com", "acct02@example.com"}) {
+		t.Errorf("managers of game01 = %v", got)
+	}
+	if got := managers(t, path, game02); !slices.Equal(got, []string{"acct01@example.com"}) {
+		t.Errorf("managers of game02 = %v", got)
+	}
+	for _, tc := range []struct {
+		args []string
+		want error
+	}{
+		{[]string{"--manager", "acct01@example.com", "--system", "system01", "--code", "game01"}, store.ErrManagerExists},
+		{[]string{"--manager", "acct01@example.com", "--system", "system01", "--code", "game99"}, store.ErrUnknownGame},
+		{[]string{"--manager", "acct01@example.com", "--system", "system02", "--code", "game01"}, store.ErrUnknownGame},
+		{[]string{"--manager", "missing@example.com", "--system", "system01", "--code", "game01"}, store.ErrUnknownAccount},
+		{[]string{"--manager", "acct 01@example.com", "--system", "system01", "--code", "game01"}, names.ErrEmail},
+		{[]string{"--manager", "acct01@example.com", "--system", "system01", "--code", "game 01"}, names.ErrCode},
+		{[]string{"--manager", "acct01@example.com", "--system", "system01"}, ErrMissingCode},
+		{[]string{"--manager", "acct01@example.com", "--code", "game01"}, ErrMissingSystem},
+		{[]string{"--system", "system01", "--code", "game01"}, ErrAddWhat},
+		{[]string{"--manager", "acct01@example.com", "--player", "p@example.com", "--system", "system01", "--code", "game01"}, ErrAddWhat},
+		{[]string{"--manager", "acct01@example.com", "--system", "system01", "--code", "game01", "extra"}, ErrUsage},
+	} {
+		if out, err := runCommand(t, append(base, tc.args...)...); !errors.Is(err, tc.want) {
+			t.Errorf("game add %q: err = %v, want %v\n%s", tc.args, err, tc.want, out)
 		}
 	}
-	for _, args := range [][]string{{}, {"game01", "game02"}} {
-		out, err := runCommand(t, append([]string{"--env", "test", "--db", path, "game", "create"}, args...)...)
-		if !errors.Is(err, ErrUsage) {
-			t.Errorf("game create %q: err = %v, want ErrUsage\n%s", args, err, out)
-		}
+	// A manager must already have an account; none was made.
+	if _, ok := account(t, path, "missing@example.com"); ok {
+		t.Error("game add --manager made an account")
 	}
-	if got := games(t, path); len(got) != 0 {
-		t.Errorf("games = %q, want none", got)
+	if got := managers(t, path, game01); len(got) != 2 {
+		t.Errorf("a refused command changed the managers to %v", got)
 	}
 }
 
-func TestGameCreateRefusesOtherSchemaVersions(t *testing.T) {
+func TestGameAddPlayer(t *testing.T) {
 	clearEnv(t)
-	path := createDatabase(t)
-	setSchemaVersion(t, path, store.CurrentSchemaVersion()-1)
-	out, err := runCommand(t, "--env", "test", "--db", path, "game", "create", "game01")
-	if !errors.Is(err, store.ErrOutdatedSchema) {
-		t.Errorf("err = %v, want ErrOutdatedSchema\n%s", err, out)
+	path := createDatabaseWithGames(t, "acct01@example.com")
+	base := []string{"--env", "test", "--db", path, "game", "add"}
+	mustRun(t, "added player catbird@example.com to game system01/game01 (id 1)\n", append(base, "--player", "Catbird@Example.com", "--system", "System01", "--code", "Game01")...)
+	// The account is new and has no password.
+	if a, ok := account(t, path, "catbird@example.com"); !ok || a.HashedSecret != nil || !a.Active {
+		t.Errorf("account = %+v, %v; want an active one without a password", a, ok)
 	}
-}
-
-const pepper = "test-pepper"
-
-// createDatabaseWithGames makes a current database holding the given games.
-func createDatabaseWithGames(t *testing.T, codes ...string) string {
-	t.Helper()
-	path := createDatabase(t)
-	for _, code := range codes {
-		if out, err := runCommand(t, "--env", "test", "--db", path, "game", "create", code); err != nil {
-			t.Fatalf("game create %s: %v\n%s", code, err, out)
+	// The same account is a different player in another game.
+	mustRun(t, "added player catbird@example.com to game system01/game02 (id 2)\n", append(base, "--player", "catbird@example.com", "--system", "system01", "--code", "game02")...)
+	// An account with a password keeps it.
+	mustRun(t, "added player acct01@example.com to game system01/game01 (id 3)\n", append(base, "--player", "acct01@example.com", "--system", "system01", "--code", "game01")...)
+	if a, _ := account(t, path, "acct01@example.com"); string(a.HashedSecret) != "hash" {
+		t.Errorf("game add --player changed the password hash to %q", a.HashedSecret)
+	}
+	if got := players(t, path, game01); !slices.Equal(got, []string{"acct01@example.com", "catbird@example.com"}) {
+		t.Errorf("players of game01 = %v", got)
+	}
+	for _, tc := range []struct {
+		args []string
+		want error
+	}{
+		{[]string{"--player", "CATBIRD@example.com", "--system", "system01", "--code", "game01"}, store.ErrPlayerExists},
+		{[]string{"--player", "wren@example.com", "--system", "system01", "--code", "game99"}, store.ErrUnknownGame},
+		{[]string{"--player", "wren@example.com", "--system", "system02", "--code", "game01"}, store.ErrUnknownGame},
+		{[]string{"--player", "wr en@example.com", "--system", "system01", "--code", "game01"}, names.ErrEmail},
+		{[]string{"--player", "wren@example.com", "--system", "system01"}, ErrMissingCode},
+		{[]string{"--player", "wren@example.com", "--code", "game01"}, ErrMissingSystem},
+		{[]string{"--player", "wren@example.com", "--system", "system01", "--code", "game01", "extra"}, ErrUsage},
+	} {
+		if out, err := runCommand(t, append(base, tc.args...)...); !errors.Is(err, tc.want) {
+			t.Errorf("game add %q: err = %v, want %v\n%s", tc.args, err, tc.want, out)
 		}
 	}
-	return path
+	if _, ok := account(t, path, "wren@example.com"); ok {
+		t.Error("a refused game add --player made an account")
+	}
+	// The previous design's flags are gone.
+	for _, flag := range []string{"--uploader", "--token"} {
+		if out, err := runCommand(t, append(base, flag, "wren@example.com", "--system", "system01", "--code", "game01")...); err == nil {
+			t.Errorf("game add %s succeeded\n%s", flag, out)
+		}
+	}
 }
 
-// uploaderExists reports whether the database accepts the credentials.
-func uploaderExists(t *testing.T, path, game, email, token string) bool {
-	t.Helper()
-	s, err := store.Open(t.Context(), path)
-	if err != nil {
-		t.Fatalf("store.Open: %v", err)
+// Flags that name what a command acts on are honored only on the command
+// line.
+func TestGameFlagsIgnoreEnvironmentVariables(t *testing.T) {
+	clearEnv(t)
+	path := toggleFixture(t)
+	t.Setenv("FUINGO_MANAGER", "acct01@example.com")
+	t.Setenv("FUINGO_PLAYER", "catbird@example.com")
+	t.Setenv("FUINGO_SYSTEM", "system01")
+	t.Setenv("FUINGO_CODE", "game01")
+	base := []string{"--env", "test", "--db", path, "game"}
+	for _, tc := range []struct {
+		args []string
+		want error
+	}{
+		{[]string{"add"}, ErrAddWhat},
+		{[]string{"add", "--player", "wren@example.com"}, ErrMissingSystem},
+		{[]string{"add", "--player", "wren@example.com", "--system", "system01"}, ErrMissingCode},
+		{[]string{"disable"}, ErrMissingSystem},
+		{[]string{"disable", "--system", "system01"}, ErrMissingCode},
+		{[]string{"create", "game03"}, ErrMissingSystem},
+	} {
+		if out, err := runCommand(t, append(base, tc.args...)...); !errors.Is(err, tc.want) {
+			t.Errorf("game %q: err = %v, want %v\n%s", tc.args, err, tc.want, out)
+		}
 	}
-	defer s.Close()
-	gameID, ok, err := s.GameID(t.Context(), game)
-	if err != nil || !ok {
-		t.Fatalf("GameID(%s) = %v, %v", game, ok, err)
+	// With the game named on the command line, the environment's player and
+	// manager are ignored: the game itself is disabled.
+	mustRun(t, "disabled game system01/game02\n", append(base, "disable", "--system", "system01", "--code", "game02")...)
+	if got := players(t, path, game01); len(got) != 2 {
+		t.Errorf("players of game01 = %v, want both", got)
 	}
-	_, ok, err = s.FindUploader(t.Context(), credential.Hash(pepper, email, gameID, token))
-	if err != nil {
-		t.Fatal(err)
+	if got := managers(t, path, game01); len(got) != 1 {
+		t.Errorf("managers of game01 = %v, want acct01", got)
 	}
-	return ok
 }
 
-// account returns the API account with the given email.
+func TestGameDisableEnableGame(t *testing.T) {
+	clearEnv(t)
+	path := toggleFixture(t)
+	base := []string{"--env", "test", "--db", path, "game"}
+	for range 2 { // disabling twice succeeds
+		mustRun(t, "disabled game system01/game01\n", append(base, "disable", "--system", "SYSTEM01", "--code", "GAME01")...)
+	}
+	if got := players(t, path, game01); len(got) != 0 {
+		t.Errorf("an inactive game has players: %v", got)
+	}
+	// Its managers still manage it.
+	if got := managers(t, path, game01); len(got) != 1 {
+		t.Errorf("managers of an inactive game = %v", got)
+	}
+	mustRun(t, "enabled game system01/game01\n", append(base, "enable", "--system", "system01", "--code", "game01")...)
+	if got := players(t, path, game01); len(got) != 2 {
+		t.Errorf("a re-enabled game has players %v", got)
+	}
+}
+
+func TestGameDisableEnablePlayer(t *testing.T) {
+	clearEnv(t)
+	path := toggleFixture(t)
+	base := []string{"--env", "test", "--db", path, "game"}
+	target := []string{"--player", "CATBIRD@example.com", "--system", "system01", "--code", "game01"}
+	for range 2 {
+		mustRun(t, "disabled player catbird@example.com in game system01/game01\n", append(append(base, "disable"), target...)...)
+	}
+	if got := players(t, path, game01); !slices.Equal(got, []string{"spoonbill@example.com"}) {
+		t.Errorf("players after disabling catbird = %v", got)
+	}
+	if a, _ := account(t, path, "catbird@example.com"); !a.Active {
+		t.Error("disabling a player disabled its account")
+	}
+	mustRun(t, "enabled player catbird@example.com in game system01/game01\n", append(append(base, "enable"), target...)...)
+	if got := players(t, path, game01); len(got) != 2 {
+		t.Errorf("players after enabling catbird = %v", got)
+	}
+}
+
+func TestGameDisableEnableManager(t *testing.T) {
+	clearEnv(t)
+	path := toggleFixture(t)
+	base := []string{"--env", "test", "--db", path, "game"}
+	target := []string{"--manager", "ACCT01@example.com", "--system", "system01", "--code", "game01"}
+	for range 2 {
+		mustRun(t, "disabled manager acct01@example.com of game system01/game01\n", append(append(base, "disable"), target...)...)
+	}
+	if got := managers(t, path, game01); len(got) != 0 {
+		t.Errorf("managers of game01 = %v, want none", got)
+	}
+	if got := managers(t, path, game02); len(got) != 1 {
+		t.Errorf("managers of game02 = %v, want acct01", got)
+	}
+	// A disabled manager cannot be added again, only enabled.
+	if out, err := runCommand(t, append(append(base, "add"), target...)...); !errors.Is(err, store.ErrManagerExists) {
+		t.Errorf("game add of a disabled manager: %v\n%s", err, out)
+	}
+	mustRun(t, "enabled manager acct01@example.com of game system01/game01\n", append(append(base, "enable"), target...)...)
+	if got := managers(t, path, game01); len(got) != 1 {
+		t.Errorf("managers of game01 = %v, want acct01", got)
+	}
+}
+
+func TestGameDisableEnableRefusals(t *testing.T) {
+	clearEnv(t)
+	path := toggleFixture(t)
+	for _, verb := range []string{"disable", "enable"} {
+		for _, tc := range []struct {
+			args []string
+			want error
+		}{
+			{[]string{"--system", "system01", "--code", "game99"}, store.ErrUnknownGame},
+			{[]string{"--system", "system02", "--code", "game01"}, store.ErrUnknownGame},
+			{[]string{"--system", "system01"}, ErrMissingCode},
+			{[]string{"--code", "game01"}, ErrMissingSystem},
+			{[]string{"--system", "system01", "--code", "game 01"}, names.ErrCode},
+			{[]string{"--system", "system01", "--code", "game01", "extra"}, ErrUsage},
+			{[]string{"--player", "catbird@example.com", "--manager", "acct01@example.com", "--system", "system01", "--code", "game01"}, ErrToggleWhat},
+			{[]string{"--player", "catbird@example.com", "--system", "system01", "--code", "game02"}, store.ErrUnknownPlayer},
+			{[]string{"--player", "missing@example.com", "--system", "system01", "--code", "game01"}, store.ErrUnknownPlayer},
+			{[]string{"--player", "cat bird@example.com", "--system", "system01", "--code", "game01"}, names.ErrEmail},
+			{[]string{"--manager", "catbird@example.com", "--system", "system01", "--code", "game01"}, store.ErrUnknownManager},
+			{[]string{"--manager", "acct01@example.com", "--system", "system01", "--code", "game99"}, store.ErrUnknownGame},
+		} {
+			args := append([]string{"--env", "test", "--db", path, "game", verb}, tc.args...)
+			if out, err := runCommand(t, args...); !errors.Is(err, tc.want) {
+				t.Errorf("%q: err = %v, want %v\n%s", args, err, tc.want, out)
+			}
+		}
+	}
+	if got := players(t, path, game01); len(got) != 2 {
+		t.Errorf("a refused command changed game01's players to %v", got)
+	}
+	for _, game := range []store.GameRef{game01, game02} {
+		if got := managers(t, path, game); len(got) != 1 {
+			t.Errorf("a refused command changed the managers of %s to %v", game, got)
+		}
+	}
+}
+
+// account returns the account with the given email.
 func account(t *testing.T, path, email string) (store.Account, bool) {
 	t.Helper()
 	s, err := store.Open(t.Context(), path)
@@ -378,7 +713,7 @@ func TestAccountCreateRefusals(t *testing.T) {
 		{"", []string{"acct02@example.com"}, ErrMissingPassword},
 		{"\n", []string{"acct02@example.com"}, ErrMissingPassword},
 		{strings.Repeat("x", 73) + "\n", []string{"acct02@example.com"}, bcrypt.ErrPasswordTooLong},
-		{"pw\n", []string{"acct 02@example.com"}, ErrEmail},
+		{"pw\n", []string{"acct 02@example.com"}, names.ErrEmail},
 		{"pw\n", []string{}, ErrUsage},
 		{"pw\n", []string{"a@example.com", "b@example.com"}, ErrUsage},
 	} {
@@ -406,7 +741,7 @@ func TestAccountCreateIgnoresGeneratePasswordEnvironmentVariable(t *testing.T) {
 	}
 }
 
-// TestAccountSetPassword sets a password on an account made for an uploader,
+// TestAccountSetPassword sets a password on an account made for a player,
 // then replaces it with a generated one.
 func TestAccountSetPassword(t *testing.T) {
 	clearEnv(t)
@@ -425,8 +760,8 @@ func TestAccountSetPassword(t *testing.T) {
 	if cost, err := bcrypt.Cost(a.HashedSecret); err != nil || cost != bcrypt.MinCost {
 		t.Errorf("bcrypt cost %d, %v; want MinCost", cost, err)
 	}
-	if !uploaderExists(t, path, "game01", "catbird@example.com", "token-c") {
-		t.Error("setting the password stopped catbird's uploads")
+	if got := players(t, path, game01); !slices.Equal(got, []string{"catbird@example.com", "spoonbill@example.com"}) {
+		t.Errorf("setting the password changed game01's players to %v", got)
 	}
 
 	out, err = runWithInput(t, "ignored\n", "--env", "test", "--db", path, "account", "set-password", "--generate-password", "catbird@example.com")
@@ -461,7 +796,7 @@ func TestAccountSetPasswordRefusals(t *testing.T) {
 		{"", []string{"catbird@example.com"}, ErrMissingPassword},
 		{"\n", []string{"catbird@example.com"}, ErrMissingPassword},
 		{strings.Repeat("x", 73) + "\n", []string{"catbird@example.com"}, bcrypt.ErrPasswordTooLong},
-		{"pw\n", []string{"cat bird@example.com"}, ErrEmail},
+		{"pw\n", []string{"cat bird@example.com"}, names.ErrEmail},
 		{"pw\n", []string{}, ErrUsage},
 		{"pw\n", []string{"a@example.com", "b@example.com"}, ErrUsage},
 	} {
@@ -490,338 +825,6 @@ func TestSchemaVersionIgnoresEnvironmentVariable(t *testing.T) {
 	}
 }
 
-// managers returns the emails of the game's managers.
-func managers(t *testing.T, path, game string) []string {
-	t.Helper()
-	s, err := store.Open(t.Context(), path)
-	if err != nil {
-		t.Fatalf("store.Open: %v", err)
-	}
-	defer s.Close()
-	emails, err := s.Managers(t.Context(), game)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return emails
-}
-
-// createDatabaseWithAccounts makes a current database holding game01, game02,
-// and the given API accounts.
-func createDatabaseWithAccounts(t *testing.T, emails ...string) string {
-	t.Helper()
-	path := createDatabaseWithGames(t, "game01", "game02")
-	for _, email := range emails {
-		if out, err := runCommand(t, "--env", "test", "--db", path, "account", "create", "--generate-password", email); err != nil {
-			t.Fatalf("account create %s: %v\n%s", email, err, out)
-		}
-	}
-	return path
-}
-
-func TestGameAddManager(t *testing.T) {
-	clearEnv(t)
-	path := createDatabaseWithAccounts(t, "acct01@example.com", "acct02@example.com")
-	for _, args := range [][]string{
-		{"game", "add", "--manager", "Acct01@Example.com", "--code", "GAME01"},
-		{"game", "add", "--code", "game01", "--manager", "acct02@example.com"},
-		{"game", "add", "--manager", "acct01@example.com", "--code", "game02"},
-	} {
-		out, err := runCommand(t, append([]string{"--env", "test", "--db", path}, args...)...)
-		if err != nil {
-			t.Fatalf("%q: %v\n%s", args, err, out)
-		}
-		if !strings.HasPrefix(out, "added manager acct0") {
-			t.Errorf("%q printed %q", args, out)
-		}
-	}
-	for game, want := range map[string]string{
-		"game01": "acct01@example.com,acct02@example.com",
-		"game02": "acct01@example.com",
-	} {
-		if got := strings.Join(managers(t, path, game), ","); got != want {
-			t.Errorf("managers of %s = %s, want %s", game, got, want)
-		}
-	}
-}
-
-func TestGameAddManagerRefusals(t *testing.T) {
-	clearEnv(t)
-	path := createDatabaseWithAccounts(t, "acct01@example.com")
-	if out, err := runCommand(t, "--env", "test", "--db", path, "game", "add", "--manager", "acct01@example.com", "--code", "game01"); err != nil {
-		t.Fatalf("game add: %v\n%s", err, out)
-	}
-	for _, tc := range []struct {
-		args []string
-		want error
-	}{
-		{[]string{"--manager", "ACCT01@example.com", "--code", "game01"}, store.ErrManagerExists},
-		{[]string{"--manager", "acct01@example.com", "--code", "game99"}, store.ErrUnknownGame},
-		{[]string{"--manager", "missing@example.com", "--code", "game02"}, store.ErrUnknownAccount},
-		{[]string{"--manager", "catbird@example.com", "--code", "game02"}, store.ErrUnknownAccount},
-		{[]string{"--manager", "acct 01@example.com", "--code", "game02"}, ErrEmail},
-		{[]string{"--manager", "acct01@example.com", "--code", "game 02"}, ErrGameCode},
-		{[]string{"--code", "game02"}, ErrAddWhat},
-		{[]string{"--manager", "acct01@example.com", "--uploader", "catbird@example.com", "--code", "game02"}, ErrAddWhat},
-		{[]string{"--manager", "acct01@example.com", "--code", "game02", "--token", "t"}, ErrTokenNeedsUploader},
-		{[]string{"--manager", "acct01@example.com"}, ErrMissingCode},
-		{[]string{"--manager", "acct01@example.com", "--code", "game02", "extra"}, ErrUsage},
-	} {
-		out, err := runCommand(t, append([]string{"--env", "test", "--db", path, "game", "add"}, tc.args...)...)
-		if !errors.Is(err, tc.want) {
-			t.Errorf("game add %q: err = %v, want %v\n%s", tc.args, err, tc.want, out)
-		}
-	}
-	if got := managers(t, path, "game02"); len(got) != 0 {
-		t.Errorf("managers of game02 = %v, want none", got)
-	}
-}
-
-func TestGameAddIgnoresEnvironmentVariables(t *testing.T) {
-	clearEnv(t)
-	path := createDatabaseWithAccounts(t, "acct01@example.com")
-	t.Setenv("FUINGO_MANAGER", "acct01@example.com")
-	t.Setenv("FUINGO_CODE", "game01")
-	out, err := runCommand(t, "--env", "test", "--db", path, "game", "add")
-	if !errors.Is(err, ErrAddWhat) {
-		t.Errorf("err = %v, want ErrAddWhat\n%s", err, out)
-	}
-	if got := managers(t, path, "game01"); len(got) != 0 {
-		t.Errorf("managers of game01 = %v, want none", got)
-	}
-}
-
-func TestGameAddUploader(t *testing.T) {
-	clearEnv(t)
-	t.Setenv("FUINGO_PEPPER", pepper)
-	path := createDatabaseWithGames(t, "game01", "game02")
-
-	out, err := runCommand(t, "--env", "test", "--db", path, "game", "add", "--uploader", "CatBird@Example.com", "--code", "GAME01")
-	if err != nil {
-		t.Fatalf("game add --uploader: %v\n%s", err, out)
-	}
-	first, token, ok := strings.Cut(out, "token: ")
-	if want := "added uploader catbird@example.com to game game01\n"; !ok || first != want {
-		t.Fatalf("game add --uploader printed %q, want %q and a token", out, want)
-	}
-	token = strings.TrimSuffix(token, "\n")
-	if _, err := uuid.Parse(token); err != nil {
-		t.Errorf("generated token %q is not a UUID: %v", token, err)
-	}
-	if !uploaderExists(t, path, "game01", "catbird@example.com", token) {
-		t.Error("the generated token does not authorize the uploader")
-	}
-
-	// The same email and a given token may be used in two games.
-	const chosen = "my-chosen-token"
-	for _, game := range []string{"game01", "game02"} {
-		out, err = runCommand(t, "--env", "test", "--db", path, "game", "add", "--token", chosen, "--code", game, "--uploader", "spoonbill@example.com")
-		if err != nil {
-			t.Fatalf("game add --uploader --token in %s: %v\n%s", game, err, out)
-		}
-		if want := "added uploader spoonbill@example.com to game " + game + "\n"; out != want {
-			t.Errorf("game add --uploader --token printed %q, want %q", out, want)
-		}
-		if !uploaderExists(t, path, game, "spoonbill@example.com", chosen) {
-			t.Errorf("%s: the given token does not authorize the uploader", game)
-		}
-	}
-}
-
-func TestGameAddUploaderRefusals(t *testing.T) {
-	clearEnv(t)
-	t.Setenv("FUINGO_PEPPER", pepper)
-	path := createDatabaseWithGames(t, "game01")
-	if out, err := runCommand(t, "--env", "test", "--db", path, "game", "add", "--uploader", "catbird@example.com", "--code", "game01"); err != nil {
-		t.Fatalf("game add --uploader: %v\n%s", err, out)
-	}
-	for _, tc := range []struct {
-		args []string
-		want error
-	}{
-		{[]string{"--uploader", "CATBIRD@example.com", "--code", "game01"}, store.ErrUploaderExists},
-		{[]string{"--uploader", "tern@example.com", "--code", "game99"}, store.ErrUnknownGame},
-		{[]string{"--uploader", "tern@example.com", "--code", "game01", "--token", "secret token"}, ErrToken},
-		{[]string{"--uploader", "tern@example.com", "--code", "game01", "--token", "secret\x7ftoken"}, ErrToken},
-		{[]string{"--uploader", "tern @example.com", "--code", "game01"}, ErrEmail},
-		{[]string{"--uploader", "tern@exämple.com", "--code", "game01"}, ErrEmail},
-		{[]string{"--uploader", "tern@example.com", "--code", "game 01"}, ErrGameCode},
-		{[]string{"--uploader", "tern@example.com", "--code", "game01", "extra"}, ErrUsage},
-		{[]string{"--uploader", "tern@example.com"}, ErrMissingCode},
-	} {
-		out, err := runCommand(t, append([]string{"--env", "test", "--db", path, "game", "add"}, tc.args...)...)
-		if !errors.Is(err, tc.want) {
-			t.Errorf("game add %q: err = %v, want %v\n%s", tc.args, err, tc.want, out)
-		}
-		if strings.Contains(out, "secret") || (err != nil && strings.Contains(err.Error(), "secret")) {
-			t.Errorf("game add %q revealed the token: %v\n%s", tc.args, err, out)
-		}
-	}
-	os.Unsetenv("FUINGO_PEPPER")
-	out, err := runCommand(t, "--env", "test", "--db", path, "game", "add", "--uploader", "tern@example.com", "--code", "game01")
-	if !errors.Is(err, cli.ErrMissingPepper) {
-		t.Errorf("without a pepper: err = %v, want ErrMissingPepper\n%s", err, out)
-	}
-}
-
-func TestGameAddUploaderIgnoresEnvironmentVariables(t *testing.T) {
-	clearEnv(t)
-	t.Setenv("FUINGO_PEPPER", pepper)
-	path := createDatabaseWithGames(t, "game01")
-	t.Setenv("FUINGO_UPLOADER", "catbird@example.com")
-	t.Setenv("FUINGO_TOKEN", "from-the-environment")
-	out, err := runCommand(t, "--env", "test", "--db", path, "game", "add", "--code", "game01")
-	if !errors.Is(err, ErrAddWhat) {
-		t.Errorf("err = %v, want ErrAddWhat\n%s", err, out)
-	}
-	out, err = runCommand(t, "--env", "test", "--db", path, "game", "add", "--uploader", "tern@example.com", "--code", "game01")
-	if err != nil {
-		t.Fatalf("game add --uploader: %v\n%s", err, out)
-	}
-	if !strings.Contains(out, "token: ") || uploaderExists(t, path, "game01", "tern@example.com", "from-the-environment") {
-		t.Errorf("game add --uploader used FUINGO_TOKEN: %q", out)
-	}
-}
-
-// toggleFixture makes a database with game01 and game02, uploaders catbird and
-// spoonbill in game01 (tokens "token-c" and "token-s"), and API account
-// acct01 managing both games.
-func toggleFixture(t *testing.T) string {
-	t.Helper()
-	t.Setenv("FUINGO_PEPPER", pepper)
-	path := createDatabaseWithAccounts(t, "acct01@example.com")
-	for _, args := range [][]string{
-		{"game", "add", "--uploader", "catbird@example.com", "--token", "token-c", "--code", "game01"},
-		{"game", "add", "--uploader", "spoonbill@example.com", "--token", "token-s", "--code", "game01"},
-		{"game", "add", "--manager", "acct01@example.com", "--code", "game01"},
-		{"game", "add", "--manager", "acct01@example.com", "--code", "game02"},
-	} {
-		if out, err := runCommand(t, append([]string{"--env", "test", "--db", path}, args...)...); err != nil {
-			t.Fatalf("%q: %v\n%s", args, err, out)
-		}
-	}
-	return path
-}
-
-// mustRun runs the command and checks what it printed.
-func mustRun(t *testing.T, want string, args ...string) {
-	t.Helper()
-	out, err := runCommand(t, args...)
-	if err != nil {
-		t.Fatalf("%q: %v\n%s", args, err, out)
-	}
-	if out != want {
-		t.Errorf("%q printed %q, want %q", args, out, want)
-	}
-}
-
-func TestGameDisableEnableGame(t *testing.T) {
-	clearEnv(t)
-	path := toggleFixture(t)
-	base := []string{"--env", "test", "--db", path, "game"}
-	for range 2 { // disabling twice succeeds
-		mustRun(t, "disabled game game01\n", append(base, "disable", "--code", "GAME01")...)
-	}
-	if uploaderExists(t, path, "game01", "catbird@example.com", "token-c") {
-		t.Error("an uploader in a disabled game is still accepted")
-	}
-	mustRun(t, "enabled game game01\n", append(base, "enable", "--code", "game01")...)
-	if !uploaderExists(t, path, "game01", "catbird@example.com", "token-c") {
-		t.Error("an uploader in a re-enabled game is refused")
-	}
-}
-
-func TestGameDisableEnableUploader(t *testing.T) {
-	clearEnv(t)
-	path := toggleFixture(t)
-	base := []string{"--env", "test", "--db", path, "game"}
-	mustRun(t, "disabled uploader catbird@example.com in game game01\n", append(base, "disable", "--uploader", "CatBird@Example.com", "--code", "game01")...)
-	if uploaderExists(t, path, "game01", "catbird@example.com", "token-c") {
-		t.Error("a disabled uploader is still accepted")
-	}
-	if !uploaderExists(t, path, "game01", "spoonbill@example.com", "token-s") {
-		t.Error("disabling one uploader refused another")
-	}
-	mustRun(t, "enabled uploader catbird@example.com in game game01\n", append(base, "enable", "--code", "game01", "--uploader", "catbird@example.com")...)
-	if !uploaderExists(t, path, "game01", "catbird@example.com", "token-c") {
-		t.Error("a re-enabled uploader is refused")
-	}
-}
-
-func TestGameDisableEnableManager(t *testing.T) {
-	clearEnv(t)
-	path := toggleFixture(t)
-	base := []string{"--env", "test", "--db", path, "game"}
-	mustRun(t, "disabled manager acct01@example.com of game game01\n", append(base, "disable", "--manager", "ACCT01@example.com", "--code", "game01")...)
-	if got := managers(t, path, "game01"); len(got) != 0 {
-		t.Errorf("managers of game01 = %v, want none", got)
-	}
-	if got := managers(t, path, "game02"); len(got) != 1 {
-		t.Errorf("managers of game02 = %v, want acct01@example.com", got)
-	}
-	out, err := runCommand(t, append(base, "add", "--manager", "acct01@example.com", "--code", "game01")...)
-	if !errors.Is(err, store.ErrManagerExists) {
-		t.Errorf("game add of a disabled manager: err = %v, want ErrManagerExists\n%s", err, out)
-	}
-	mustRun(t, "enabled manager acct01@example.com of game game01\n", append(base, "enable", "--manager", "acct01@example.com", "--code", "game01")...)
-	if got := managers(t, path, "game01"); len(got) != 1 {
-		t.Errorf("managers of game01 = %v, want acct01@example.com", got)
-	}
-}
-
-func TestGameDisableEnableRefusals(t *testing.T) {
-	clearEnv(t)
-	path := toggleFixture(t)
-	for _, verb := range []string{"disable", "enable"} {
-		for _, tc := range []struct {
-			args []string
-			want error
-		}{
-			{[]string{"--code", "game99"}, store.ErrUnknownGame},
-			{[]string{"--uploader", "catbird@example.com", "--code", "game02"}, store.ErrUnknownUploader},
-			{[]string{"--uploader", "acct01@example.com", "--code", "game01"}, store.ErrUnknownUploader},
-			{[]string{"--manager", "catbird@example.com", "--code", "game01"}, store.ErrUnknownManager},
-			{[]string{"--manager", "acct01@example.com", "--code", "game99"}, store.ErrUnknownManager},
-			{[]string{"--manager", "acct01@example.com", "--uploader", "catbird@example.com", "--code", "game01"}, ErrToggleWhat},
-			{[]string{"--uploader", "catbird@example.com"}, ErrMissingCode},
-			{[]string{}, ErrMissingCode},
-			{[]string{"--uploader", "cat bird@example.com", "--code", "game01"}, ErrEmail},
-			{[]string{"--code", "game 01"}, ErrGameCode},
-			{[]string{"--code", "game01", "extra"}, ErrUsage},
-			{[]string{"--code", "game01", "--token", "t"}, nil},
-		} {
-			args := append([]string{"--env", "test", "--db", path, "game", verb}, tc.args...)
-			out, err := runCommand(t, args...)
-			if tc.want == nil {
-				if err == nil {
-					t.Errorf("%q succeeded\n%s", args, out)
-				}
-			} else if !errors.Is(err, tc.want) {
-				t.Errorf("%q: err = %v, want %v\n%s", args, err, tc.want, out)
-			}
-		}
-	}
-	if !uploaderExists(t, path, "game01", "catbird@example.com", "token-c") {
-		t.Error("a refused command disabled something")
-	}
-	if got := managers(t, path, "game01"); len(got) != 1 {
-		t.Errorf("a refused command changed the managers of game01: %v", got)
-	}
-}
-
-func TestGameDisableIgnoresEnvironmentVariables(t *testing.T) {
-	clearEnv(t)
-	path := toggleFixture(t)
-	t.Setenv("FUINGO_UPLOADER", "catbird@example.com")
-	t.Setenv("FUINGO_MANAGER", "acct01@example.com")
-	mustRun(t, "disabled game game02\n", "--env", "test", "--db", path, "game", "disable", "--code", "game02")
-	if got := managers(t, path, "game02"); len(got) != 1 {
-		t.Errorf("game disable used FUINGO_MANAGER: managers of game02 = %v", got)
-	}
-	if !uploaderExists(t, path, "game01", "catbird@example.com", "token-c") {
-		t.Error("game disable used FUINGO_UPLOADER")
-	}
-}
-
 func TestAccountDisableEnable(t *testing.T) {
 	clearEnv(t)
 	path := toggleFixture(t)
@@ -832,7 +835,7 @@ func TestAccountDisableEnable(t *testing.T) {
 	if a, _ := account(t, path, "acct01@example.com"); a.Active {
 		t.Error("a disabled account is active")
 	}
-	for _, game := range []string{"game01", "game02"} {
+	for _, game := range []store.GameRef{game01, game02} {
 		if got := managers(t, path, game); len(got) != 0 {
 			t.Errorf("a disabled account still manages %s: %v", game, got)
 		}
@@ -841,14 +844,14 @@ func TestAccountDisableEnable(t *testing.T) {
 	if a, _ := account(t, path, "acct01@example.com"); !a.Active {
 		t.Error("a re-enabled account is inactive")
 	}
-	if got := managers(t, path, "game01"); len(got) != 1 {
+	if got := managers(t, path, game01); len(got) != 1 {
 		t.Errorf("a re-enabled account does not manage game01: %v", got)
 	}
 }
 
-// TestAccountDisableStopsUploads checks that an uploader's account, created
-// by game add --uploader without a password, can be disabled and enabled.
-func TestAccountDisableStopsUploads(t *testing.T) {
+// TestAccountDisableStopsPlaying checks that a player's account, created by
+// game add --player without a password, can be disabled and enabled.
+func TestAccountDisableStopsPlaying(t *testing.T) {
 	clearEnv(t)
 	path := toggleFixture(t)
 	if a, ok := account(t, path, "catbird@example.com"); !ok || a.HashedSecret != nil {
@@ -856,17 +859,17 @@ func TestAccountDisableStopsUploads(t *testing.T) {
 	}
 	for _, tc := range []struct {
 		verb string
-		want bool
-	}{{"disable", false}, {"enable", true}} {
+		want []string
+	}{
+		{"disable", []string{"spoonbill@example.com"}},
+		{"enable", []string{"catbird@example.com", "spoonbill@example.com"}},
+	} {
 		args := []string{"--env", "test", "--db", path, "account", tc.verb, "catbird@example.com"}
 		if out, err := runCommand(t, args...); err != nil {
 			t.Fatalf("%q: %v\n%s", args, err, out)
 		}
-		if got := uploaderExists(t, path, "game01", "catbird@example.com", "token-c"); got != tc.want {
-			t.Errorf("after account %s, catbird uploads = %v, want %v", tc.verb, got, tc.want)
-		}
-		if !uploaderExists(t, path, "game01", "spoonbill@example.com", "token-s") {
-			t.Errorf("account %s catbird stopped spoonbill's uploads", tc.verb)
+		if got := players(t, path, game01); !slices.Equal(got, tc.want) {
+			t.Errorf("after account %s, game01's players = %v, want %v", tc.verb, got, tc.want)
 		}
 	}
 }
@@ -880,7 +883,7 @@ func TestAccountDisableEnableRefusals(t *testing.T) {
 			want error
 		}{
 			{[]string{"missing@example.com"}, store.ErrUnknownAccount},
-			{[]string{"acct 01@example.com"}, ErrEmail},
+			{[]string{"acct 01@example.com"}, names.ErrEmail},
 			{[]string{}, ErrUsage},
 			{[]string{"acct01@example.com", "extra"}, ErrUsage},
 		} {

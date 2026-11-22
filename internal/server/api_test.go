@@ -26,7 +26,7 @@ func apiLogin(email, password string) *http.Request {
 }
 
 func apiList(token string) *http.Request {
-	r := httptest.NewRequest(http.MethodGet, publicOrigin+"/api/games/game01/uploads", nil)
+	r := httptest.NewRequest(http.MethodGet, publicOrigin+"/api/systems/system01/games/game01/players", nil)
 	r.Header.Set("Authorization", "Bearer "+token)
 	return r
 }
@@ -65,19 +65,6 @@ func TestCrossOriginAPILoginIsRejected(t *testing.T) {
 	r.Header.Set("Origin", "https://evil.localhost:8443")
 	if w := serve(h, r); w.Code != http.StatusForbidden {
 		t.Errorf("cross-origin login: %d", w.Code)
-	}
-}
-
-func TestCredentialKindsAreSeparate(t *testing.T) {
-	t.Parallel()
-	h, _ := newServer(t, "production")
-	// An upload account cannot log in to the API with its token.
-	if w := serve(h, apiLogin(catbird.Email, catbird.Token)); w.Code != http.StatusUnauthorized {
-		t.Errorf("API login with upload token: %d", w.Code)
-	}
-	// An API password does not authorize an upload.
-	if w := serve(h, uploadRequest(t, acct01.Email, "game01", acct01.Password, "turn\n")); w.Code != http.StatusForbidden {
-		t.Errorf("upload with API password: %d", w.Code)
 	}
 }
 
@@ -132,6 +119,10 @@ func TestCreateAPIAccountHelper(t *testing.T) {
 		after, _, _ := s.FindAccount(t.Context(), "new+api@example.com")
 		if string(before.HashedSecret) != string(after.HashedSecret) {
 			t.Errorf("%s: duplicate changed the password", env)
+		}
+		// An email that could not be an account's is refused.
+		if w := serve(h, apiHelper(prefix, "create-api-account", "a b@example.com")); w.Code != http.StatusBadRequest {
+			t.Errorf("%s: email with a space: %d", env, w.Code)
 		}
 		// The account manages no games.
 		token := tokenFrom(t, serve(h, apiLogin("new+api@example.com", password)))
@@ -204,9 +195,9 @@ func TestCrossOriginRefusalContentType(t *testing.T) {
 			t.Errorf("%s: %d %q %q", path, w.Code, w.Header().Get("Content-Type"), w.Body)
 		}
 	}
-	r := httptest.NewRequest(http.MethodPost, publicOrigin+"/upload", strings.NewReader(""))
+	r := httptest.NewRequest(http.MethodPost, publicOrigin+"/", strings.NewReader(""))
 	r.Header.Set("Sec-Fetch-Site", "cross-site")
 	if w := serve(h, r); w.Code != http.StatusForbidden || !strings.HasPrefix(w.Header().Get("Content-Type"), "text/plain") {
-		t.Errorf("/upload: %d %q", w.Code, w.Header().Get("Content-Type"))
+		t.Errorf("/: %d %q", w.Code, w.Header().Get("Content-Type"))
 	}
 }

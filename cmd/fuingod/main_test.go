@@ -5,12 +5,10 @@ package main
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"errors"
 	"io"
 	"io/fs"
-	"mime/multipart"
 	"net"
 	"net/http"
 	"net/netip"
@@ -22,17 +20,16 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mdhender/fuingo/internal/cli"
 	"github.com/mdhender/fuingo/internal/clientip"
 	"github.com/mdhender/fuingo/internal/devdata"
 	"github.com/mdhender/fuingo/internal/store"
 )
 
-const pepper = "test-pepper"
+var acct01 = devdata.Accounts[0]
 
 func clearEnv(t *testing.T) {
 	t.Helper()
-	for _, key := range []string{"FUINGO_ENV", "FUINGO_ADDR", "FUINGO_DB", "FUINGO_PEPPER", "FUINGO_TRUSTED_PROXIES"} {
+	for _, key := range []string{"FUINGO_ENV", "FUINGO_ADDR", "FUINGO_DB", "FUINGO_TRUSTED_PROXIES"} {
 		t.Setenv(key, "")
 		os.Unsetenv(key)
 	}
@@ -40,7 +37,6 @@ func clearEnv(t *testing.T) {
 
 func TestConfigDefaultsAndPrecedence(t *testing.T) {
 	clearEnv(t)
-	t.Setenv("FUINGO_PEPPER", pepper)
 	cfg, err := loadConfig([]string{"--env", "development", "--db", ":memory:"}, io.Discard)
 	if err != nil {
 		t.Fatal(err)
@@ -82,29 +78,22 @@ func TestConfigDefaultsAndPrecedence(t *testing.T) {
 func TestConfigRefusals(t *testing.T) {
 	clearEnv(t)
 	cases := []struct {
-		name   string
-		pepper string
-		args   []string
-		want   error
+		name string
+		args []string
+		want error
 	}{
-		{"missing pepper", "", []string{"--env", "development", "--db", ":memory:"}, cli.ErrMissingPepper},
-		{"missing db", pepper, []string{"--env", "development"}, ErrMissingDatabase},
-		{"memory in test", pepper, []string{"--env", "test", "--db", ":memory:"}, ErrMemoryDatabase},
-		{"memory in production", pepper, []string{"--env", "production", "--db", ":memory:"}, ErrMemoryDatabase},
-		{"bad addr", pepper, []string{"--env", "development", "--addr", "18443", "--db", ":memory:"}, ErrInvalidAddress},
-		{"bad port", pepper, []string{"--env", "development", "--addr", "127.0.0.1:99999", "--db", ":memory:"}, ErrInvalidAddress},
-		{"bad trusted proxy", pepper, []string{"--env", "development", "--trusted-proxies", "caddy", "--db", ":memory:"}, clientip.ErrInvalidProxy},
+		{"missing db", []string{"--env", "development"}, ErrMissingDatabase},
+		{"memory in test", []string{"--env", "test", "--db", ":memory:"}, ErrMemoryDatabase},
+		{"memory in production", []string{"--env", "production", "--db", ":memory:"}, ErrMemoryDatabase},
+		{"bad addr", []string{"--env", "development", "--addr", "18443", "--db", ":memory:"}, ErrInvalidAddress},
+		{"bad port", []string{"--env", "development", "--addr", "127.0.0.1:99999", "--db", ":memory:"}, ErrInvalidAddress},
+		{"bad trusted proxy", []string{"--env", "development", "--trusted-proxies", "caddy", "--db", ":memory:"}, clientip.ErrInvalidProxy},
 	}
 	for _, c := range cases {
-		os.Unsetenv("FUINGO_PEPPER")
-		if c.pepper != "" {
-			t.Setenv("FUINGO_PEPPER", c.pepper)
-		}
 		if _, err := loadConfig(c.args, io.Discard); !errors.Is(err, c.want) {
 			t.Errorf("%s: %v, want %v", c.name, err, c.want)
 		}
 	}
-	t.Setenv("FUINGO_PEPPER", pepper)
 	if _, err := loadConfig([]string{"--db", ":memory:"}, io.Discard); err == nil {
 		t.Errorf("no environment: succeeded")
 	}
@@ -112,7 +101,6 @@ func TestConfigRefusals(t *testing.T) {
 
 func TestRunNeverCreatesOrMigrates(t *testing.T) {
 	clearEnv(t)
-	t.Setenv("FUINGO_PEPPER", pepper)
 	dir := t.TempDir()
 	missing := filepath.Join(dir, "missing.db")
 	err := run(t.Context(), []string{"--env", "development", "--addr", "127.0.0.1:0", "--db", missing}, io.Discard, nil)
@@ -126,7 +114,6 @@ func TestRunNeverCreatesOrMigrates(t *testing.T) {
 
 func TestRunReportsBindFailure(t *testing.T) {
 	clearEnv(t)
-	t.Setenv("FUINGO_PEPPER", pepper)
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -186,71 +173,60 @@ func post(t *testing.T, url, contentType string, body io.Reader, headers ...stri
 	return resp.StatusCode, string(data)
 }
 
-func postUpload(t *testing.T, base, email, game, token, file string, headers ...string) (int, string) {
+// loginBody is the JSON body of a login.
+func loginBody(email, password string) string {
+	return `{"email":"` + email + `","password":"` + password + `"}`
+}
+
+func postLogin(t *testing.T, base, email, password string, headers ...string) (int, string) {
 	t.Helper()
-	var body bytes.Buffer
-	mw := multipart.NewWriter(&body)
-	fw, _ := mw.CreateFormFile("file", "turn.txt")
-	io.WriteString(fw, game+" 1 "+email+" "+token+"\n"+file)
-	mw.Close()
-	return post(t, base+"/upload", mw.FormDataContentType(), &body, headers...)
+	return post(t, base+"/api/login", "application/json", strings.NewReader(loginBody(email, password)), headers...)
 }
 
 func TestServeMemoryDatabase(t *testing.T) {
 	clearEnv(t)
-	t.Setenv("FUINGO_PEPPER", pepper)
 	base := startServer(t, "--env", "development", "--db", ":memory:")
 
-	u := devdata.Uploaders[0]
-	if code, body := postUpload(t, base, u.Email, u.Game, u.Token, "turn\n"); code != http.StatusOK {
-		t.Errorf("default account upload: %d %s", code, body)
+	// A memory database is seeded with the defaults.
+	if code, body := postLogin(t, base, acct01.Email, acct01.Password); code != http.StatusOK {
+		t.Errorf("default account login: %d %s", code, body)
 	}
-	if code, body := post(t, base+"/__development/create-account/game01/heron%40example.com/heron-token", "", nil); code != http.StatusCreated {
-		t.Errorf("create-account: %d %s", code, body)
+	code, password := post(t, base+"/__development/create-api-account/heron%40example.com", "", nil)
+	if code != http.StatusCreated {
+		t.Fatalf("create-api-account: %d %s", code, password)
 	}
-	if code, body := postUpload(t, base, "heron@example.com", "game01", "heron-token", "turn 2\n"); code != http.StatusOK {
-		t.Errorf("helper account upload: %d %s", code, body)
+	if code, body := postLogin(t, base, "heron@example.com", strings.TrimSpace(password)); code != http.StatusOK {
+		t.Errorf("helper account login: %d %s", code, body)
 	}
-	if code, _ := post(t, base+"/__agent/create-account/game01/a%40example.com/t", "", nil); code != http.StatusNotFound {
+	if code, _ := post(t, base+"/__agent/create-api-account/a%40example.com", "", nil); code != http.StatusNotFound {
 		t.Errorf("/__agent in development: %d, want 404", code)
+	}
+	// The previous design's form is gone.
+	if code, _ := post(t, base+"/upload", "text/plain", strings.NewReader("game01 1 x@example.com t\n")); code != http.StatusNotFound {
+		t.Errorf("POST /upload: %d, want 404", code)
 	}
 }
 
 func TestServeDatabaseFile(t *testing.T) {
 	clearEnv(t)
-	t.Setenv("FUINGO_PEPPER", pepper)
 	dir := t.TempDir()
 	path := filepath.Join(dir, "fuingo.db")
 	s, err := store.Create(t.Context(), path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := devdata.Seed(t.Context(), s, "development", pepper); err != nil {
+	if err := devdata.Seed(t.Context(), s, "development"); err != nil {
 		t.Fatal(err)
 	}
 	s.Close()
 
 	// In test, the defaults in the file still work but the helpers do not exist.
 	base := startServer(t, "--env", "test", "--db", path)
-	u := devdata.Uploaders[2]
-	if code, body := postUpload(t, base, u.Email, u.Game, u.Token, "turn\n"); code != http.StatusOK {
-		t.Errorf("upload: %d %s", code, body)
-	}
-	// The contents are in the database file, not on the filesystem.
-	s, err = store.Open(t.Context(), path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	blobs, err := s.Blobs(t.Context())
-	s.Close()
-	if err != nil || len(blobs) != 1 || string(blobs[0].Contents) != "turn\n" {
-		t.Errorf("blobs = %+v, %v; want the uploaded file", blobs, err)
-	}
-	if entries, _ := os.ReadDir(dir); len(entries) > 3 {
-		t.Errorf("directory has %d entries; want only the database and its WAL files", len(entries))
+	if code, body := postLogin(t, base, acct01.Email, acct01.Password); code != http.StatusOK {
+		t.Errorf("login: %d %s", code, body)
 	}
 	for _, prefix := range []string{"/__development", "/__agent", "/__test"} {
-		if code, _ := post(t, base+prefix+"/create-account/game01/a%40example.com/t", "", nil); code != http.StatusNotFound {
+		if code, _ := post(t, base+prefix+"/create-api-account/a%40example.com", "", nil); code != http.StatusNotFound {
 			t.Errorf("%s in test: %d, want 404", prefix, code)
 		}
 	}
@@ -260,18 +236,16 @@ func TestServeDatabaseFile(t *testing.T) {
 // X-Forwarded-For names the client, as it does behind Caddy.
 func TestServeLimitsFailuresPerForwardedClient(t *testing.T) {
 	clearEnv(t)
-	t.Setenv("FUINGO_PEPPER", pepper)
 	base := startServer(t, "--env", "development", "--db", ":memory:")
-	u := devdata.Uploaders[0]
 	for i := range 5 {
-		if code, body := postUpload(t, base, u.Email, u.Game, "wrong", "turn\n", "X-Forwarded-For", "203.0.113.1"); code != http.StatusForbidden {
+		if code, body := postLogin(t, base, acct01.Email, "wrong", "X-Forwarded-For", "203.0.113.1"); code != http.StatusUnauthorized {
 			t.Fatalf("failure %d: %d %s", i+1, code, body)
 		}
 	}
-	if code, body := postUpload(t, base, u.Email, u.Game, u.Token, "turn\n", "X-Forwarded-For", "203.0.113.1"); code != http.StatusTooManyRequests {
+	if code, body := postLogin(t, base, acct01.Email, acct01.Password, "X-Forwarded-For", "203.0.113.1"); code != http.StatusTooManyRequests {
 		t.Errorf("limited client: %d %s, want 429", code, body)
 	}
-	if code, body := postUpload(t, base, u.Email, u.Game, u.Token, "turn\n", "X-Forwarded-For", "203.0.113.2"); code != http.StatusOK {
+	if code, body := postLogin(t, base, acct01.Email, acct01.Password, "X-Forwarded-For", "203.0.113.2"); code != http.StatusOK {
 		t.Errorf("another client: %d %s, want 200", code, body)
 	}
 }
@@ -302,17 +276,12 @@ func startStoppable(t *testing.T, timeout time.Duration, args ...string) (string
 	return "", nil, nil
 }
 
-// startUpload opens a connection and sends an upload request with only part
+// startRequest opens a connection and sends a login request with only part
 // of its body, returning the connection, its reader, and the rest of the
 // body.
-func startUpload(t *testing.T, addr string) (net.Conn, *bufio.Reader, []byte) {
+func startRequest(t *testing.T, addr string) (net.Conn, *bufio.Reader, []byte) {
 	t.Helper()
-	u := devdata.Uploaders[0]
-	var body bytes.Buffer
-	mw := multipart.NewWriter(&body)
-	fw, _ := mw.CreateFormFile("file", "turn.txt")
-	io.WriteString(fw, u.Game+" 1 "+u.Email+" "+u.Token+"\nturn\n")
-	mw.Close()
+	body := []byte(loginBody(acct01.Email, acct01.Password))
 	conn, err := net.Dial("tcp", addr)
 	if err != nil {
 		t.Fatal(err)
@@ -330,16 +299,16 @@ func startUpload(t *testing.T, addr string) (net.Conn, *bufio.Reader, []byte) {
 	}
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
-	head := "POST /upload HTTP/1.1\r\nHost: " + addr + "\r\nSec-Fetch-Site: same-origin\r\n" +
-		"Content-Type: " + mw.FormDataContentType() + "\r\nContent-Length: " + strconv.Itoa(body.Len()) + "\r\n\r\n"
-	half := body.Len() / 2
-	if _, err := conn.Write(append([]byte(head), body.Bytes()[:half]...)); err != nil {
+	head := "POST /api/login HTTP/1.1\r\nHost: " + addr + "\r\nSec-Fetch-Site: same-origin\r\n" +
+		"Content-Type: application/json\r\nContent-Length: " + strconv.Itoa(len(body)) + "\r\n\r\n"
+	half := len(body) / 2
+	if _, err := conn.Write(append([]byte(head), body[:half]...)); err != nil {
 		t.Fatal(err)
 	}
 	// Give the server time to read the headers and start the handler, which
 	// then waits for the rest of the body.
 	time.Sleep(100 * time.Millisecond)
-	return conn, br, body.Bytes()[half:]
+	return conn, br, body[half:]
 }
 
 // waitStopped waits until the server refuses new connections, which it does
@@ -358,13 +327,12 @@ func waitStopped(t *testing.T, addr string) {
 	t.Fatal("the server still accepts connections after the stop signal")
 }
 
-// TestShutdownFinishesInFlightRequests stops the server while an upload is
-// being sent; the upload completes and run reports a clean stop.
+// TestShutdownFinishesInFlightRequests stops the server while a request is
+// being sent; the request completes and run reports a clean stop.
 func TestShutdownFinishesInFlightRequests(t *testing.T) {
 	clearEnv(t)
-	t.Setenv("FUINGO_PEPPER", pepper)
 	addr, stop, errc := startStoppable(t, 5*time.Second, "--env", "development", "--db", ":memory:")
-	conn, br, rest := startUpload(t, addr)
+	conn, br, rest := startRequest(t, addr)
 	stop()
 	waitStopped(t, addr)
 	if _, err := conn.Write(rest); err != nil {
@@ -376,7 +344,7 @@ func TestShutdownFinishesInFlightRequests(t *testing.T) {
 	}
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		t.Errorf("in-flight upload: %d, want 200", resp.StatusCode)
+		t.Errorf("in-flight request: %d, want 200", resp.StatusCode)
 	}
 	select {
 	case err := <-errc:
@@ -388,13 +356,12 @@ func TestShutdownFinishesInFlightRequests(t *testing.T) {
 	}
 }
 
-// TestShutdownCutsOffStalledRequests stops the server while an upload has
+// TestShutdownCutsOffStalledRequests stops the server while a request has
 // stalled; at the deadline its connection is closed and run reports it.
 func TestShutdownCutsOffStalledRequests(t *testing.T) {
 	clearEnv(t)
-	t.Setenv("FUINGO_PEPPER", pepper)
 	addr, stop, errc := startStoppable(t, 100*time.Millisecond, "--env", "development", "--db", ":memory:")
-	conn, br, _ := startUpload(t, addr)
+	conn, br, _ := startRequest(t, addr)
 	stop()
 	select {
 	case err := <-errc:

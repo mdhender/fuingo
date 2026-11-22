@@ -12,7 +12,7 @@ import (
 	"testing"
 
 	"github.com/mdhender/fuingo/internal/api"
-	"github.com/mdhender/fuingo/internal/credential"
+	"github.com/mdhender/fuingo/internal/store"
 )
 
 // post returns a POST of a JSON body; an empty body sends none.
@@ -41,215 +41,144 @@ func decode[T any](t *testing.T, f *fixture, r *http.Request, status int) T {
 	return v
 }
 
-// canUpload reports whether the token authorizes the email to upload to
-// the game.
-func (f *fixture) canUpload(t *testing.T, game, email, token string) bool {
+// players returns the emails of the game's active players.
+func (f *fixture) players(t *testing.T, game store.GameRef) []string {
 	t.Helper()
-	gameID, ok, err := f.s.GameID(t.Context(), game)
-	if err != nil || !ok {
-		t.Fatalf("game %s: %v %v", game, ok, err)
-	}
-	_, ok, err = f.s.FindUploader(t.Context(), credential.Hash(pepper, email, gameID, token))
+	emails, err := f.s.Players(t.Context(), game)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return ok
+	return emails
 }
 
-func TestNewRequiresPepper(t *testing.T) {
-	t.Parallel()
-	if _, err := api.New(api.Config{}); err != api.ErrMissingPepper {
-		t.Fatalf("err = %v", err)
-	}
-}
-
-func TestCreateGame(t *testing.T) {
+func TestListPlayers(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
 	token := f.login(t, acct01.Email, acct01.Password)
-
-	game := decode[api.Game](t, f, post("/api/games", token, `{"code":"NewGame"}`), http.StatusCreated)
-	if game.Game != "newgame" {
-		t.Errorf("game = %q", game.Game)
-	}
-	// The creator manages it; nobody else does.
-	list := decode[api.UploaderList](t, f, get("/api/games/newgame/uploaders", token), http.StatusOK)
-	if list.Game != "newgame" || list.Uploaders == nil || len(list.Uploaders) != 0 {
-		t.Errorf("uploaders: %+v", list)
-	}
-	other := f.login(t, acct02.Email, acct02.Password)
-	if w := f.serve(get("/api/games/newgame/uploaders", other)); w.Code != http.StatusNotFound {
-		t.Errorf("other account: %d", w.Code)
-	}
-	// It is active: an uploader added to it can upload.
-	added := decode[api.UploaderToken](t, f, post("/api/games/newgame/uploaders", token, `{"email":"wren@example.com"}`), http.StatusCreated)
-	if !f.canUpload(t, "newgame", "wren@example.com", added.Token) {
-		t.Error("uploader of the new game cannot upload")
-	}
-
-	for name, tc := range map[string]struct {
-		token, body string
-		status      int
-	}{
-		"duplicate":        {token, `{"code":"newgame"}`, http.StatusConflict},
-		"duplicate, case":  {token, `{"code":"GAME02"}`, http.StatusConflict},
-		"empty code":       {token, `{"code":""}`, http.StatusBadRequest},
-		"missing code":     {token, `{}`, http.StatusBadRequest},
-		"space in code":    {token, `{"code":"a b"}`, http.StatusBadRequest},
-		"non-ASCII code":   {token, `{"code":"café"}`, http.StatusBadRequest},
-		"unknown field":    {token, `{"code":"x","is_active":false}`, http.StatusBadRequest},
-		"not JSON":         {token, `code=x`, http.StatusBadRequest},
-		"trailing data":    {token, `{"code":"x"} junk`, http.StatusBadRequest},
-		"two objects":      {token, `{"code":"x"}{"code":"y"}`, http.StatusBadRequest},
-		"an array":         {token, `[{"code":"x"}]`, http.StatusBadRequest},
-		"wrong type":       {token, `{"code":5}`, http.StatusBadRequest},
-		"no token":         {"", `{"code":"x"}`, http.StatusUnauthorized},
-		"not a real token": {"nope", `{"code":"x"}`, http.StatusUnauthorized},
-	} {
-		if w := f.serve(post("/api/games", tc.token, tc.body)); w.Code != tc.status {
-			t.Errorf("%s: %d %s, want %d", name, w.Code, w.Body, tc.status)
-		}
-	}
-	r := post("/api/games", token, `{"code":"x"}`)
-	r.Header.Set("Content-Type", "text/plain")
-	if w := f.serve(r); w.Code != http.StatusUnsupportedMediaType {
-		t.Errorf("text/plain: %d", w.Code)
-	}
-	// White space around the object is fine.
-	decode[api.Game](t, f, post("/api/games", token, " {\"code\":\"padded\"}\r\n\t "), http.StatusCreated)
-	if _, ok, _ := f.s.GameID(t.Context(), "x"); ok {
-		t.Error("a refused request created a game")
-	}
-}
-
-func TestListUploaders(t *testing.T) {
-	t.Parallel()
-	f := newFixture(t)
-	token := f.login(t, acct01.Email, acct01.Password)
-	if err := f.s.SetUploaderActive(t.Context(), "game01", "spoonbill@example.com", false); err != nil {
+	if err := f.s.SetPlayerActive(t.Context(), store.Member{Game: game01, Email: spoonbill.Email}, false); err != nil {
 		t.Fatal(err)
 	}
 	if err := f.s.SetAccountActive(t.Context(), catbird.Email, false); err != nil {
 		t.Fatal(err)
 	}
-	list := decode[api.UploaderList](t, f, get("/api/games/game01/uploaders", token), http.StatusOK)
-	if len(list.Uploaders) != 2 {
-		t.Fatalf("uploaders: %+v", list)
+	list := decode[api.PlayerList](t, f, get(game01Players, token), http.StatusOK)
+	if list.System != "system01" || list.Game != "game01" || len(list.Players) != 2 {
+		t.Fatalf("players: %+v", list)
 	}
-	a, b := list.Uploaders[0], list.Uploaders[1]
+	a, b := list.Players[0], list.Players[1]
 	if a.Email != catbird.Email || !a.Active || a.AccountActive || a.ID <= 0 {
 		t.Errorf("first: %+v", a)
 	}
-	if b.Email != "spoonbill@example.com" || b.Active || !b.AccountActive || b.ID <= a.ID {
+	if b.Email != spoonbill.Email || b.Active || !b.AccountActive || b.ID <= a.ID {
 		t.Errorf("second: %+v", b)
 	}
-	if w := f.serve(get("/api/games/game01/uploaders", "")); w.Code != http.StatusUnauthorized {
+	if w := f.serve(get(game01Players, "")); w.Code != http.StatusUnauthorized {
 		t.Errorf("no token: %d", w.Code)
 	}
 }
 
-func TestAddUploader(t *testing.T) {
+func TestAddPlayer(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
 	token := f.login(t, acct01.Email, acct01.Password)
 
-	added := decode[api.UploaderToken](t, f, post("/api/games/game01/uploaders", token, `{"email":"Wren@Example.com"}`), http.StatusCreated)
-	if added.Game != "game01" || added.Email != "wren@example.com" || added.ID <= 0 || len(added.Token) != 36 {
-		t.Fatalf("added: game %q email %q id %d token length %d", added.Game, added.Email, added.ID, len(added.Token))
+	added := decode[api.NewPlayer](t, f, post(game01Players, token, `{"email":"Wren@Example.com"}`), http.StatusCreated)
+	if added.System != "system01" || added.Game != "game01" || added.Email != "wren@example.com" || added.ID <= 0 {
+		t.Fatalf("added: %+v", added)
 	}
-	if !f.canUpload(t, "game01", "wren@example.com", added.Token) {
-		t.Error("the new token does not authorize an upload")
+	if !slices.Contains(f.players(t, game01), "wren@example.com") {
+		t.Error("the new player is not an active player of the game")
 	}
-	// The new account has no API password, and the upload token is not one.
+	// The new account has no password, so it cannot log in.
 	acct, ok, err := f.s.FindAccount(t.Context(), "wren@example.com")
 	if err != nil || !ok || acct.HashedSecret != nil || !acct.Active {
 		t.Errorf("account: %+v %v %v", acct, ok, err)
 	}
-	if w := f.serve(loginRequest("wren@example.com", added.Token, "")); w.Code != http.StatusUnauthorized {
-		t.Errorf("login with upload token: %d", w.Code)
-	}
-	if strings.Contains(f.logs.String(), added.Token) {
-		t.Error("the token was logged")
-	}
 
-	// An existing account in another game gets its own credential here.
-	again := decode[api.UploaderToken](t, f, post("/api/games/game01/uploaders", token, `{"email":"`+caracara.Email+`"}`), http.StatusCreated)
-	if again.Token == added.Token || !f.canUpload(t, "game01", caracara.Email, again.Token) {
-		t.Error("existing account: no working token of its own")
+	// An existing account in another game becomes a separate player here.
+	again := decode[api.NewPlayer](t, f, post(game01Players, token, `{"email":"`+caracara.Email+`"}`), http.StatusCreated)
+	if again.ID <= added.ID {
+		t.Errorf("existing account: player ID %d, want one after %d", again.ID, added.ID)
 	}
-	if f.canUpload(t, "game02", caracara.Email, again.Token) || !f.canUpload(t, "game02", caracara.Email, caracara.Token) {
-		t.Error("adding to game01 changed the game02 credential")
+	if got := f.players(t, game02); !slices.Equal(got, []string{caracara.Email}) {
+		t.Errorf("adding to game01 changed game02's players to %v", got)
 	}
+	// White space around the object is fine.
+	decode[api.NewPlayer](t, f, post(game01Players, token, " {\"email\":\"padded@example.com\"}\r\n\t "), http.StatusCreated)
 
 	for name, tc := range map[string]struct {
-		body   string
-		status int
+		token, body string
+		status      int
 	}{
-		"duplicate":       {`{"email":"wren@example.com"}`, http.StatusConflict},
-		"duplicate, case": {`{"email":"CATBIRD@example.com"}`, http.StatusConflict},
-		"empty":           {`{"email":""}`, http.StatusBadRequest},
-		"space":           {`{"email":"a b@example.com"}`, http.StatusBadRequest},
-		"given token":     {`{"email":"x@example.com","token":"mine"}`, http.StatusBadRequest},
-		"trailing data":   {`{"email":"x@example.com"} junk`, http.StatusBadRequest},
+		"duplicate":        {token, `{"email":"wren@example.com"}`, http.StatusConflict},
+		"duplicate, case":  {token, `{"email":"CATBIRD@example.com"}`, http.StatusConflict},
+		"empty":            {token, `{"email":""}`, http.StatusBadRequest},
+		"missing":          {token, `{}`, http.StatusBadRequest},
+		"space":            {token, `{"email":"a b@example.com"}`, http.StatusBadRequest},
+		"non-ASCII":        {token, `{"email":"café@example.com"}`, http.StatusBadRequest},
+		"given password":   {token, `{"email":"x@example.com","password":"mine"}`, http.StatusBadRequest},
+		"given token":      {token, `{"email":"x@example.com","token":"mine"}`, http.StatusBadRequest},
+		"not JSON":         {token, `email=x@example.com`, http.StatusBadRequest},
+		"trailing data":    {token, `{"email":"x@example.com"} junk`, http.StatusBadRequest},
+		"two objects":      {token, `{"email":"x@example.com"}{"email":"y@example.com"}`, http.StatusBadRequest},
+		"an array":         {token, `[{"email":"x@example.com"}]`, http.StatusBadRequest},
+		"wrong type":       {token, `{"email":5}`, http.StatusBadRequest},
+		"no token":         {"", `{"email":"x@example.com"}`, http.StatusUnauthorized},
+		"not a real token": {"nope", `{"email":"x@example.com"}`, http.StatusUnauthorized},
 	} {
-		if w := f.serve(post("/api/games/game01/uploaders", token, tc.body)); w.Code != tc.status {
+		if w := f.serve(post(game01Players, tc.token, tc.body)); w.Code != tc.status {
 			t.Errorf("%s: %d %s, want %d", name, w.Code, w.Body, tc.status)
 		}
 	}
-	if _, ok, _ := f.s.FindAccount(t.Context(), "x@example.com"); ok {
-		t.Error("a refused request created an account")
+	r := post(game01Players, token, `{"email":"x@example.com"}`)
+	r.Header.Set("Content-Type", "text/plain")
+	if w := f.serve(r); w.Code != http.StatusUnsupportedMediaType {
+		t.Errorf("text/plain: %d", w.Code)
+	}
+	for _, email := range []string{"x@example.com", "y@example.com"} {
+		if _, ok, _ := f.s.FindAccount(t.Context(), email); ok {
+			t.Errorf("a refused request created the account %s", email)
+		}
 	}
 }
 
-func TestDisableEnableAndResetUploader(t *testing.T) {
+func TestDisableAndEnablePlayer(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
 	token := f.login(t, acct01.Email, acct01.Password)
-	list := decode[api.UploaderList](t, f, get("/api/games/game01/uploaders", token), http.StatusOK)
-	base := "/api/games/game01/uploaders/" + jsonInt(list.Uploaders[0].ID) // catbird
+	list := decode[api.PlayerList](t, f, get(game01Players, token), http.StatusOK)
+	base := game01Players + "/" + jsonInt(list.Players[0].ID) // catbird
 
 	for range 2 { // repeating succeeds
-		st := decode[api.UploaderStatus](t, f, post(base+"/disable", token, ""), http.StatusOK)
-		if st.Active || st.ID != list.Uploaders[0].ID || st.Game != "game01" {
+		st := decode[api.PlayerStatus](t, f, post(base+"/disable", token, ""), http.StatusOK)
+		if st.Active || st.ID != list.Players[0].ID || st.System != "system01" || st.Game != "game01" {
 			t.Errorf("disable: %+v", st)
 		}
 	}
-	if f.canUpload(t, catbird.Game, catbird.Email, catbird.Token) {
-		t.Error("a disabled uploader can upload")
+	// The other player of the game is untouched.
+	if got := f.players(t, game01); !slices.Equal(got, []string{spoonbill.Email}) {
+		t.Errorf("players after disabling catbird = %v", got)
 	}
-
-	// A reset replaces the token and leaves the uploader disabled.
-	reset := decode[api.UploaderToken](t, f, post(base+"/reset-token", token, ""), http.StatusOK)
-	if reset.Email != catbird.Email || len(reset.Token) != 36 || reset.Token == catbird.Token {
-		t.Fatalf("reset: email %q token length %d", reset.Email, len(reset.Token))
+	// The account itself is still active: only its player in this game is not.
+	if acct, _, _ := f.s.FindAccount(t.Context(), catbird.Email); !acct.Active {
+		t.Error("disabling a player disabled its account")
 	}
-	if f.canUpload(t, catbird.Game, catbird.Email, reset.Token) {
-		t.Error("a reset enabled the uploader")
+	for range 2 {
+		if st := decode[api.PlayerStatus](t, f, post(base+"/enable", token, ""), http.StatusOK); !st.Active {
+			t.Errorf("enable: %+v", st)
+		}
 	}
-	if st := decode[api.UploaderStatus](t, f, post(base+"/enable", token, ""), http.StatusOK); !st.Active {
-		t.Errorf("enable: %+v", st)
-	}
-	if !f.canUpload(t, catbird.Game, catbird.Email, reset.Token) {
-		t.Error("the new token does not authorize an upload")
-	}
-	if f.canUpload(t, catbird.Game, catbird.Email, catbird.Token) {
-		t.Error("the old token still authorizes an upload")
-	}
-	if strings.Contains(f.logs.String(), reset.Token) {
-		t.Error("the token was logged")
-	}
-	// The other uploader of the game is untouched.
-	if !f.canUpload(t, "game01", "spoonbill@example.com", "942a563c-c911-4c84-848b-fe4e96122d8c") {
-		t.Error("another uploader's token changed")
+	if got := f.players(t, game01); !slices.Equal(got, []string{catbird.Email, spoonbill.Email}) {
+		t.Errorf("players after enabling catbird = %v", got)
 	}
 }
 
-func TestUploaderScope(t *testing.T) {
+func TestPlayerScope(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
 	token := f.login(t, acct01.Email, acct01.Password)
-	other := decode[api.UploaderList](t, f, get("/api/games/game02/uploaders", f.login(t, acct02.Email, acct02.Password)), http.StatusOK)
-	otherID := jsonInt(other.Uploaders[0].ID) // caracara, in game02
+	other := decode[api.PlayerList](t, f, get(game02Players, f.login(t, acct02.Email, acct02.Password)), http.StatusOK)
+	otherID := jsonInt(other.Players[0].ID) // caracara, in game02
 
 	var first string
 	check := func(r *http.Request) {
@@ -264,63 +193,88 @@ func TestUploaderScope(t *testing.T) {
 			t.Errorf("%s %s: body %q differs from %q", r.Method, r.URL.Path, w.Body, first)
 		}
 	}
-	check(get("/api/games/game02/uploaders", token))
-	check(get("/api/games/nope/uploaders", token))
-	check(post("/api/games/game02/uploaders", token, `{"email":"wren@example.com"}`))
-	check(post("/api/games/nope/uploaders", token, `{"email":"wren@example.com"}`))
-	for _, action := range []string{"disable", "enable", "reset-token"} {
-		check(post("/api/games/game02/uploaders/"+otherID+"/"+action, token, "")) // someone else's game
-		check(post("/api/games/game01/uploaders/"+otherID+"/"+action, token, "")) // their uploader through a managed game
-		check(post("/api/games/game01/uploaders/999/"+action, token, ""))
-		check(post("/api/games/game01/uploaders/abc/"+action, token, ""))
-		check(post("/api/games/game01/uploaders/0/"+action, token, ""))
+	const unknown = "/api/systems/system01/games/nope/players"
+	check(get(game02Players, token))
+	check(get(unknown, token))
+	check(post(game02Players, token, `{"email":"wren@example.com"}`))
+	check(post(unknown, token, `{"email":"wren@example.com"}`))
+	for _, action := range []string{"disable", "enable"} {
+		check(post(game02Players+"/"+otherID+"/"+action, token, "")) // someone else's game
+		check(post(game01Players+"/"+otherID+"/"+action, token, "")) // their player through a managed game
+		check(post(game01Players+"/999/"+action, token, ""))
+		check(post(game01Players+"/abc/"+action, token, ""))
+		check(post(game01Players+"/0/"+action, token, ""))
+		check(post(game01Players+"/"+strings.Repeat("9", 30)+"/"+action, token, ""))
 	}
-	if !f.canUpload(t, caracara.Game, caracara.Email, caracara.Token) {
-		t.Error("another game's uploader was changed")
+	if got := f.players(t, game02); !slices.Equal(got, []string{caracara.Email}) {
+		t.Errorf("another game's players were changed to %v", got)
 	}
 	if _, ok, _ := f.s.FindAccount(t.Context(), "wren@example.com"); ok {
 		t.Error("a refused request created an account")
 	}
 
 	// A disabled manager loses the routes; an inactive game does not.
-	if err := f.s.SetGameActive(t.Context(), "game01", false); err != nil {
+	if err := f.s.SetGameActive(t.Context(), game01, false); err != nil {
 		t.Fatal(err)
 	}
-	if w := f.serve(post("/api/games/game01/uploaders", token, `{"email":"wren@example.com"}`)); w.Code != http.StatusCreated {
+	if w := f.serve(post(game01Players, token, `{"email":"wren@example.com"}`)); w.Code != http.StatusCreated {
 		t.Errorf("inactive game: %d", w.Code)
 	}
-	if err := f.s.SetManagerActive(t.Context(), "game01", acct01.Email, false); err != nil {
+	if err := f.s.SetManagerActive(t.Context(), store.Member{Game: game01, Email: acct01.Email}, false); err != nil {
 		t.Fatal(err)
 	}
-	check(get("/api/games/game01/uploaders", token))
-	check(post("/api/games/game01/uploaders", token, `{"email":"lark@example.com"}`))
+	check(get(game01Players, token))
+	check(post(game01Players, token, `{"email":"lark@example.com"}`))
 }
 
 func TestListGames(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
-	token := f.login(t, acct01.Email, acct01.Password)
-	decode[api.Game](t, f, post("/api/games", token, `{"code":"alpha"}`), http.StatusCreated)
-	if err := f.s.SetGameActive(t.Context(), "alpha", false); err != nil {
+	// acct01 also manages an inactive game in another system, with the code
+	// of the one it manages in system01.
+	other := store.GameRef{System: "alpha", Code: "game01"}
+	if err := f.s.CreateRows(t.Context(), store.Rows{
+		Systems:  []string{"alpha"},
+		Games:    []store.GameRef{other},
+		Managers: []store.Member{{Game: other, Email: acct01.Email}},
+	}); err != nil {
 		t.Fatal(err)
 	}
+	if err := f.s.SetGameActive(t.Context(), other, false); err != nil {
+		t.Fatal(err)
+	}
+	token := f.login(t, acct01.Email, acct01.Password)
 	list := decode[api.GameList](t, f, get("/api/games", token), http.StatusOK)
-	want := []api.ManagedGame{{Code: "alpha", Active: false}, {Code: "game01", Active: true}}
+	want := []api.ManagedGame{{System: "alpha", Code: "game01", Active: false}, {System: "system01", Code: "game01", Active: true}}
 	if !slices.Equal(list.Games, want) {
 		t.Errorf("games = %+v, want %+v", list.Games, want)
 	}
 	// A disabled manager row drops the game; the list is then [], not null.
-	if err := f.s.SetManagerActive(t.Context(), "game01", acct01.Email, false); err != nil {
-		t.Fatal(err)
-	}
-	if err := f.s.SetManagerActive(t.Context(), "alpha", acct01.Email, false); err != nil {
-		t.Fatal(err)
+	for _, game := range []store.GameRef{game01, other} {
+		if err := f.s.SetManagerActive(t.Context(), store.Member{Game: game, Email: acct01.Email}, false); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if w := f.serve(get("/api/games", token)); w.Code != http.StatusOK || strings.TrimSpace(w.Body.String()) != `{"games":[]}` {
 		t.Errorf("no games: %d %s", w.Code, w.Body)
 	}
 	if w := f.serve(get("/api/games", "")); w.Code != http.StatusUnauthorized {
 		t.Errorf("no token: %d", w.Code)
+	}
+}
+
+// Games are created only by the administrator, on the command line.
+func TestGamesCannotBeCreated(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	token := f.login(t, acct01.Email, acct01.Password)
+	for _, path := range []string{"/api/games", "/api/systems/system01/games", "/api/systems"} {
+		if w := f.serve(post(path, token, `{"code":"newgame"}`)); w.Code != http.StatusMethodNotAllowed && w.Code != http.StatusNotFound {
+			t.Errorf("POST %s: %d, want 404 or 405", path, w.Code)
+		}
+	}
+	if games, _ := f.s.Games(t.Context()); len(games) != 2 {
+		t.Errorf("games = %v, want the two defaults", games)
 	}
 }
 
@@ -335,12 +289,13 @@ func TestUnmatchedRequestsGetJSONErrors(t *testing.T) {
 		allow        string
 	}{
 		"unknown path":           {http.MethodGet, "/api/nope", http.StatusNotFound, ""},
-		"unknown path, POST":     {http.MethodPost, "/api/games/game01/nope", http.StatusNotFound, ""},
+		"unknown path, POST":     {http.MethodPost, game01Path + "/nope", http.StatusNotFound, ""},
 		"the prefix itself":      {http.MethodGet, "/api/", http.StatusNotFound, ""},
-		"wrong method":           {http.MethodDelete, "/api/games/game01/uploaders", http.StatusMethodNotAllowed, "GET, HEAD, POST"},
+		"a removed route":        {http.MethodGet, "/api/games/game01/uploads", http.StatusNotFound, ""},
+		"wrong method":           {http.MethodDelete, game01Players, http.StatusMethodNotAllowed, "GET, HEAD, POST"},
 		"GET of a POST route":    {http.MethodGet, "/api/login", http.StatusMethodNotAllowed, "POST"},
-		"POST of a GET route":    {http.MethodPost, "/api/games/game01/uploads", http.StatusMethodNotAllowed, "GET, HEAD"},
-		"wrong method, no token": {http.MethodPut, "/api/games", http.StatusMethodNotAllowed, "GET, HEAD, POST"},
+		"GET of an action":       {http.MethodGet, game01Players + "/1/disable", http.StatusMethodNotAllowed, "POST"},
+		"wrong method, no token": {http.MethodPut, "/api/games", http.StatusMethodNotAllowed, "GET, HEAD"},
 	} {
 		r := httptest.NewRequest(tc.method, tc.path, nil)
 		if !strings.HasSuffix(name, "no token") {
@@ -363,7 +318,7 @@ func TestUnmatchedRequestsGetJSONErrors(t *testing.T) {
 		}
 	}
 	// An unknown path is indistinguishable from an unmanaged game.
-	a, b := f.serve(get("/api/nope", token)), f.serve(get("/api/games/game02/uploads", token))
+	a, b := f.serve(get("/api/nope", token)), f.serve(get(game02Players, token))
 	if a.Body.String() != b.Body.String() {
 		t.Errorf("404 bodies differ: %q %q", a.Body, b.Body)
 	}

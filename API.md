@@ -4,10 +4,9 @@ Reference for anyone, human or agent, writing a tool that calls `fuingod`'s
 `/api/` routes. It describes what a client sends and receives. For the rules
 that govern changing the server, see [AGENTS.md](AGENTS.md).
 
-The API is for **game managers**: it creates games, manages a game's
-uploaders and their upload tokens, and reads the turn files players have
-uploaded. Players do not use it; they upload turn files through the web
-form (see [Uploading a turn file](#uploading-a-turn-file)).
+The API is for **game masters (GMs)** and their tools. Today it lists the
+games an account manages and manages each game's players. Routes for turns
+and files are being built; until they exist the server stores no files.
 
 ## Quick start
 
@@ -21,7 +20,7 @@ TOKEN=$(curl -s "$FUINGO/api/login" \
   | jq -r .token)
 
 # 2. Call a route with the token.
-curl -s "$FUINGO/api/games/game01/uploads?turn=7" \
+curl -s "$FUINGO/api/systems/system01/games/game01/players" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
@@ -29,33 +28,19 @@ The email and password above are one of the public default accounts that
 exist only in `development` and `agent`; see
 [Local development](#local-development).
 
-## Setting up a game
+## Systems and games
 
-A logged-in account can create a game and add its players without help
-from an operator. Continuing from the quick start:
+A **system** is a game such as Olympia. A **game** is one instance of it,
+such as Olympia / G3. A game's code is unique only within its system, so
+every game route names both:
 
-```sh
-# Create the game. The caller becomes its manager.
-curl -s "$FUINGO/api/games" -H "Authorization: Bearer $TOKEN" \
-  -H 'Content-Type: application/json' -d '{"code":"alpha"}'
-
-# Add each player. Every response carries that player's upload token,
-# which is shown only once, so save the output.
-for n in 1 2 3; do
-  curl -s "$FUINGO/api/games/alpha/uploaders" -H "Authorization: Bearer $TOKEN" \
-    -H 'Content-Type: application/json' -d "{\"email\":\"player-$n@example.com\"}"
-  echo
-done
-
-# Check the result.
-curl -s "$FUINGO/api/games/alpha/uploaders" -H "Authorization: Bearer $TOKEN"
+```text
+/api/systems/{system}/games/{game}/...
 ```
 
-Send each player the game code and their token; they put both on the
-first line of every turn file (see
-[Uploading a turn file](#uploading-a-turn-file)). The account itself, with
-its password, must come from an operator: see "Creating accounts, games,
-and players on the server" in [README.md](README.md).
+Only the administrator creates systems and games and assigns a game's GMs,
+with the `fuingo` command on the server; see "Creating systems, games, and
+accounts on the server" in [README.md](README.md). The API creates neither.
 
 ## Conventions
 
@@ -73,14 +58,16 @@ and players on the server" in [README.md](README.md).
   no doubled slashes. A trailing slash gets `404`. A path that needs
   cleaning, such as `/api//games`, gets a redirect to the clean path
   rather than an error; do not rely on following it.
-- **Responses.** JSON with `Content-Type: application/json`, except a
-  successful download of an upload's body, which is `text/plain`. Every
-  error is JSON. Every response has `Cache-Control: no-store`.
-- **Game codes and emails** are case-insensitive: the server lowercases
-  them, and returns them lowercased. Each must be one or more printable
-  ASCII characters (`0x21`–`0x7E`), with no spaces.
-- **IDs** are positive integers, never reused. Uploaders and uploads are
-  addressed by ID in paths, never by email.
+- **Responses.** JSON with `Content-Type: application/json`. Every error is
+  JSON. Every response has `Cache-Control: no-store`.
+- **Codes** of systems and games are case-insensitive: the server
+  lowercases them, and returns them lowercased. A code is 1 to 32
+  characters: letters and digits in any script, `-`, and `_`. A path with
+  anything else where a code belongs gets `404`.
+- **Emails** are case-insensitive in the same way. An email is one or more
+  printable ASCII characters (`0x21`–`0x7E`), with no spaces.
+- **IDs** are positive integers, never reused. A player is addressed by its
+  ID, the player's number, never by email.
 - **Timestamps** are UTC, always in the form
   `2026-11-21T22:06:29.628072000Z` (nine fractional digits), so they sort as
   text.
@@ -89,8 +76,8 @@ and players on the server" in [README.md](README.md).
   passes. A request from a page on another origin gets `403`. There is no
   CORS support.
 - **No pagination.** List routes return everything.
-- **Nothing is deleted.** No route deletes a game, uploader, or upload.
-  Revoke access by disabling.
+- **Nothing is deleted.** No route deletes a game or a player. Revoke
+  access by disabling.
 
 ## Errors
 
@@ -111,7 +98,7 @@ Treat the message as text for people; branch on the status code.
 | `403` | Cross-origin request refused. |
 | `404` | The game or item does not exist, or the account does not manage the game. The two cases are deliberately identical, and identical to an unknown path under `/api/`. |
 | `405` | Wrong method for the path. The `Allow` header lists the methods it accepts. |
-| `409` | The game code or uploader already exists. |
+| `409` | The account is already a player in the game. |
 | `415` | A body was required and `Content-Type` was not `application/json`. |
 | `429` | Too many failed logins from this client address. `Retry-After` gives the seconds to wait. |
 | `500` | Server error. Safe to retry later. |
@@ -127,9 +114,8 @@ Checks run in a fixed order, and the first failure decides the status:
 
 So the first two do not depend on being logged in. A request with no
 token gets `401`, never `415` or `400`, whatever its body. A bad body sent
-to a game the account does not manage gets `404`, not `400`. On
-`POST /api/games`, which names no game in its path, step 4 does not apply.
-On login, the order is `415`, `400`, `429`, then `401`.
+to a game the account does not manage gets `404`, not `400`. On login,
+the order is `415`, `400`, `429`, then `401`.
 
 A proxy in
 front of the server may still answer in its own format when the server is
@@ -140,7 +126,7 @@ parsing an error.
 
 ### `POST /api/login`
 
-Exchanges an account's email and API password for a bearer token.
+Exchanges an account's email and password for a bearer token.
 
 ```sh
 curl -s "$FUINGO/api/login" \
@@ -177,313 +163,144 @@ curl -s "$FUINGO/api/login" \
   with the right password, until `Retry-After` seconds pass. Successful
   logins and malformed requests (`400`, `415`) do not count. Do not retry
   a `401` in a loop. IPv6 clients are grouped by /64 prefix, so tools on
-  one network may share a limit. The limit is separate from the one on
-  failed uploads.
-- Only an account with an API password can log in. An operator creates one
-  with `fuingo account create` or `fuingo account set-password`; the API
-  cannot.
-- An **upload token is not an API password**, and the reverse. An upload
-  token never logs in here, and an API password never authorizes an upload.
+  one network may share a limit.
+- Only an account with a password can log in. The administrator gives an
+  account one with `fuingo account create` or `fuingo account set-password`;
+  the API cannot. An account a GM adds as a player has none.
 
 Keep the password and token out of logs, files, and command lines that
 other users can read.
 
 ## What an account can reach
 
-An account acts only on the games it **manages**. It manages a game it
-created with `POST /api/games`, or one an operator added it to with
-`fuingo game add --manager`.
+An account acts only on the games it **manages**: the ones the
+administrator made it a GM of, with `fuingo game add --manager`.
 
-- For any other game, every route with a game code in its path returns
-  the same `404` as for a game that does not exist. So does an uploader or upload ID that belongs to
-  another game, even when requested through a game the account manages.
-- A disabled game is still fully manageable. Disabling a game only stops
-  uploads to it.
-- If an operator disables the account's manager row for a game, the
-  account gets `404` for that game.
-- `GET /api/games` lists the games the account can reach, and
-  `POST /api/games` reports `409` for a code that is taken by anyone. That
-  `409` is the one place the API reveals a game the account does not
-  manage.
+- For any other game, every game route returns the same `404` as for a
+  game that does not exist. So does a player ID that belongs to another
+  game, even when requested through a game the account manages.
+- The same code in another system is another game. Managing
+  `olympia/g3` gives nothing in `atlantis/g3`.
+- A disabled game is still fully manageable.
+- If the administrator disables the account as a GM of a game, the account
+  gets `404` for that game.
 
 ## Games
 
 ### `GET /api/games`
 
-Lists the games the caller manages, in order of code.
+Lists the games the caller manages, in order of system code and then game
+code.
 
 ```sh
 curl -s "$FUINGO/api/games" -H "Authorization: Bearer $TOKEN"
 ```
 
 ```json
-{"games":[{"code":"alpha","active":false},{"code":"game01","active":true}]}
+{"games":[{"system":"atlantis","code":"g3","active":false},{"system":"system01","code":"game01","active":true}]}
 ```
 
-- `active` is whether the game accepts uploads. An inactive game is still
-  listed and still manageable.
-- A game whose manager row an operator has disabled is not listed.
+- `active` is the game's own flag. An inactive game is still listed and
+  still manageable.
+- A game the account has been disabled as a GM of is not listed.
 - `games` is `[]`, never `null`, for an account that manages none.
 
-### `POST /api/games`
+## Players
 
-Creates an active game and makes the caller its manager.
+A player is one account's access to one game. Its `id` is the player's
+number: assigned by the server, never reused, and meaningless to the game.
+The same email in two games is two players, with different IDs.
+
+### `GET /api/systems/{system}/games/{game}/players`
+
+Lists the game's players, active or not, in order of ID.
 
 ```sh
-curl -s "$FUINGO/api/games" \
-  -H "Authorization: Bearer $TOKEN" \
-  -H 'Content-Type: application/json' \
-  -d '{"code":"Alpha"}'
+curl -s "$FUINGO/api/systems/system01/games/game01/players" \
+  -H "Authorization: Bearer $TOKEN"
 ```
 
 ```json
-{"game":"alpha"}
-```
-
-| Status | When |
-| --- | --- |
-| `201` | Created. `game` is the lowercased code. |
-| `400` | `code` is missing, empty, or not printable ASCII without spaces. |
-| `409` | A game with that code exists, whoever manages it. |
-
-Any account that can log in may create games. No route renames, disables,
-or deletes a game, or adds another manager; an operator does those with
-`fuingo`.
-
-## Uploaders
-
-An uploader is one email's permission to upload turn files to one game. It
-has its own upload token for that game. The same email in two games is two
-uploaders, with different IDs and tokens.
-
-### `GET /api/games/{code}/uploaders`
-
-Lists the game's uploaders, enabled or not, in order of ID.
-
-```sh
-curl -s "$FUINGO/api/games/game01/uploaders" -H "Authorization: Bearer $TOKEN"
-```
-
-```json
-{"game":"game01","uploaders":[
+{"system":"system01","game":"game01","players":[
   {"id":1,"email":"catbird@example.com","active":true,"account_active":true},
-  {"id":2,"email":"spoonbill@example.com","active":true,"account_active":true}
-]}
+  {"id":2,"email":"spoonbill@example.com","active":false,"account_active":true}]}
 ```
 
-- `active` is the uploader's own flag in this game, which the `disable` and
-  `enable` routes change.
-- `account_active` is the flag on the email's account, which covers every
-  game. Only an operator changes it.
-- An uploader can upload only while `active`, `account_active`, and the
-  game are all active.
-- `uploaders` is `[]`, never `null`, for a game with none.
-- Tokens are never listed. They cannot be read back at all.
+- `active` is the player's own flag in this game; `account_active` is its
+  account's, which only the administrator changes. A player can use the
+  game only while both are true and the game is active.
+- `players` is `[]`, never `null`.
 
-### `POST /api/games/{code}/uploaders`
+### `POST /api/systems/{system}/games/{game}/players`
 
-Adds an enabled uploader to the game and returns its upload token.
+Makes the account with the email an active player in the game. If the
+email has no account, one is created, without a password.
 
 ```sh
-curl -s "$FUINGO/api/games/game01/uploaders" \
+curl -s "$FUINGO/api/systems/system01/games/game01/players" \
   -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"email":"Wren@Example.com"}'
 ```
 
 ```json
-{"game":"game01","id":4,"email":"wren@example.com","token":"3f0e6c1a-7b0d-4f6e-9a55-0d7c1e2b9a41"}
+{"system":"system01","game":"game01","id":4,"email":"wren@example.com"}
 ```
 
 | Status | When |
 | --- | --- |
-| `201` | Added. |
-| `400` | `email` is missing, empty, or not printable ASCII without spaces. |
-| `404` | The account does not manage the game. |
-| `409` | The email is already an uploader of the game, even a disabled one. Enable it or reset its token instead. |
+| `201` | Added. `email` is lowercased; `id` is the player's number. |
+| `400` | `email` is missing, empty, or not printable ASCII without spaces, or the body has another field. |
+| `409` | That email is already a player in the game, even a disabled one. Enable it instead. |
 
-- **The token appears only in this response.** The server keeps only a
-  hash. Deliver it to the player, with the game code, out of band. If it is
-  lost, reset it.
-- The server chooses the token, a random UUID. A request cannot supply one;
-  a `token` field is an unknown field and gets `400`.
-- If the email has no account, one is created without an API password. It
-  can upload but can never log in to the API.
-- The server does not check that the email is a deliverable address.
+- The body holds only `email`. A GM never sets, sees, or resets a password.
+- An account created this way cannot sign in until the administrator gives
+  it a password. Invitations by mail are not built yet.
 
-### `POST /api/games/{code}/uploaders/{id}/disable`
-### `POST /api/games/{code}/uploaders/{id}/enable`
+### `POST /api/systems/{system}/games/{game}/players/{id}/disable`
+### `POST /api/systems/{system}/games/{game}/players/{id}/enable`
 
-Clears or sets the uploader's `active` flag. Neither takes a body.
+Clears or sets the player's active flag in this game. Send no body.
 
 ```sh
-curl -s -X POST "$FUINGO/api/games/game01/uploaders/4/disable" \
+curl -s -X POST "$FUINGO/api/systems/system01/games/game01/players/2/disable" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
 ```json
-{"game":"game01","id":4,"active":false}
+{"system":"system01","game":"game01","id":2,"active":false}
 ```
 
 | Status | When |
 | --- | --- |
 | `200` | Done. Repeating the call succeeds and changes nothing. |
-| `404` | The account does not manage the game, or the game has no uploader with that ID. |
+| `404` | The game has no player with that ID. |
 
-A disabled uploader's uploads are refused at once. Its token and its past
-uploads are kept, so enabling it restores the same token.
-
-### `POST /api/games/{code}/uploaders/{id}/reset-token`
-
-Replaces the uploader's upload token. Takes no body.
-
-```sh
-curl -s -X POST "$FUINGO/api/games/game01/uploaders/4/reset-token" \
-  -H "Authorization: Bearer $TOKEN"
-```
-
-```json
-{"game":"game01","id":4,"email":"wren@example.com","token":"b8a3d1f2-64c7-4e0b-8d39-52f7a9c0e6d4"}
-```
-
-| Status | When |
-| --- | --- |
-| `200` | Reset. `token` is the new token, shown only here. |
-| `404` | The account does not manage the game, or the game has no uploader with that ID. |
-
-- The old token stops working at once. This call is **not idempotent**:
-  every call issues a new token and invalidates the last.
-- It does not change `active`. Resetting a disabled uploader leaves it
-  disabled.
-- The uploader's ID and upload history are unchanged.
-
-## Uploads
-
-An upload is one turn file a player submitted. Every successful submission
-is kept as its own upload, including a repeat of the same contents and
-several submissions for one turn. The API does not pick a "latest" or
-"final" one; the client decides.
-
-### `GET /api/games/{code}/uploads`
-
-Lists the game's uploads, oldest first. Add `?turn=N` to list one turn.
-
-```sh
-curl -s "$FUINGO/api/games/game01/uploads?turn=7" -H "Authorization: Bearer $TOKEN"
-```
-
-```json
-{"game":"game01","uploads":[
-  {"id":1,"game":"game01","email":"catbird@example.com","turn":"7",
-   "content_hash":"2cb0fbbb2a297e85dec6b2bd00b0057c16dbbc7098ac827b04e8c04c285e712b",
-   "size":10,"uploaded_at":"2026-11-21T22:06:29.628072000Z"}
-]}
-```
-
-| Field | Meaning |
-| --- | --- |
-| `id` | The upload's ID, for the body route. |
-| `game` | The game's code, the same as the top-level `game`. |
-| `email` | The uploader's email when the upload arrived. |
-| `turn` | The turn number as the player wrote it in the file. |
-| `content_hash` | Lowercase hex SHA-256 of the body. |
-| `size` | The body's length in bytes. |
-| `uploaded_at` | When the upload arrived. |
-
-| Status | When |
-| --- | --- |
-| `200` | Listed. `uploads` is `[]`, never `null`, when there are none. |
-| `400` | `turn` is present but empty. |
-| `404` | The account does not manage the game. |
-
-- **`turn` is text, matched exactly.** `?turn=7` does not match an upload
-  whose file said `07` or `7.0`. A turn is at most 32 printable ASCII
-  characters and need not be a number.
-- Two uploads with the same `content_hash` have identical bodies; a client
-  may download one and reuse it.
-- The list has no uploader ID. Match uploads to uploaders by `email`.
-
-### `GET /api/games/{code}/uploads/{id}/body`
-
-Returns one upload's contents.
-
-```sh
-curl -s -D - "$FUINGO/api/games/game01/uploads/1/body" -H "Authorization: Bearer $TOKEN"
-```
-
-```text
-HTTP/1.1 200 OK
-Content-Type: text/plain; charset=utf-8
-Content-Length: 10
-X-Content-SHA256: 2cb0fbbb2a297e85dec6b2bd00b0057c16dbbc7098ac827b04e8c04c285e712b
-
-UNIT 1234
-```
-
-| Status | When |
-| --- | --- |
-| `200` | The body follows. |
-| `404` | The account does not manage the game, or the game has no upload with that ID. |
-
-- The body is the file **without its first line**, the header line that
-  carried the upload token, and without a leading byte-order mark. The
-  token is never stored or returned.
-- The bytes are otherwise exactly as uploaded. Line endings may be LF or
-  CRLF, the last line may lack a newline, and only the first 256 bytes of
-  the original file were checked to be ASCII text. Despite the
-  `charset=utf-8` label, treat the body as bytes.
-- A body is at most 65,536 bytes.
-- `X-Content-SHA256` equals the upload's `content_hash`. Verify the bytes
-  received against it.
-- There is no route that fetches a body by its hash.
-
-## Uploading a turn file
-
-Uploading is not part of `/api/` and needs no login. It is described here
-because a manager's tool hands out the tokens that make it work.
-
-A player uploads a `.txt` file through the form at `/`, which posts it to
-`POST /upload` as `multipart/form-data` in a field named `file`. The file's
-first line is four words: the game code, the turn, the uploader's email,
-and that uploader's token for the game. The words are separated by one or
-more spaces or tabs, and the line may end in LF or CRLF:
-
-```text
-alpha 7 wren@example.com 3f0e6c1a-7b0d-4f6e-9a55-0d7c1e2b9a41
-<the orders>
-```
-
-Everything after the first line is the body the API returns. The game code
-and email are matched case-insensitively; the token is not.
-
-The response is an HTML fragment for the form, not JSON. `200` means the
-file was stored; the message is a receipt with the body's size and SHA-256.
-Failed authorizations are limited per client address in the same way as
-failed logins. [README.md](README.md) and [AGENTS.md](AGENTS.md) give the
-full rules for the file.
+Disabling a player changes only this game: the account, and its players in
+other games, are untouched.
 
 ## Local development
 
 In the `development` and `agent` environments only, a new database starts
-with default games and accounts, and the server has helper routes that skip
-the password. None of this exists in `test` or `production`.
-[TESTING.md](TESTING.md) is the full reference.
+with a default system, games, players, and accounts, and the server has
+helper routes that skip the password. None of this exists in `test` or
+`production`. [TESTING.md](TESTING.md) is the full reference.
 
-Default API accounts:
+The default system is `system01`. Default accounts with passwords:
 
 | Email | Password | Manages |
 | --- | --- | --- |
-| `acct01@example.com` | `worser-choices-2001` | `game01` |
-| `acct02@example.com` | `worser-choices-2002` | `game02` |
+| `acct01@example.com` | `worser-choices-2001` | `system01/game01` |
+| `acct02@example.com` | `worser-choices-2002` | `system01/game02` |
 
-Default uploaders are `catbird@example.com` and `spoonbill@example.com` in
-`game01` and `caracara@example.com` in `game02`; their tokens are in
-[TESTING.md](TESTING.md).
+Default players, whose accounts have no password, are `catbird@example.com`
+and `spoonbill@example.com` in `game01` and `caracara@example.com` in
+`game02`.
 
 To run a throwaway server with those defaults and an in-memory database:
 
 ```sh
-FUINGO_PEPPER=any-test-value go run ./cmd/fuingod --env agent --db :memory:
+go run ./cmd/fuingod --env agent --db :memory:
 ```
 
 It listens on `127.0.0.1:18443`. A command-line client may call that
@@ -495,8 +312,7 @@ Helper routes, under `/__development` in `development` and `/__agent` in
 | Route | Does |
 | --- | --- |
 | `POST /__agent/log-me-in/{email}` | Returns a bearer token for an existing account with a password, in the same JSON as `/api/login`, without checking the password. |
-| `POST /__agent/create-api-account/{email}` | Creates an account with a random password and returns the password as plain text (`201`). It manages no games until it creates one with `POST /api/games`. |
-| `POST /__agent/create-account/{game}/{email}/{token}` | Adds an uploader with a token you choose to an existing game. |
+| `POST /__agent/create-api-account/{email}` | Creates an account with a random password and returns the password as plain text (`201`). It manages no games. |
 
 Helper errors are plain text, not JSON.
 
@@ -507,12 +323,10 @@ Helper errors are plain text, not JSON.
   bcrypt check and a new session row.
 - On `429`, wait `Retry-After` seconds. On `500`, back off and retry.
 - Treat `404` on a game as "not mine or not there". Retrying will not help.
-- Send no body on `disable`, `enable`, and `reset-token`. One sent is
-  ignored, not validated.
-- Never retry `reset-token` or `POST .../uploaders` blindly after a timeout:
-  the first call may have succeeded, and its token is then lost. List the
-  uploaders to see what happened; if the uploader exists, reset its token
-  to get a known one.
+- Send no body on `disable` and `enable`. One sent is ignored, not
+  validated.
+- After a timeout on `POST .../players`, list the players before retrying:
+  the first call may have succeeded, and a retry then gets `409`.
 - Ignore JSON fields you do not recognize in responses, so the client
   survives additions.
 - Require `https` except for `localhost` and loopback addresses.

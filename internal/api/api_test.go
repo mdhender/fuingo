@@ -5,10 +5,7 @@ package api_test
 
 import (
 	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -18,19 +15,28 @@ import (
 	"time"
 
 	"github.com/mdhender/fuingo/internal/api"
-	"github.com/mdhender/fuingo/internal/credential"
 	"github.com/mdhender/fuingo/internal/devdata"
 	"github.com/mdhender/fuingo/internal/ratelimit"
 	"github.com/mdhender/fuingo/internal/store"
 )
 
-const pepper = "test-pepper"
+// Paths of the default games and their players.
+const (
+	game01Path    = "/api/systems/system01/games/game01"
+	game02Path    = "/api/systems/system01/games/game02"
+	game01Players = game01Path + "/players"
+	game02Players = game02Path + "/players"
+)
 
 var (
-	acct01   = devdata.Accounts[0] // manages game01
-	acct02   = devdata.Accounts[1] // manages game02
-	catbird  = devdata.Uploaders[0]
-	caracara = devdata.Uploaders[2]
+	acct01    = devdata.Accounts[0] // manages game01
+	acct02    = devdata.Accounts[1] // manages game02
+	catbird   = devdata.Players[0]  // plays game01
+	spoonbill = devdata.Players[1]  // plays game01
+	caracara  = devdata.Players[2]  // plays game02
+
+	game01 = store.GameRef{System: devdata.System, Code: "game01"}
+	game02 = store.GameRef{System: devdata.System, Code: "game02"}
 )
 
 // clock is a settable time source.
@@ -65,14 +71,13 @@ func newFixture(t *testing.T) *fixture {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { s.Close() })
-	if err := devdata.Seed(t.Context(), s, "development", pepper); err != nil {
+	if err := devdata.Seed(t.Context(), s, "development"); err != nil {
 		t.Fatal(err)
 	}
 	c := &clock{t: time.Date(2026, 11, 4, 12, 0, 0, 0, time.UTC)}
 	var logs bytes.Buffer
 	h, err := api.New(api.Config{
 		Store:         s,
-		Pepper:        pepper,
 		Logger:        slog.New(slog.NewTextHandler(&logs, nil)),
 		LoginFailures: ratelimit.New(api.FailureBurst, api.FailureInterval, c.Now),
 		Now:           c.Now,
@@ -123,43 +128,12 @@ func get(path, token string) *http.Request {
 	return r
 }
 
-// upload records an upload by a default uploader directly in the store.
-func (f *fixture) upload(t *testing.T, u devdata.Uploader, turn, body string) {
-	t.Helper()
-	gameID, ok, err := f.s.GameID(t.Context(), u.Game)
-	if err != nil || !ok {
-		t.Fatalf("game %s: %v %v", u.Game, ok, err)
-	}
-	up, ok, err := f.s.FindUploader(t.Context(), credential.Hash(pepper, u.Email, gameID, u.Token))
-	if err != nil || !ok {
-		t.Fatalf("uploader %s: %v %v", u.Email, ok, err)
-	}
-	sum := sha256.Sum256([]byte(body))
-	if err := f.s.RecordUpload(t.Context(), up.ID, up.Email, turn, hex.EncodeToString(sum[:]), []byte(body), f.clock.Now()); err != nil {
-		t.Fatal(err)
-	}
-	f.clock.Advance(time.Second)
-}
-
-func (f *fixture) list(t *testing.T, token, path string) api.UploadList {
-	t.Helper()
-	w := f.serve(get(path, token))
-	if w.Code != http.StatusOK {
-		t.Fatalf("GET %s: %d %s", path, w.Code, w.Body)
-	}
-	var list api.UploadList
-	if err := json.Unmarshal(w.Body.Bytes(), &list); err != nil {
-		t.Fatal(err)
-	}
-	return list
-}
-
 func TestLoginIssuesWorkingToken(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
 	// The email is case-folded.
 	token := f.login(t, strings.ToUpper(acct01.Email), acct01.Password)
-	if w := f.serve(get("/api/games/game01/uploads", token)); w.Code != http.StatusOK {
+	if w := f.serve(get(game01Players, token)); w.Code != http.StatusOK {
 		t.Errorf("list with token: %d %s", w.Code, w.Body)
 	}
 	if got := f.serve(loginRequest(acct01.Email, acct01.Password, "")).Header().Get("Cache-Control"); got != "no-store" {
@@ -179,7 +153,8 @@ func TestLoginFailuresAreIdentical(t *testing.T) {
 	cases := map[string]*http.Request{
 		"wrong password":      loginRequest(acct01.Email, "wrong", "192.0.2.1:1"),
 		"unknown email":       loginRequest("nobody@example.com", acct01.Password, "192.0.2.2:1"),
-		"account no password": loginRequest(catbird.Email, catbird.Token, "192.0.2.3:1"),
+		"account no password": loginRequest(catbird.Email, acct01.Password, "192.0.2.3:1"),
+		"email with a space":  loginRequest("acct 01@example.com", acct01.Password, "192.0.2.6:1"),
 		"inactive account":    loginRequest(acct02.Email, acct02.Password, "192.0.2.4:1"),
 		"password over 72":    loginRequest(acct01.Email, acct01.Password+strings.Repeat("x", 80), "192.0.2.5:1"),
 	}
@@ -269,13 +244,12 @@ func TestBearerAuthentication(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
 	token := f.login(t, acct01.Email, acct01.Password)
-	const path = "/api/games/game01/uploads"
+	const path = game01Players
 	cases := map[string]string{
 		"missing":      "",
 		"basic scheme": "Basic " + token,
 		"empty bearer": "Bearer ",
 		"unknown":      "Bearer not-a-token",
-		"upload token": "Bearer " + catbird.Token,
 		"password":     "Bearer " + acct01.Password,
 	}
 	for name, header := range cases {
@@ -301,11 +275,11 @@ func TestTokenExpires(t *testing.T) {
 	f := newFixture(t)
 	token := f.login(t, acct01.Email, acct01.Password)
 	f.clock.Advance(api.SessionLifetime - time.Second)
-	if w := f.serve(get("/api/games/game01/uploads", token)); w.Code != http.StatusOK {
+	if w := f.serve(get(game01Players, token)); w.Code != http.StatusOK {
 		t.Errorf("before expiry: %d", w.Code)
 	}
 	f.clock.Advance(time.Second)
-	if w := f.serve(get("/api/games/game01/uploads", token)); w.Code != http.StatusUnauthorized {
+	if w := f.serve(get(game01Players, token)); w.Code != http.StatusUnauthorized {
 		t.Errorf("at expiry: %d", w.Code)
 	}
 }
@@ -317,84 +291,37 @@ func TestDisabledAccountTokenStopsWorking(t *testing.T) {
 	if err := f.s.SetAccountActive(t.Context(), acct01.Email, false); err != nil {
 		t.Fatal(err)
 	}
-	if w := f.serve(get("/api/games/game01/uploads", token)); w.Code != http.StatusUnauthorized {
+	if w := f.serve(get(game01Players, token)); w.Code != http.StatusUnauthorized {
 		t.Errorf("disabled account: %d", w.Code)
-	}
-}
-
-func TestListUploads(t *testing.T) {
-	t.Parallel()
-	f := newFixture(t)
-	spoonbill := devdata.Uploaders[1]
-	f.upload(t, catbird, "3", "begin 1\nend\n")
-	f.upload(t, spoonbill, "3", "begin 2\nend\n")
-	f.upload(t, catbird, "03", "begin 1 late\nend\n")
-	f.upload(t, catbird, "3", "begin 1\nend\n") // identical content again
-	f.upload(t, caracara, "3", "begin 9\nend\n")
-	token := f.login(t, acct01.Email, acct01.Password)
-
-	list := f.list(t, token, "/api/games/GAME01/uploads?turn=3")
-	if list.Game != "game01" {
-		t.Errorf("game = %q", list.Game)
-	}
-	var emails []string
-	for i, u := range list.Uploads {
-		emails = append(emails, u.Email)
-		if u.Game != "game01" {
-			t.Errorf("upload %d game %q", i, u.Game)
-		}
-		if u.Turn != "3" {
-			t.Errorf("upload %d turn %q", i, u.Turn)
-		}
-		if i > 0 && u.ID <= list.Uploads[i-1].ID {
-			t.Errorf("uploads out of order: %+v", list.Uploads)
-		}
-		if _, err := time.Parse(api.TimeLayout, u.UploadedAt); err != nil {
-			t.Errorf("uploaded_at %q: %v", u.UploadedAt, err)
-		}
-	}
-	if want := []string{catbird.Email, spoonbill.Email, catbird.Email}; strings.Join(emails, ",") != strings.Join(want, ",") {
-		t.Errorf("emails = %v, want %v", emails, want)
-	}
-	if list.Uploads[0].ContentHash != list.Uploads[2].ContentHash || list.Uploads[0].Size != int64(len("begin 1\nend\n")) {
-		t.Errorf("uploads = %+v", list.Uploads)
-	}
-	if all := f.list(t, token, "/api/games/game01/uploads"); len(all.Uploads) != 4 {
-		t.Errorf("unfiltered: %d uploads, want 4", len(all.Uploads))
-	}
-	if none := f.list(t, token, "/api/games/game01/uploads?turn=4"); none.Uploads == nil || len(none.Uploads) != 0 {
-		t.Errorf("turn 4: %+v", none.Uploads)
-	}
-	if w := f.serve(get("/api/games/game01/uploads?turn=", token)); w.Code != http.StatusBadRequest {
-		t.Errorf("empty turn: %d", w.Code)
 	}
 }
 
 func TestGameScope(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
-	f.upload(t, catbird, "1", "same body\n")
-	f.upload(t, caracara, "1", "same body\n") // shares catbird's blob
-	token := f.login(t, acct01.Email, acct01.Password)
-	game01 := f.list(t, token, "/api/games/game01/uploads")
-	other := f.list(t, f.login(t, acct02.Email, acct02.Password), "/api/games/game02/uploads")
-	if len(game01.Uploads) != 1 || len(other.Uploads) != 1 {
-		t.Fatalf("uploads: %+v %+v", game01, other)
+	// The same codes in another system are other games.
+	if err := f.s.CreateRows(t.Context(), store.Rows{
+		Systems: []string{"system02"},
+		Games:   []store.GameRef{{System: "system02", Code: "game01"}},
+	}); err != nil {
+		t.Fatal(err)
 	}
-	otherID := jsonInt(other.Uploads[0].ID)
-
-	notFound := []string{
-		"/api/games/game02/uploads",                                      // managed by someone else
-		"/api/games/nope/uploads",                                        // unknown
-		"/api/games/game02/uploads/" + otherID + "/body",                 // other game's upload
-		"/api/games/game01/uploads/" + otherID + "/body",                 // other game's upload through a managed game
-		"/api/games/game01/uploads/999/body",                             // unknown upload
-		"/api/games/game01/uploads/abc/body",                             // not an ID
-		"/api/games/game01/uploads/0/body",                               // not an ID
-		"/api/games/game01/uploads/" + strings.Repeat("9", 30) + "/body", // overflow
+	token := f.login(t, acct01.Email, acct01.Password)
+	// Codes in the path are case-folded.
+	if w := f.serve(get("/api/systems/SYSTEM01/games/GAME01/players", token)); w.Code != http.StatusOK {
+		t.Errorf("uppercase codes: %d", w.Code)
 	}
 	var first string
-	for _, path := range notFound {
+	for _, path := range []string{
+		game02Players, // managed by someone else
+		"/api/systems/system01/games/nope/players",                            // unknown game
+		"/api/systems/nope/games/game01/players",                              // unknown system
+		"/api/systems/system02/games/game01/players",                          // the same code in another system
+		"/api/systems/system01/games/a%20b/players",                           // not a code
+		"/api/systems/system01/games/a%3Cb/players",                           // not a code
+		"/api/systems/sys%2F01/games/game01/players",                          // not a code
+		"/api/systems/system01/games/" + strings.Repeat("a", 33) + "/players", // too long
+	} {
 		w := f.serve(get(path, token))
 		if w.Code != http.StatusNotFound {
 			t.Errorf("%s: status %d, want 404", path, w.Code)
@@ -405,46 +332,19 @@ func TestGameScope(t *testing.T) {
 			t.Errorf("%s: body %q differs from %q", path, w.Body, first)
 		}
 	}
-	// There is no route by content hash.
-	if w := f.serve(get("/api/blobs/"+game01.Uploads[0].ContentHash, token)); w.Code != http.StatusNotFound {
-		t.Errorf("blob by hash: %d", w.Code)
-	}
 
 	// A disabled manager row loses access; an inactive game does not.
-	if err := f.s.SetGameActive(t.Context(), "game01", false); err != nil {
+	if err := f.s.SetGameActive(t.Context(), game01, false); err != nil {
 		t.Fatal(err)
 	}
-	if w := f.serve(get("/api/games/game01/uploads", token)); w.Code != http.StatusOK {
+	if w := f.serve(get(game01Players, token)); w.Code != http.StatusOK {
 		t.Errorf("inactive game: %d", w.Code)
 	}
-	if err := f.s.SetManagerActive(t.Context(), "game01", acct01.Email, false); err != nil {
+	if err := f.s.SetManagerActive(t.Context(), store.Member{Game: game01, Email: acct01.Email}, false); err != nil {
 		t.Fatal(err)
 	}
-	if w := f.serve(get("/api/games/game01/uploads", token)); w.Code != http.StatusNotFound {
+	if w := f.serve(get(game01Players, token)); w.Code != http.StatusNotFound {
 		t.Errorf("disabled manager: %d", w.Code)
-	}
-}
-
-func TestUploadBody(t *testing.T) {
-	t.Parallel()
-	f := newFixture(t)
-	const body = "begin 1 \"pw\"\r\nunit 2\r\nend\r\n"
-	f.upload(t, catbird, "1", body)
-	token := f.login(t, acct01.Email, acct01.Password)
-	u := f.list(t, token, "/api/games/game01/uploads").Uploads[0]
-	w := f.serve(get("/api/games/game01/uploads/"+jsonInt(u.ID)+"/body", token))
-	if w.Code != http.StatusOK {
-		t.Fatalf("body: %d %s", w.Code, w.Body)
-	}
-	got, _ := io.ReadAll(w.Body)
-	if string(got) != body {
-		t.Errorf("body = %q, want %q", got, body)
-	}
-	if h := w.Header().Get(api.HeaderContentSHA256); h != u.ContentHash {
-		t.Errorf("%s = %q, want %q", api.HeaderContentSHA256, h, u.ContentHash)
-	}
-	if w.Header().Get("Cache-Control") != "no-store" || w.Header().Get("X-Content-Type-Options") != "nosniff" {
-		t.Errorf("headers = %v", w.Header())
 	}
 }
 

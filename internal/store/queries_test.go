@@ -4,241 +4,142 @@
 package store
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
-	"time"
 
+	"zombiezen.com/go/sqlite"
 	"zombiezen.com/go/sqlite/sqlitex"
 )
 
-// seedUploaders creates a@example.com and b@example.com in game01 and
-// c@example.com in game02, and returns their uploader IDs.
-func seedUploaders(t *testing.T, s *Store) (a, b, c int64) {
+// Games used throughout the tests: two in one system, and one in another
+// system with the same code as the first.
+var (
+	game01      = GameRef{System: "system01", Code: "game01"}
+	game02      = GameRef{System: "system01", Code: "game02"}
+	otherGame01 = GameRef{System: "system02", Code: "game01"}
+)
+
+// seed inserts both systems and the three games, with rows added.
+func seed(t *testing.T, s *Store, rows Rows) {
 	t.Helper()
-	err := s.CreateRows(t.Context(), Rows{
-		Games: []string{"game01", "game02"},
-		Uploaders: []NewUploader{
-			{GameCode: "game01", Email: "a@example.com", HashedCredentials: fixedHash(1)},
-			{GameCode: "game01", Email: "b@example.com", HashedCredentials: fixedHash(2)},
-			{GameCode: "game02", Email: "c@example.com", HashedCredentials: fixedHash(3)},
-		},
-	})
-	if err != nil {
+	rows.Systems = []string{"system01", "system02"}
+	rows.Games = []GameRef{game01, game02, otherGame01}
+	if err := s.CreateRows(t.Context(), rows); err != nil {
 		t.Fatal(err)
-	}
-	return 1, 2, 3
-}
-
-func sha(data []byte) string {
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:])
-}
-
-// TestConcurrentRecordUpload runs identical uploads from several uploaders at
-// once on a WAL database with a full pool.
-func TestConcurrentRecordUpload(t *testing.T) {
-	t.Parallel()
-	s, err := Create(t.Context(), filepath.Join(t.TempDir(), "fuingo.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s.Close()
-	a, b, c := seedUploaders(t, s)
-	contents := []byte("setup orders\n")
-	hash := sha(contents)
-
-	uploaders := []struct {
-		id    int64
-		email string
-	}{{a, "a@example.com"}, {b, "b@example.com"}, {c, "c@example.com"}}
-	const rounds = 8
-	var wg sync.WaitGroup
-	for range rounds {
-		for _, u := range uploaders {
-			wg.Go(func() {
-				if err := s.RecordUpload(t.Context(), u.id, u.email, "1", hash, contents, time.Now()); err != nil {
-					t.Errorf("RecordUpload: %v", err)
-				}
-			})
-		}
-	}
-	wg.Wait()
-
-	blobs, err := s.Blobs(t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(blobs) != 1 || blobs[0].ContentHash != hash || string(blobs[0].Contents) != string(contents) {
-		t.Errorf("blobs = %+v, want one", blobs)
-	}
-	uploads, err := s.Uploads(t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(uploads) != rounds*len(uploaders) {
-		t.Errorf("%d uploads, want %d", len(uploads), rounds*len(uploaders))
 	}
 }
 
-// TestUploadEmailsAreLowercase checks that the history refuses an email that
-// is not lowercase, storing nothing.
-func TestUploadEmailsAreLowercase(t *testing.T) {
-	t.Parallel()
+func openMemory(t *testing.T) *Store {
+	t.Helper()
 	s, err := OpenPrivateMemory(t.Context(), t.Name())
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
-	a, _, _ := seedUploaders(t, s)
-	contents := []byte("orders\n")
-	if err := s.RecordUpload(t.Context(), a, "A@example.com", "1", sha(contents), contents, time.Now()); err == nil {
-		t.Fatal("RecordUpload with an uppercase email succeeded")
-	}
-	if uploads, _ := s.Uploads(t.Context()); len(uploads) != 0 {
-		t.Errorf("uploads = %+v, want none", uploads)
-	}
-	if blobs, _ := s.Blobs(t.Context()); len(blobs) != 0 {
-		t.Errorf("blob stored without an upload row: %+v", blobs)
-	}
+	t.Cleanup(func() { s.Close() })
+	return s
 }
 
-// TestRecordUploadIsAtomic checks that a failed row insert stores no blob.
-func TestRecordUploadIsAtomic(t *testing.T) {
-	t.Parallel()
-	s, err := OpenPrivateMemory(t.Context(), t.Name())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s.Close()
-	seedUploaders(t, s)
-	contents := []byte("orders\n")
-	if err := s.RecordUpload(t.Context(), 99, "nobody@example.com", "1", sha(contents), contents, time.Now()); err == nil {
-		t.Fatal("RecordUpload for an unknown uploader succeeded")
-	}
-	if blobs, _ := s.Blobs(t.Context()); len(blobs) != 0 {
-		t.Errorf("blob stored without an upload row: %+v", blobs)
-	}
-}
-
-// TestBlobsAreProtectedByForeignKeys checks that a blob cannot be deleted
-// while any upload refers to it, that an upload cannot refer to a missing
-// blob, and that unreferenced blobs can be swept.
-func TestBlobsAreProtectedByForeignKeys(t *testing.T) {
-	t.Parallel()
-	s, err := OpenPrivateMemory(t.Context(), t.Name())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s.Close()
-	a, b, c := seedUploaders(t, s)
-	shared, other := []byte("shared\n"), []byte("other\n")
-	for _, r := range []struct {
-		id       int64
-		email    string
-		contents []byte
-	}{{a, "a@example.com", shared}, {c, "c@example.com", shared}, {b, "b@example.com", other}} {
-		if err := s.RecordUpload(t.Context(), r.id, r.email, "1", sha(r.contents), r.contents, time.Now()); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	// The private pool has one connection; return it before calling s.Blobs.
-	conn, err := s.take(t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
-	run := func(query string, args ...any) error {
-		return sqlitex.Execute(conn, query, &sqlitex.ExecOptions{Args: args})
-	}
-	if err := run("DELETE FROM upload_blobs WHERE content_hash = ?;", sha(shared)); !isForeignKeyError(err) {
-		t.Errorf("deleting a referenced blob = %v, want a foreign key error", err)
-	}
-	if err := run("INSERT INTO uploads (uploader_id, email, turn_no, content_hash, uploaded_at) VALUES (1, 'a@example.com', '1', ?, 'x');", sha([]byte("missing"))); !isForeignKeyError(err) {
-		t.Errorf("upload of a missing blob = %v, want a foreign key error", err)
-	}
-
-	// Removing game01's history leaves "shared" referenced by game02 and
-	// "other" orphaned; the sweep removes only the orphan.
-	if err := run("DELETE FROM uploads WHERE uploader_id IN (SELECT id FROM game_uploaders WHERE game_id = 1);"); err != nil {
-		t.Fatal(err)
-	}
-	if err := run("DELETE FROM upload_blobs WHERE content_hash NOT IN (SELECT content_hash FROM uploads);"); err != nil {
-		t.Fatal(err)
-	}
-	s.pool.Put(conn)
-	blobs, err := s.Blobs(t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(blobs) != 1 || blobs[0].ContentHash != sha(shared) {
-		t.Errorf("after the sweep, blobs = %+v, want only the shared one", blobs)
-	}
-}
-
-// isForeignKeyError reports a foreign key violation. SQLite does not always
-// set the extended result code (a RESTRICT action reports plain
-// SQLITE_CONSTRAINT), so match the message.
+// isForeignKeyError reports a foreign key violation.
 func isForeignKeyError(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "FOREIGN KEY constraint failed")
+	return sqlite.ErrCode(err) == sqlite.ResultConstraintForeignKey || sqlite.ErrCode(err) == sqlite.ResultConstraintTrigger
 }
 
-// fixedHash returns a credential hash function that ignores the game.
-func fixedHash(b byte) func(int64) []byte {
-	return func(int64) []byte { return []byte{b} }
+func joined(emails []string) string {
+	return strings.Join(emails, ",")
 }
 
-func TestGameCodesMustBeLowercase(t *testing.T) {
+func TestCreateSystem(t *testing.T) {
 	t.Parallel()
-	s, err := OpenPrivateMemory(t.Context(), t.Name())
-	if err != nil {
-		t.Fatal(err)
+	s := openMemory(t)
+	id, err := s.CreateSystem(t.Context(), "olympia")
+	if err != nil || id <= 0 {
+		t.Fatalf("CreateSystem = %d, %v", id, err)
 	}
-	defer s.Close()
-	if err := s.CreateRows(t.Context(), Rows{Games: []string{"game01", "Game02"}}); !errors.Is(err, ErrGameCodeCase) {
-		t.Errorf("CreateRows with an uppercase code = %v, want ErrGameCodeCase", err)
+	if _, err := s.CreateSystem(t.Context(), "olympia"); !errors.Is(err, ErrSystemExists) {
+		t.Errorf("CreateSystem with an existing code = %v, want ErrSystemExists", err)
 	}
-	if games, _ := s.Games(t.Context()); len(games) != 0 {
-		t.Errorf("games = %v, want none", games)
+	if _, err := s.CreateSystem(t.Context(), "Atlantis"); !errors.Is(err, ErrCodeCase) {
+		t.Errorf("CreateSystem with an uppercase code = %v, want ErrCodeCase", err)
+	}
+	if got, err := s.Systems(t.Context()); err != nil || joined(got) != "olympia" {
+		t.Errorf("Systems = %v, %v; want only olympia", got, err)
 	}
 }
 
 func TestCreateGame(t *testing.T) {
 	t.Parallel()
-	s, err := OpenPrivateMemory(t.Context(), t.Name())
-	if err != nil {
-		t.Fatal(err)
+	s := openMemory(t)
+	for _, system := range []string{"system01", "system02"} {
+		if _, err := s.CreateSystem(t.Context(), system); err != nil {
+			t.Fatal(err)
+		}
 	}
-	defer s.Close()
-	id, err := s.CreateGame(t.Context(), "game01")
+	id, err := s.CreateGame(t.Context(), game01)
 	if err != nil {
 		t.Fatalf("CreateGame: %v", err)
 	}
-	if got, ok, err := s.GameID(t.Context(), "game01"); err != nil || !ok || got != id {
+	if got, ok, err := s.GameID(t.Context(), game01); err != nil || !ok || got != id {
 		t.Errorf("GameID = %d, %v, %v; want %d, true, nil", got, ok, err, id)
 	}
-	if _, err := s.CreateGame(t.Context(), "game01"); !errors.Is(err, ErrGameExists) {
-		t.Errorf("CreateGame with an existing code = %v, want ErrGameExists", err)
+	// The same code in another system is a different game.
+	other, err := s.CreateGame(t.Context(), otherGame01)
+	if err != nil || other == id {
+		t.Errorf("CreateGame of the same code in another system = %d, %v; want a new ID", other, err)
 	}
-	if _, err := s.CreateGame(t.Context(), "Game02"); !errors.Is(err, ErrGameCodeCase) {
-		t.Errorf("CreateGame with an uppercase code = %v, want ErrGameCodeCase", err)
+	if got, ok, err := s.GameID(t.Context(), otherGame01); err != nil || !ok || got != other {
+		t.Errorf("GameID in the other system = %d, %v, %v; want %d", got, ok, err, other)
 	}
-	if games, _ := s.Games(t.Context()); len(games) != 1 {
-		t.Errorf("games = %v, want only game01", games)
+	for _, tc := range []struct {
+		game GameRef
+		want error
+	}{
+		{game01, ErrGameExists},
+		{GameRef{System: "system01", Code: "Game03"}, ErrCodeCase},
+		{GameRef{System: "system99", Code: "game01"}, ErrUnknownSystem},
+	} {
+		if _, err := s.CreateGame(t.Context(), tc.game); !errors.Is(err, tc.want) {
+			t.Errorf("CreateGame(%s) = %v, want %v", tc.game, err, tc.want)
+		}
+	}
+	if _, ok, _ := s.GameID(t.Context(), GameRef{System: "system02", Code: "game02"}); ok {
+		t.Error("GameID found a game under the wrong system")
+	}
+	if games, _ := s.Games(t.Context()); len(games) != 2 {
+		t.Errorf("games = %v, want two", games)
+	}
+}
+
+func TestSetGameActive(t *testing.T) {
+	t.Parallel()
+	s := openMemory(t)
+	seed(t, s, Rows{Players: []Member{{game01, "p@example.com"}, {otherGame01, "p@example.com"}}})
+	for range 2 { // disabling twice succeeds
+		if err := s.SetGameActive(t.Context(), game01, false); err != nil {
+			t.Fatalf("SetGameActive(false): %v", err)
+		}
+	}
+	if got, _ := s.Players(t.Context(), game01); len(got) != 0 {
+		t.Errorf("players of an inactive game = %v, want none", got)
+	}
+	if got, _ := s.Players(t.Context(), otherGame01); joined(got) != "p@example.com" {
+		t.Errorf("players of the same code in another system = %v, want p@example.com", got)
+	}
+	if err := s.SetGameActive(t.Context(), game01, true); err != nil {
+		t.Fatalf("SetGameActive(true): %v", err)
+	}
+	if got, _ := s.Players(t.Context(), game01); joined(got) != "p@example.com" {
+		t.Errorf("players of a re-enabled game = %v, want p@example.com", got)
+	}
+	if err := s.SetGameActive(t.Context(), GameRef{System: "system02", Code: "game02"}, false); !errors.Is(err, ErrUnknownGame) {
+		t.Errorf("SetGameActive of a missing game = %v, want ErrUnknownGame", err)
 	}
 }
 
 func TestCreateAccount(t *testing.T) {
 	t.Parallel()
-	s, err := OpenPrivateMemory(t.Context(), t.Name())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s.Close()
+	s := openMemory(t)
 	id, err := s.CreateAccount(t.Context(), NewAccount{Email: "a@example.com", HashedSecret: []byte("hash-a")})
 	if err != nil {
 		t.Fatalf("CreateAccount: %v", err)
@@ -266,17 +167,17 @@ func TestCreateAccount(t *testing.T) {
 
 func TestCreateRowsIsAtomic(t *testing.T) {
 	t.Parallel()
-	s, err := OpenPrivateMemory(t.Context(), t.Name())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s.Close()
-	err = s.CreateRows(t.Context(), Rows{
-		Games:    []string{"game01"},
+	s := openMemory(t)
+	err := s.CreateRows(t.Context(), Rows{
+		Systems:  []string{"system01"},
+		Games:    []GameRef{game01},
 		Accounts: []NewAccount{{Email: "a@example.com", HashedSecret: []byte("x")}, {Email: "a@example.com", HashedSecret: []byte("y")}},
 	})
 	if !errors.Is(err, ErrAccountExists) {
 		t.Fatalf("CreateRows with a duplicate account = %v, want ErrAccountExists", err)
+	}
+	if systems, _ := s.Systems(t.Context()); len(systems) != 0 {
+		t.Errorf("systems = %v, want none", systems)
 	}
 	if games, _ := s.Games(t.Context()); len(games) != 0 {
 		t.Errorf("games = %v, want none", games)
@@ -288,67 +189,55 @@ func TestCreateRowsIsAtomic(t *testing.T) {
 
 func TestAddManager(t *testing.T) {
 	t.Parallel()
-	s, err := OpenPrivateMemory(t.Context(), t.Name())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s.Close()
-	if err := s.CreateRows(t.Context(), Rows{
-		Games:    []string{"game01", "game02"},
+	s := openMemory(t)
+	seed(t, s, Rows{
 		Accounts: []NewAccount{{Email: "a@example.com", HashedSecret: []byte("x")}, {Email: "b@example.com", HashedSecret: []byte("y")}},
-		Managers: []NewManager{{GameCode: "game01", Email: "b@example.com"}},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.AddManager(t.Context(), NewManager{GameCode: "game01", Email: "a@example.com"}); err != nil {
+		Managers: []Member{{game01, "b@example.com"}},
+	})
+	if err := s.AddManager(t.Context(), Member{game01, "a@example.com"}); err != nil {
 		t.Fatalf("AddManager: %v", err)
 	}
-	if err := s.AddManager(t.Context(), NewManager{GameCode: "game02", Email: "a@example.com"}); err != nil {
+	if err := s.AddManager(t.Context(), Member{game02, "a@example.com"}); err != nil {
 		t.Fatalf("AddManager to a second game: %v", err)
 	}
 	for _, tc := range []struct {
-		m    NewManager
+		m    Member
 		want error
 	}{
-		{NewManager{GameCode: "game01", Email: "a@example.com"}, ErrManagerExists},
-		{NewManager{GameCode: "game99", Email: "a@example.com"}, ErrUnknownGame},
-		{NewManager{GameCode: "game01", Email: "missing@example.com"}, ErrUnknownAccount},
+		{Member{game01, "a@example.com"}, ErrManagerExists},
+		{Member{GameRef{System: "system01", Code: "game99"}, "a@example.com"}, ErrUnknownGame},
+		{Member{GameRef{System: "system99", Code: "game01"}, "a@example.com"}, ErrUnknownGame},
+		{Member{game01, "missing@example.com"}, ErrUnknownAccount},
 	} {
 		if err := s.AddManager(t.Context(), tc.m); !errors.Is(err, tc.want) {
 			t.Errorf("AddManager(%+v) = %v, want %v", tc.m, err, tc.want)
 		}
 	}
-	for game, want := range map[string][]string{
-		"game01": {"a@example.com", "b@example.com"},
-		"game02": {"a@example.com"},
+	for game, want := range map[GameRef]string{
+		game01:      "a@example.com,b@example.com",
+		game02:      "a@example.com",
+		otherGame01: "", // managing system01/game01 is not managing system02/game01
 	} {
-		got, err := s.Managers(t.Context(), game)
-		if err != nil || strings.Join(got, ",") != strings.Join(want, ",") {
-			t.Errorf("Managers(%s) = %v, %v; want %v", game, got, err, want)
+		if got, err := s.Managers(t.Context(), game); err != nil || joined(got) != want {
+			t.Errorf("Managers(%s) = %v, %v; want %s", game, got, err, want)
 		}
 	}
 }
 
-func TestManagedRowsCannotBeDeleted(t *testing.T) {
+func TestReferencedRowsCannotBeDeleted(t *testing.T) {
 	t.Parallel()
-	s, err := OpenPrivateMemory(t.Context(), t.Name())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s.Close()
-	if err := s.CreateRows(t.Context(), Rows{
-		Games:    []string{"game01"},
+	s := openMemory(t)
+	seed(t, s, Rows{
 		Accounts: []NewAccount{{Email: "a@example.com", HashedSecret: []byte("x")}},
-		Managers: []NewManager{{GameCode: "game01", Email: "a@example.com"}},
-	}); err != nil {
-		t.Fatal(err)
-	}
+		Players:  []Member{{game02, "p@example.com"}},
+		Managers: []Member{{game01, "a@example.com"}},
+	})
 	conn, err := s.take(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer s.pool.Put(conn)
-	for _, stmt := range []string{"DELETE FROM games;", "DELETE FROM accounts;"} {
+	for _, stmt := range []string{"DELETE FROM systems;", "DELETE FROM games;", "DELETE FROM accounts;"} {
 		if err := sqlitex.ExecuteTransient(conn, stmt, nil); !isForeignKeyError(err) {
 			t.Errorf("%s = %v, want a foreign key error", stmt, err)
 		}
@@ -357,164 +246,172 @@ func TestManagedRowsCannotBeDeleted(t *testing.T) {
 
 func TestSetManagerActive(t *testing.T) {
 	t.Parallel()
-	s, err := OpenPrivateMemory(t.Context(), t.Name())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s.Close()
-	if err := s.CreateRows(t.Context(), Rows{
-		Games:    []string{"game01", "game02"},
+	s := openMemory(t)
+	seed(t, s, Rows{
 		Accounts: []NewAccount{{Email: "a@example.com", HashedSecret: []byte("x")}, {Email: "b@example.com", HashedSecret: []byte("y")}},
-		Managers: []NewManager{{GameCode: "game01", Email: "a@example.com"}, {GameCode: "game01", Email: "b@example.com"}, {GameCode: "game02", Email: "a@example.com"}},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	managers := func(game string) string {
+		Managers: []Member{{game01, "a@example.com"}, {game01, "b@example.com"}, {game02, "a@example.com"}, {otherGame01, "a@example.com"}},
+	})
+	managers := func(game GameRef) string {
 		t.Helper()
 		got, err := s.Managers(t.Context(), game)
 		if err != nil {
 			t.Fatal(err)
 		}
-		return strings.Join(got, ",")
+		return joined(got)
 	}
 	for range 2 { // disabling twice succeeds
-		if err := s.SetManagerActive(t.Context(), "game01", "a@example.com", false); err != nil {
+		if err := s.SetManagerActive(t.Context(), Member{game01, "a@example.com"}, false); err != nil {
 			t.Fatalf("SetManagerActive(false): %v", err)
 		}
 	}
-	if got := managers("game01"); got != "b@example.com" {
+	if got := managers(game01); got != "b@example.com" {
 		t.Errorf("managers of game01 = %s, want only b@example.com", got)
 	}
-	if got := managers("game02"); got != "a@example.com" {
-		t.Errorf("managers of game02 = %s, want a@example.com", got)
+	for _, game := range []GameRef{game02, otherGame01} {
+		if got := managers(game); got != "a@example.com" {
+			t.Errorf("managers of %s = %s, want a@example.com", game, got)
+		}
 	}
-	if err := s.AddManager(t.Context(), NewManager{GameCode: "game01", Email: "a@example.com"}); !errors.Is(err, ErrManagerExists) {
+	if err := s.AddManager(t.Context(), Member{game01, "a@example.com"}); !errors.Is(err, ErrManagerExists) {
 		t.Errorf("AddManager of an inactive manager = %v, want ErrManagerExists", err)
 	}
-	if err := s.SetManagerActive(t.Context(), "game01", "a@example.com", true); err != nil {
+	if err := s.SetManagerActive(t.Context(), Member{game01, "a@example.com"}, true); err != nil {
 		t.Fatalf("SetManagerActive(true): %v", err)
 	}
-	if got := managers("game01"); got != "a@example.com,b@example.com" {
+	if got := managers(game01); got != "a@example.com,b@example.com" {
 		t.Errorf("managers of game01 = %s, want both", got)
 	}
-	for _, tc := range []struct{ game, email string }{
-		{"game02", "b@example.com"},
-		{"game99", "a@example.com"},
-		{"game01", "missing@example.com"},
+	for _, tc := range []struct {
+		m    Member
+		want error
+	}{
+		{Member{game02, "b@example.com"}, ErrUnknownManager},
+		{Member{game01, "missing@example.com"}, ErrUnknownManager},
+		{Member{GameRef{System: "system01", Code: "game99"}, "a@example.com"}, ErrUnknownGame},
 	} {
-		if err := s.SetManagerActive(t.Context(), tc.game, tc.email, false); !errors.Is(err, ErrUnknownManager) {
-			t.Errorf("SetManagerActive(%s, %s) = %v, want ErrUnknownManager", tc.game, tc.email, err)
+		if err := s.SetManagerActive(t.Context(), tc.m, false); !errors.Is(err, tc.want) {
+			t.Errorf("SetManagerActive(%+v) = %v, want %v", tc.m, err, tc.want)
 		}
 	}
 }
 
 func TestSetAccountActive(t *testing.T) {
 	t.Parallel()
-	s, err := OpenPrivateMemory(t.Context(), t.Name())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s.Close()
-	if err := s.CreateRows(t.Context(), Rows{
-		Games:    []string{"game01"},
+	s := openMemory(t)
+	seed(t, s, Rows{
 		Accounts: []NewAccount{{Email: "a@example.com", HashedSecret: []byte("x")}, {Email: "b@example.com", HashedSecret: []byte("y")}},
-		Managers: []NewManager{{GameCode: "game01", Email: "a@example.com"}, {GameCode: "game01", Email: "b@example.com"}},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	check := func(wantActive bool, wantManagers string) {
+		Players:  []Member{{game02, "a@example.com"}},
+		Managers: []Member{{game01, "a@example.com"}, {game01, "b@example.com"}},
+	})
+	check := func(wantActive bool, wantManagers, wantPlayers string) {
 		t.Helper()
 		a, ok, err := s.FindAccount(t.Context(), "a@example.com")
 		if err != nil || !ok || a.Active != wantActive {
 			t.Errorf("FindAccount = %+v, %v, %v; want Active %v", a, ok, err, wantActive)
 		}
-		got, err := s.Managers(t.Context(), "game01")
-		if err != nil || strings.Join(got, ",") != wantManagers {
+		if got, err := s.Managers(t.Context(), game01); err != nil || joined(got) != wantManagers {
 			t.Errorf("Managers = %v, %v; want %s", got, err, wantManagers)
 		}
+		if got, err := s.Players(t.Context(), game02); err != nil || joined(got) != wantPlayers {
+			t.Errorf("Players = %v, %v; want %s", got, err, wantPlayers)
+		}
 	}
-	check(true, "a@example.com,b@example.com")
+	check(true, "a@example.com,b@example.com", "a@example.com")
 	for range 2 { // disabling twice succeeds
 		if err := s.SetAccountActive(t.Context(), "a@example.com", false); err != nil {
 			t.Fatalf("SetAccountActive(false): %v", err)
 		}
 	}
-	check(false, "b@example.com")
+	check(false, "b@example.com", "")
 	if err := s.SetAccountActive(t.Context(), "a@example.com", true); err != nil {
 		t.Fatalf("SetAccountActive(true): %v", err)
 	}
-	check(true, "a@example.com,b@example.com")
+	check(true, "a@example.com,b@example.com", "a@example.com")
 	if err := s.SetAccountActive(t.Context(), "missing@example.com", false); !errors.Is(err, ErrUnknownAccount) {
 		t.Errorf("SetAccountActive of a missing account = %v, want ErrUnknownAccount", err)
 	}
 }
 
-// TestUploadersHaveAccounts checks that an uploader uses the account with its
-// email, creating one without a secret if needed, and that disabling the
-// account stops its uploads.
-func TestUploadersHaveAccounts(t *testing.T) {
+// TestPlayersHaveAccounts checks that a player uses the account with its
+// email, creating one without a secret if needed, and that one account is a
+// separate player in each game.
+func TestPlayersHaveAccounts(t *testing.T) {
 	t.Parallel()
-	s, err := OpenPrivateMemory(t.Context(), t.Name())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s.Close()
-	if err := s.CreateRows(t.Context(), Rows{
-		Games:    []string{"game01", "game02"},
+	s := openMemory(t)
+	seed(t, s, Rows{
 		Accounts: []NewAccount{{Email: "a@example.com", HashedSecret: []byte("x")}},
-		Uploaders: []NewUploader{
-			{GameCode: "game01", Email: "a@example.com", HashedCredentials: fixedHash(1)},
-			{GameCode: "game01", Email: "b@example.com", HashedCredentials: fixedHash(2)},
-			{GameCode: "game02", Email: "b@example.com", HashedCredentials: fixedHash(3)},
-		},
-		Managers: []NewManager{{GameCode: "game01", Email: "a@example.com"}},
-	}); err != nil {
-		t.Fatal(err)
-	}
+		Players:  []Member{{game01, "a@example.com"}, {game01, "b@example.com"}},
+	})
 	if a, _, _ := s.FindAccount(t.Context(), "a@example.com"); string(a.HashedSecret) != "x" {
-		t.Errorf("uploader a@example.com changed its account's secret to %q", a.HashedSecret)
+		t.Errorf("player a@example.com changed its account's secret to %q", a.HashedSecret)
 	}
 	b, ok, err := s.FindAccount(t.Context(), "b@example.com")
 	if err != nil || !ok || b.HashedSecret != nil || !b.Active {
 		t.Errorf("FindAccount(b) = %+v, %v, %v; want an active account without a secret", b, ok, err)
 	}
 	if _, err := s.CreateAccount(t.Context(), NewAccount{Email: "b@example.com", HashedSecret: []byte("y")}); !errors.Is(err, ErrAccountExists) {
-		t.Errorf("CreateAccount for an uploader's email = %v, want ErrAccountExists", err)
+		t.Errorf("CreateAccount for a player's email = %v, want ErrAccountExists", err)
 	}
-	if err := s.CreateUploader(t.Context(), NewUploader{GameCode: "game02", Email: "b@example.com", HashedCredentials: fixedHash(4)}); !errors.Is(err, ErrUploaderExists) {
-		t.Errorf("CreateUploader for an existing uploader = %v, want ErrUploaderExists", err)
+	first, err := s.AddPlayer(t.Context(), Member{game02, "b@example.com"})
+	if err != nil {
+		t.Fatalf("AddPlayer in a second game: %v", err)
 	}
-	if err := s.SetAccountActive(t.Context(), "b@example.com", false); err != nil {
-		t.Fatal(err)
+	second, err := s.AddPlayer(t.Context(), Member{otherGame01, "b@example.com"})
+	if err != nil || second == first {
+		t.Fatalf("AddPlayer in another system = %d, %v; want a new ID after %d", second, err, first)
 	}
-	for _, hash := range []byte{2, 3} {
-		if _, ok, _ := s.FindUploader(t.Context(), []byte{hash}); ok {
-			t.Errorf("FindUploader(%02x) found an uploader with an inactive account", hash)
+	for _, tc := range []struct {
+		m    Member
+		want error
+	}{
+		{Member{game02, "b@example.com"}, ErrPlayerExists},
+		{Member{GameRef{System: "system02", Code: "game02"}, "b@example.com"}, ErrUnknownGame},
+	} {
+		if _, err := s.AddPlayer(t.Context(), tc.m); !errors.Is(err, tc.want) {
+			t.Errorf("AddPlayer(%+v) = %v, want %v", tc.m, err, tc.want)
 		}
 	}
-	if u, ok, err := s.FindUploader(t.Context(), []byte{1}); err != nil || !ok || u.Email != "a@example.com" {
-		t.Errorf("FindUploader(01) = %+v, %v, %v", u, ok, err)
+	if got, _ := s.Players(t.Context(), game01); joined(got) != "a@example.com,b@example.com" {
+		t.Errorf("Players(game01) = %v", got)
 	}
-	if got, _ := s.Managers(t.Context(), "game01"); strings.Join(got, ",") != "a@example.com" {
-		t.Errorf("Managers = %v, want a@example.com", got)
+}
+
+func TestSetPlayerActive(t *testing.T) {
+	t.Parallel()
+	s := openMemory(t)
+	seed(t, s, Rows{Players: []Member{{game01, "p@example.com"}, {game02, "p@example.com"}, {otherGame01, "p@example.com"}}})
+	for range 2 { // disabling twice succeeds
+		if err := s.SetPlayerActive(t.Context(), Member{game01, "p@example.com"}, false); err != nil {
+			t.Fatalf("SetPlayerActive(false): %v", err)
+		}
+	}
+	for game, want := range map[GameRef]string{game01: "", game02: "p@example.com", otherGame01: "p@example.com"} {
+		if got, _ := s.Players(t.Context(), game); joined(got) != want {
+			t.Errorf("Players(%s) = %v, want %q", game, got, want)
+		}
+	}
+	if _, err := s.AddPlayer(t.Context(), Member{game01, "p@example.com"}); !errors.Is(err, ErrPlayerExists) {
+		t.Errorf("AddPlayer of an inactive player = %v, want ErrPlayerExists", err)
+	}
+	if err := s.SetPlayerActive(t.Context(), Member{game01, "p@example.com"}, true); err != nil {
+		t.Fatalf("SetPlayerActive(true): %v", err)
+	}
+	if got, _ := s.Players(t.Context(), game01); joined(got) != "p@example.com" {
+		t.Errorf("Players(game01) after enabling = %v", got)
+	}
+	if err := s.SetPlayerActive(t.Context(), Member{game01, "missing@example.com"}, false); !errors.Is(err, ErrUnknownPlayer) {
+		t.Errorf("SetPlayerActive of a missing player = %v, want ErrUnknownPlayer", err)
 	}
 }
 
 func TestSetAccountSecret(t *testing.T) {
 	t.Parallel()
-	s, err := OpenPrivateMemory(t.Context(), t.Name())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s.Close()
-	if err := s.CreateRows(t.Context(), Rows{
-		Games:     []string{"game01"},
-		Accounts:  []NewAccount{{Email: "a@example.com", HashedSecret: []byte("x")}},
-		Uploaders: []NewUploader{{GameCode: "game01", Email: "u@example.com", HashedCredentials: fixedHash(1)}},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	for _, email := range []string{"a@example.com", "u@example.com"} {
+	s := openMemory(t)
+	seed(t, s, Rows{
+		Accounts: []NewAccount{{Email: "a@example.com", HashedSecret: []byte("x")}},
+		Players:  []Member{{game01, "p@example.com"}},
+	})
+	for _, email := range []string{"a@example.com", "p@example.com"} {
 		if err := s.SetAccountSecret(t.Context(), email, []byte("new")); err != nil {
 			t.Fatalf("SetAccountSecret(%s): %v", email, err)
 		}
@@ -522,10 +419,141 @@ func TestSetAccountSecret(t *testing.T) {
 			t.Errorf("%s: secret = %q, want new", email, a.HashedSecret)
 		}
 	}
-	if _, ok, _ := s.FindUploader(t.Context(), []byte{1}); !ok {
-		t.Error("setting the secret stopped u@example.com's uploads")
+	if got, _ := s.Players(t.Context(), game01); joined(got) != "p@example.com" {
+		t.Errorf("setting the secret changed the players to %v", got)
 	}
 	if err := s.SetAccountSecret(t.Context(), "missing@example.com", []byte("new")); !errors.Is(err, ErrUnknownAccount) {
 		t.Errorf("SetAccountSecret of a missing account = %v, want ErrUnknownAccount", err)
+	}
+}
+
+// TestMigrateFromVersion2 migrates a database made under the header-line
+// design: its games move into the system "legacy", its uploaders become
+// players, every row keeps its ID, and no ID is ever reused, even one whose
+// row was deleted before the migration.
+func TestMigrateFromVersion2(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "v2.db")
+	old := schema
+	old.Migrations = migrations[:2]
+	db, err := old.Create(t.Context(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, err := db.Pool.Take(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = sqlitex.ExecuteScript(conn, `
+INSERT INTO games (code, is_active) VALUES ('game01', 1), ('game02', 0), ('gone', 1);
+DELETE FROM games WHERE code = 'gone';
+INSERT INTO accounts (email, hashed_secret) VALUES ('gm@example.com', 'hash'), ('p@example.com', NULL), ('q@example.com', NULL);
+INSERT INTO game_uploaders (game_id, account_id, hashed_credentials, is_active) VALUES (1, 2, x'01', 1), (2, 2, x'02', 0), (1, 3, x'03', 1);
+DELETE FROM game_uploaders WHERE id = 3;
+INSERT INTO game_managers (game_id, account_id, is_active) VALUES (1, 1, 1), (2, 1, 0), (2, 3, 1);
+DELETE FROM game_managers WHERE id = 3;
+INSERT INTO upload_blobs (content_hash, contents, created_at) VALUES ('0000000000000000000000000000000000000000000000000000000000000000', 'orders', 'x');
+INSERT INTO uploads (uploader_id, email, turn_no, content_hash, uploaded_at) VALUES (1, 'p@example.com', '1', '0000000000000000000000000000000000000000000000000000000000000000', 'x');
+`, nil)
+	db.Pool.Put(conn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Migrate(t.Context(), path); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	s, err := Open(t.Context(), path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+
+	legacy01, legacy02 := GameRef{System: "legacy", Code: "game01"}, GameRef{System: "legacy", Code: "game02"}
+	if got, _ := s.Systems(t.Context()); joined(got) != "legacy" {
+		t.Errorf("systems = %v, want legacy", got)
+	}
+	for game, want := range map[GameRef]int64{legacy01: 1, legacy02: 2} {
+		if id, ok, err := s.GameID(t.Context(), game); err != nil || !ok || id != want {
+			t.Errorf("GameID(%s) = %d, %v, %v; want %d", game, id, ok, err, want)
+		}
+	}
+	if got, _ := s.Players(t.Context(), legacy01); joined(got) != "p@example.com" {
+		t.Errorf("players of game01 = %v, want p@example.com", got)
+	}
+	if got, _ := s.Players(t.Context(), legacy02); len(got) != 0 {
+		t.Errorf("players of the inactive game02 = %v, want none", got)
+	}
+	if got, _ := s.Managers(t.Context(), legacy01); joined(got) != "gm@example.com" {
+		t.Errorf("managers of game01 = %v, want gm@example.com", got)
+	}
+	if got, _ := s.Managers(t.Context(), legacy02); len(got) != 0 {
+		t.Errorf("managers of game02 = %v, want none: its manager was inactive", got)
+	}
+	players, err := s.GamePlayers(t.Context(), 2)
+	if err != nil || len(players) != 1 || players[0].ID != 2 || players[0].Active {
+		t.Errorf("players of game02 = %+v, %v; want the inactive player 2", players, err)
+	}
+
+	// New rows continue each sequence past the deleted rows.
+	if id, err := s.CreateGame(t.Context(), GameRef{System: "legacy", Code: "game03"}); err != nil || id != 4 {
+		t.Errorf("next game ID = %d, %v; want 4", id, err)
+	}
+	if id, err := s.AddPlayer(t.Context(), Member{legacy01, "q@example.com"}); err != nil || id != 4 {
+		t.Errorf("next player ID = %d, %v; want 4", id, err)
+	}
+	if err := s.AddManager(t.Context(), Member{legacy01, "q@example.com"}); err != nil {
+		t.Fatal(err)
+	}
+	conn, err = s.take(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.pool.Put(conn)
+	if id, err := sqlitex.ResultInt64(conn.Prep("SELECT max(id) FROM game_managers;")); err != nil || id != 4 {
+		t.Errorf("next manager ID = %d, %v; want 4", id, err)
+	}
+	if err := sqlitex.ExecuteTransient(conn, "PRAGMA foreign_key_check;", &sqlitex.ExecOptions{
+		ResultFunc: func(stmt *sqlite.Stmt) error {
+			t.Errorf("foreign key violation in %s", stmt.ColumnText(0))
+			return nil
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, table := range []string{"uploads", "upload_blobs", "game_uploaders", "games_v2", "game_managers_v3"} {
+		if n, err := sqlitex.ResultInt(conn.Prep("SELECT count(*) FROM sqlite_schema WHERE name = '" + table + "';")); err != nil || n != 0 {
+			t.Errorf("table %s: count = %d, %v; want it gone", table, n, err)
+		}
+	}
+}
+
+// TestMigrateEmptyVersion2 migrates a database with no games: it gets no
+// legacy system.
+func TestMigrateEmptyVersion2(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "v2.db")
+	old := schema
+	old.Migrations = migrations[:2]
+	db, err := old.Create(t.Context(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := Migrate(t.Context(), path); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	s, err := Open(t.Context(), path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+	if got, _ := s.Systems(t.Context()); len(got) != 0 {
+		t.Errorf("systems = %v, want none", got)
 	}
 }

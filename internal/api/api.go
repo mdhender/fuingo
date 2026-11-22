@@ -1,25 +1,18 @@
 // Copyright (c) 2026 Michael D Henderson.
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-// Package api implements the /api/ routes for game managers.
+// Package api implements the /api/ routes for game masters and their tools.
 //
-// A client logs in with an account's email and API password at
-// POST /api/login and receives a bearer token, which it sends as
-// "Authorization: Bearer TOKEN" on every other route. Only the token's
-// SHA-256 is stored. Upload tokens never authenticate here, and an API
-// password never authorizes an upload.
+// A client logs in with an account's email and password at POST /api/login
+// and receives a bearer token, which it sends as "Authorization: Bearer
+// TOKEN" on every other route. Only the token's SHA-256 is stored.
 //
-// POST /api/games creates a game and makes the account its manager. The
-// uploader routes list a managed game's uploaders, add one, disable or
-// enable one, and reset one's upload token. A new token is generated here
-// and returned once; only its hash is stored, and it is never logged.
+// A game is named by its system and its own code, as in
+// /api/systems/{system}/games/{game}. Every game route is scoped to the
+// games the account actively manages. A game it does not manage, and
+// anything in such a game, get the same 404 as one that does not exist.
 //
-// Every other game route is scoped to the games the account actively manages. A
-// game it does not manage, and an upload in such a game, get the same 404
-// as one that does not exist. Upload contents are reachable only through an
-// upload in a managed game, never by content hash.
-//
-// Failed logins are limited per client address, like failed uploads.
+// Failed logins are limited per client address.
 //
 // Every error is a JSON Error, including a path or method that matches no
 // route. The server uses Forbidden for cross-origin requests it refuses.
@@ -37,16 +30,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mdhender/fuingo/internal/cerrs"
 	"github.com/mdhender/fuingo/internal/clientip"
-	"github.com/mdhender/fuingo/internal/credential"
+	"github.com/mdhender/fuingo/internal/names"
 	"github.com/mdhender/fuingo/internal/ratelimit"
 	"github.com/mdhender/fuingo/internal/store"
 	"golang.org/x/crypto/bcrypt"
 )
-
-// ErrMissingPepper is returned by New without a pepper.
-const ErrMissingPepper = cerrs.Error("upload pepper is missing or empty")
 
 const (
 	// SessionLifetime is how long a bearer token from /api/login is valid.
@@ -58,9 +47,6 @@ const (
 	FailureInterval = time.Minute
 	// TimeLayout formats every timestamp in responses: UTC, at a fixed width.
 	TimeLayout = "2006-01-02T15:04:05.000000000Z"
-	// HeaderContentSHA256 carries the lowercase hex SHA-256 of an upload's
-	// contents.
-	HeaderContentSHA256 = "X-Content-SHA256"
 	// maxLoginBody bounds the login request.
 	maxLoginBody = 4 << 10
 )
@@ -75,24 +61,6 @@ type LoginRequest struct {
 type LoginResponse struct {
 	Token     string `json:"token"`
 	ExpiresAt string `json:"expires_at"`
-}
-
-// UploadList is the response to GET /api/games/{code}/uploads.
-type UploadList struct {
-	Game    string   `json:"game"`
-	Uploads []Upload `json:"uploads"`
-}
-
-// Upload describes one upload. Game is the code of the game it was made
-// to, and Turn is the turn number as written in the file's header line.
-type Upload struct {
-	ID          int64  `json:"id"`
-	Game        string `json:"game"`
-	Email       string `json:"email"`
-	Turn        string `json:"turn"`
-	ContentHash string `json:"content_hash"`
-	Size        int64  `json:"size"`
-	UploadedAt  string `json:"uploaded_at"`
 }
 
 // Error is the body of every error response.
@@ -111,15 +79,11 @@ const (
 	msgTooManyFailed    = "too many failed logins from your address; try again later"
 	msgUnauthorized     = "a valid bearer token is required"
 	msgUnsupported      = "the request body must be application/json"
-	msgBadTurn          = "turn must not be empty"
 )
 
 // Config configures a Handler.
 type Config struct {
-	Store *store.Store
-	// Pepper keys the upload credential hashes of the uploaders the routes
-	// add and reset. It is required.
-	Pepper string
+	Store  *store.Store
 	Logger *slog.Logger
 	// Clients finds the client's address behind trusted proxies.
 	Clients clientip.Resolver
@@ -133,7 +97,6 @@ type Config struct {
 // Handler serves the /api/ routes.
 type Handler struct {
 	db       *store.Store
-	pepper   string
 	logger   *slog.Logger
 	clients  clientip.Resolver
 	failures *ratelimit.Limiter
@@ -146,9 +109,6 @@ type Handler struct {
 
 // New returns the handler for the /api/ routes.
 func New(cfg Config) (*Handler, error) {
-	if cfg.Pepper == "" {
-		return nil, ErrMissingPepper
-	}
 	if cfg.LoginFailures == nil {
 		cfg.LoginFailures = ratelimit.New(FailureBurst, FailureInterval, nil)
 	}
@@ -159,18 +119,15 @@ func New(cfg Config) (*Handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	h := &Handler{db: cfg.Store, pepper: cfg.Pepper, logger: cfg.Logger, clients: cfg.Clients, failures: cfg.LoginFailures, now: cfg.Now, dummyHash: dummy}
+	h := &Handler{db: cfg.Store, logger: cfg.Logger, clients: cfg.Clients, failures: cfg.LoginFailures, now: cfg.Now, dummyHash: dummy}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/login", h.login)
 	mux.HandleFunc("GET /api/games", h.authenticated(h.listGames))
-	mux.HandleFunc("POST /api/games", h.authenticated(h.createGame))
-	mux.HandleFunc("GET /api/games/{code}/uploaders", h.authenticated(h.listUploaders))
-	mux.HandleFunc("POST /api/games/{code}/uploaders", h.authenticated(h.addUploader))
-	mux.HandleFunc("POST /api/games/{code}/uploaders/{id}/disable", h.authenticated(h.setUploaderActive(false)))
-	mux.HandleFunc("POST /api/games/{code}/uploaders/{id}/enable", h.authenticated(h.setUploaderActive(true)))
-	mux.HandleFunc("POST /api/games/{code}/uploaders/{id}/reset-token", h.authenticated(h.resetUploaderToken))
-	mux.HandleFunc("GET /api/games/{code}/uploads", h.authenticated(h.listUploads))
-	mux.HandleFunc("GET /api/games/{code}/uploads/{id}/body", h.authenticated(h.uploadBody))
+	const game = "/api/systems/{system}/games/{game}"
+	mux.HandleFunc("GET "+game+"/players", h.authenticated(h.listPlayers))
+	mux.HandleFunc("POST "+game+"/players", h.authenticated(h.addPlayer))
+	mux.HandleFunc("POST "+game+"/players/{id}/disable", h.authenticated(h.setPlayerActive(false)))
+	mux.HandleFunc("POST "+game+"/players/{id}/enable", h.authenticated(h.setPlayerActive(true)))
 	h.mux = mux
 	return h, nil
 }
@@ -245,7 +202,9 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusTooManyRequests, msgTooManyFailed)
 		return
 	}
-	email := credential.NormalizeEmail(req.Email)
+	// An email that could not belong to an account fails like a wrong
+	// password, after the same bcrypt comparison.
+	email, emailErr := names.Email(req.Email)
 	account, found, err := h.db.FindAccount(r.Context(), email)
 	if err != nil {
 		h.failures.Return(client)
@@ -254,7 +213,7 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	hash := h.dummyHash
-	usable := found && account.Active && account.HashedSecret != nil
+	usable := emailErr == nil && found && account.Active && account.HashedSecret != nil
 	if usable {
 		hash = account.HashedSecret
 	}
@@ -298,82 +257,27 @@ func (h *Handler) authenticated(next func(http.ResponseWriter, *http.Request, st
 	}
 }
 
-// managedGame returns the ID of the request's game if the account manages
-// it, or responds 404.
-func (h *Handler) managedGame(w http.ResponseWriter, r *http.Request, account store.Account) (string, int64, bool) {
-	code := credential.NormalizeGameCode(r.PathValue("code"))
-	id, ok, err := h.db.ManagedGameID(r.Context(), account.ID, code)
+// managedGame returns the request's game and its ID if the account manages
+// it, or responds 404. A system or game code that could never be valid
+// names no game.
+func (h *Handler) managedGame(w http.ResponseWriter, r *http.Request, account store.Account) (store.GameRef, int64, bool) {
+	system, err1 := names.Code(r.PathValue("system"))
+	code, err2 := names.Code(r.PathValue("game"))
+	if err1 != nil || err2 != nil {
+		writeError(w, http.StatusNotFound, msgNotFound)
+		return store.GameRef{}, 0, false
+	}
+	game := store.GameRef{System: system, Code: code}
+	id, ok, err := h.db.ManagedGameID(r.Context(), account.ID, game)
 	if err != nil {
-		h.logger.Error("api: find managed game", "email", account.Email, "game", code, "err", err)
+		h.logger.Error("api: find managed game", "email", account.Email, "game", game.String(), "err", err)
 		writeError(w, http.StatusInternalServerError, msgServerError)
-		return "", 0, false
+		return store.GameRef{}, 0, false
 	} else if !ok {
 		writeError(w, http.StatusNotFound, msgNotFound)
-		return "", 0, false
+		return store.GameRef{}, 0, false
 	}
-	return code, id, true
-}
-
-func (h *Handler) listUploads(w http.ResponseWriter, r *http.Request, account store.Account) {
-	code, gameID, ok := h.managedGame(w, r, account)
-	if !ok {
-		return
-	}
-	var turn *string
-	if q := r.URL.Query(); q.Has("turn") {
-		t := q.Get("turn")
-		if t == "" {
-			writeError(w, http.StatusBadRequest, msgBadTurn)
-			return
-		}
-		turn = &t
-	}
-	uploads, err := h.db.GameUploads(r.Context(), gameID, turn)
-	if err != nil {
-		h.logger.Error("api: list uploads", "email", account.Email, "game", code, "err", err)
-		writeError(w, http.StatusInternalServerError, msgServerError)
-		return
-	}
-	list := UploadList{Game: code, Uploads: make([]Upload, 0, len(uploads))}
-	for _, u := range uploads {
-		list.Uploads = append(list.Uploads, Upload{
-			ID:          u.ID,
-			Game:        code,
-			Email:       u.Email,
-			Turn:        u.TurnNo,
-			ContentHash: u.ContentHash,
-			Size:        u.Size,
-			UploadedAt:  u.UploadedAt.UTC().Format(TimeLayout),
-		})
-	}
-	writeJSON(w, http.StatusOK, list)
-}
-
-func (h *Handler) uploadBody(w http.ResponseWriter, r *http.Request, account store.Account) {
-	code, gameID, ok := h.managedGame(w, r, account)
-	if !ok {
-		return
-	}
-	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
-	if err != nil || id <= 0 {
-		writeError(w, http.StatusNotFound, msgNotFound)
-		return
-	}
-	hash, contents, found, err := h.db.GameUploadContents(r.Context(), gameID, id)
-	if err != nil {
-		h.logger.Error("api: upload contents", "email", account.Email, "game", code, "upload_id", id, "err", err)
-		writeError(w, http.StatusInternalServerError, msgServerError)
-		return
-	} else if !found {
-		writeError(w, http.StatusNotFound, msgNotFound)
-		return
-	}
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.Header().Set("X-Content-Type-Options", "nosniff")
-	w.Header().Set("Content-Length", strconv.Itoa(len(contents)))
-	w.Header().Set(HeaderContentSHA256, hash)
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(contents)
+	return game, id, true
 }
 
 func unauthorized(w http.ResponseWriter) {

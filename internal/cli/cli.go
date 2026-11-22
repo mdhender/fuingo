@@ -8,13 +8,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/mdhender/fuingo/internal/cerrs"
 	"github.com/mdhender/fuingo/internal/dotenv"
 	"github.com/peterbourgon/ff/v4"
-)
-
-const (
-	ErrMissingPepper = cerrs.Error("FUINGO_PEPPER is missing or empty")
 )
 
 // EnvPrefix prefixes every environment variable: flag --db reads FUINGO_DB.
@@ -58,14 +53,4 @@ func Parse(cmd *ff.Command, args []string, env *string, commandLineOnly ...strin
 // --generate-password reads FUINGO_GENERATE_PASSWORD.
 func EnvVar(name string) string {
 	return EnvPrefix + "_" + strings.ToUpper(strings.NewReplacer("-", "_", ".", "_", "/", "_").Replace(name))
-}
-
-// Pepper returns FUINGO_PEPPER, which only ever comes from the environment
-// (or an environment file loaded by Parse), never from a flag.
-func Pepper() (string, error) {
-	pepper := os.Getenv(EnvPrefix + "_PEPPER")
-	if pepper == "" {
-		return "", ErrMissingPepper
-	}
-	return pepper, nil
 }

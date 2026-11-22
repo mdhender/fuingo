@@ -22,18 +22,22 @@ Nothing in a game depends on mail reaching a player.
   Resolve consequential design questions with the user rather than inventing behavior.
   The [open questions](#open-questions) are listed at the end.
 
-## Status: the code implements the previous design
+## Status: the design is partly built
 
-The user agreed this design on 2026-11-22.
-The code does not implement it yet: it implements the design it replaces, in which an unauthenticated form accepted a turn file whose first line named its game, turn, email, and upload token.
-[README.md](README.md), [API.md](API.md), and [TESTING.md](TESTING.md) describe the code as it is, so they still describe that design.
+The user agreed this design on 2026-11-22, and it is being built in the steps the user asks for.
+[README.md](README.md), [API.md](API.md), and [TESTING.md](TESTING.md) describe the code as it is, so they describe only what is built.
 
-- Do not extend what the new design removes: the header line and its parsing, upload tokens and `game_uploaders.hashed_credentials`, the pepper (`FUINGO_PEPPER`), `internal/credential`'s hashes, the unauthenticated `POST /upload` form, `fuingo game add --token`, the `reset-token` route, `POST /api/games`, and setting a password from the command line (`fuingo account create`'s password and `account set-password`).
-- Fix bugs in that code as [WORKFLOW.md](WORKFLOW.md) requires, until it is replaced.
+- Built: systems, games in systems, a game's GMs and players, the administrator's commands for them, and the `/api/` routes for a game's players.
+- Removed on 2026-11-22: the previous design's header line, upload tokens, pepper (`FUINGO_PEPPER`), unauthenticated `POST /upload` form, `reset-token` route, and `POST /api/games`.
+  Do not bring any of them back.
+- Not built: turns, files and their storage, withdrawal, web sign-in and sessions, the pages, mail (invitations and password resets), and system-level files.
+  Until files are built the server stores none, and the page at `/` is a placeholder.
+- `fuingo account create`'s password and `fuingo account set-password` remain only because invitations are not built: nothing else can give an account a password.
+  Do not extend them, and remove them in the step that builds invitations.
+- Migration 3 moved the games of a database made under the previous design into a system named `legacy` and dropped its stored uploads.
 - No deployment holds live data.
-  The server called production is a test server, so the change needs no cutover and no conversion of existing rows.
-- Build the new design in the steps the user asks for.
-  When a step replaces part of the old design, update this section and the three documents above in the same commit.
+  The server called production is a test server, so no step needs a cutover.
+- When a step builds or replaces something, update this section and the three documents above in the same commit.
 
 ## Terms
 
@@ -49,8 +53,8 @@ Use these words consistently, in code, documents, and messages.
 | GM | An account that manages one game. An account may be a GM of some games and a player in others. |
 | Administrator | The user, working on the server's command line. Not a role an account can hold. |
 
-"Uploader" and "game manager" are the previous design's words for player and GM.
-They remain in the code and schema until those are replaced.
+"Game manager" is the previous design's word for GM.
+It remains in the schema (`game_managers`, `active_managers`) and in `fuingo game add --manager`.
 
 ## The hierarchy
 
@@ -196,15 +200,15 @@ Olympia / G3 / 1 / 5    player 5's folder in turn 1
   Use both rather than adding alternatives.
 - `internal/store` wraps the SQLite database: `Create`, `Migrate`, and `Open` for files, plus `OpenPrivateMemory`, `CreateSharedMemory`, and `OpenSharedMemory`.
 - `internal/sqlitedb` implements the SQLite file contract in [SQLITE3.md](SQLITE3.md) for any schema.
-  `internal/store` and `internal/gmstore` each wrap it with their own application ID and migrations; do not copy the file handling into a third package.
-- `internal/devdata` holds the default games and accounts; `internal/cli` holds the flag and environment-file parsing shared by the commands.
+  `internal/store` wraps it with Fuingo's application ID and migrations; do not copy the file handling into another package.
+- `internal/devdata` holds the default system, games, players, and accounts; `internal/cli` holds the flag and environment-file parsing shared by the commands.
 - `internal/clientip` finds the client's address behind trusted proxies; `internal/ratelimit` limits failures per client.
   Both carry over to sign-in unchanged.
 - `internal/server` assembles the routes (the page at `/`, the vendored HTMX under `/static/`, the `/api/` routes, and the development/agent helpers) behind `http.NewCrossOriginProtection`.
   HTMX 2.0.11 is vendored as `internal/server/static/htmx-2.0.11.min.js`.
 - `internal/api` is the `/api/` handler.
-- `internal/upload` and `internal/credential` implement the previous design's upload form and credential hashes.
-  The new design replaces both.
+- `internal/names` checks and lowercases codes and emails.
+  Every command and route that accepts one goes through it.
 - `contrib/systemd/fuingod.service` runs `fuingod` as a systemd service; README.md documents its setup.
   Keep the two in sync, and keep the unit's `TimeoutStopSec` longer than `fuingod`'s shutdown timeout.
 - `cmd/fuingod`, `cmd/fuingodb`, and `cmd/fuingo` exist; [README.md](README.md) documents their flags and environment variables, and [API.md](API.md) the `/api/` routes.
@@ -241,18 +245,18 @@ Put a new command in the program that owns what it manages, even when another pr
   `cmd/olympia`, the Olympia G3 tool built for the previous design, was removed on 2026-11-22; build a replacement only if the user asks.
 
 `fuingo` commands follow the noun-verb pattern, `fuingo <noun> <verb>`: each noun has only the verbs that make sense for it, and `fuingo <noun> --help` lists them.
-`--db` is a root flag, as in `fuingo --db PATH game create CODE`, because almost every command uses the database.
+`--db` is a root flag, as in `fuingo --db PATH game create --system SYSTEM CODE`, because almost every command uses the database.
 Commands that use it open it with `store.Open` and fail unless it is at the schema version the program expects.
 
-[README.md](README.md) lists the commands that exist, which are the previous design's.
+[README.md](README.md) lists the commands that exist.
 Add, change, and remove commands only as the user asks.
 Codes and emails are lowercased with `strings.ToLower`; apply no other normalization unless the user agrees to it.
 
 ## Data model
 
-The schema for this design is not yet written.
-Design it with the user when a step needs it.
-These rules hold whatever its tables are:
+The schema holds `systems`, `games`, `accounts`, `game_players`, `game_managers`, and `api_sessions`.
+The tables for turns, files, and web sessions are not yet written; design them with the user when a step needs them.
+These rules hold whatever the tables are:
 
 - Codes and emails can change, so rows are identified by integer IDs, never by those values.
   Declare these IDs `INTEGER PRIMARY KEY AUTOINCREMENT`: without `AUTOINCREMENT`, SQLite may reuse the ID of a deleted row, and IDs must never be reused.
@@ -277,7 +281,7 @@ These rules hold whatever its tables are:
   Contents are kept once, keyed by the lowercase hex SHA-256 of the contents, and shared by every upload of the same bytes, across players and games.
   Never rewrite contents that are already stored, and never let a route reach contents by their hash alone: access is always checked against an upload.
 - Store an upload's contents and its row in one transaction, so contents are never stored without a row.
-- Keep the rules for being active in views, as `active_uploaders` and `active_managers` do now, so queries do not repeat them.
+- Keep the rules for being active in views, as `active_players` and `active_managers` do now, so queries do not repeat them.
 
 ## User interface
 

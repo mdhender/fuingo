@@ -1,8 +1,8 @@
 // Copyright (c) 2026 Michael D Henderson.
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-// Package server assembles the HTTP handler: the browser-facing upload form
-// and the /api/ routes for game managers.
+// Package server assembles the HTTP handler: the browser-facing pages and
+// the /api/ routes for game masters.
 //
 // Every route is wrapped in the standard library's cross-origin protection.
 // The development and agent account helpers are registered only under the
@@ -21,11 +21,10 @@ import (
 
 	"github.com/mdhender/fuingo/internal/api"
 	"github.com/mdhender/fuingo/internal/clientip"
-	"github.com/mdhender/fuingo/internal/credential"
 	"github.com/mdhender/fuingo/internal/devdata"
+	"github.com/mdhender/fuingo/internal/names"
 	"github.com/mdhender/fuingo/internal/ratelimit"
 	"github.com/mdhender/fuingo/internal/store"
-	"github.com/mdhender/fuingo/internal/upload"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -35,14 +34,10 @@ type Config struct {
 	// or agent.
 	Env    string
 	Store  *store.Store
-	Pepper string
 	Logger *slog.Logger
 	// TrustedProxies are the reverse proxies whose X-Forwarded-For header
 	// names the client.
 	TrustedProxies []netip.Prefix
-	// UploadFailures limits failed upload authorizations per client. If nil,
-	// the upload package's default limit applies.
-	UploadFailures *ratelimit.Limiter
 	// LoginFailures limits failed API logins per client. If nil, the api
 	// package's default limit applies.
 	LoginFailures *ratelimit.Limiter
@@ -63,19 +58,8 @@ func HelperPrefix(env string) string {
 // New returns the handler for every route.
 func New(cfg Config) (http.Handler, error) {
 	clients := clientip.New(cfg.TrustedProxies)
-	uploads, err := upload.New(upload.Config{
-		Store:    cfg.Store,
-		Pepper:   cfg.Pepper,
-		Logger:   cfg.Logger,
-		Clients:  clients,
-		Failures: cfg.UploadFailures,
-	})
-	if err != nil {
-		return nil, err
-	}
 	apiHandler, err := api.New(api.Config{
 		Store:         cfg.Store,
-		Pepper:        cfg.Pepper,
 		Logger:        cfg.Logger,
 		Clients:       clients,
 		LoginFailures: cfg.LoginFailures,
@@ -86,11 +70,9 @@ func New(cfg Config) (http.Handler, error) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", servePage("index.html"))
 	mux.HandleFunc("GET "+HTMXPath, serveHTMX)
-	mux.Handle("POST /upload", uploads)
 	mux.Handle("/api/", apiHandler)
 	if prefix := HelperPrefix(cfg.Env); prefix != "" && devdata.Allowed(cfg.Env) {
-		h := &helpers{store: cfg.Store, pepper: cfg.Pepper, logger: cfg.Logger, api: apiHandler}
-		mux.HandleFunc("POST "+prefix+"/create-account/{game}/{email}/{token}", h.createAccount)
+		h := &helpers{store: cfg.Store, logger: cfg.Logger, api: apiHandler}
 		mux.HandleFunc("POST "+prefix+"/create-api-account/{email}", h.createAPIAccount)
 		mux.HandleFunc("POST "+prefix+"/log-me-in/{email}", h.logMeIn)
 	}
@@ -110,7 +92,6 @@ func New(cfg Config) (http.Handler, error) {
 // helpers are the development and agent account helpers in TESTING.md.
 type helpers struct {
 	store  *store.Store
-	pepper string
 	logger *slog.Logger
 	api    *api.Handler
 }
@@ -119,7 +100,11 @@ type helpers struct {
 // managed games, and returns the password. It never modifies an existing
 // account. The password is never logged.
 func (h *helpers) createAPIAccount(w http.ResponseWriter, r *http.Request) {
-	email := credential.NormalizeEmail(r.PathValue("email"))
+	email, err := names.Email(r.PathValue("email"))
+	if err != nil {
+		http.Error(w, "invalid email", http.StatusBadRequest)
+		return
+	}
 	password := rand.Text()
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.MinCost)
 	if err == nil {
@@ -144,7 +129,11 @@ func (h *helpers) createAPIAccount(w http.ResponseWriter, r *http.Request) {
 // password, as /api/login does, without checking the password. The token is
 // never logged.
 func (h *helpers) logMeIn(w http.ResponseWriter, r *http.Request) {
-	email := credential.NormalizeEmail(r.PathValue("email"))
+	email, err := names.Email(r.PathValue("email"))
+	if err != nil {
+		http.Error(w, "invalid email", http.StatusBadRequest)
+		return
+	}
 	account, found, err := h.store.FindAccount(r.Context(), email)
 	switch {
 	case err != nil:
@@ -171,33 +160,4 @@ func (h *helpers) logMeIn(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	_ = json.NewEncoder(w).Encode(resp)
-}
-
-// createAccount inserts an active upload account for an existing game.
-// It never modifies an existing row. The token is never logged.
-// The game, email, and token are path segments; the credential hash uses the
-// game's ID.
-func (h *helpers) createAccount(w http.ResponseWriter, r *http.Request) {
-	game, email, token := credential.NormalizeGameCode(r.PathValue("game")), credential.NormalizeEmail(r.PathValue("email")), r.PathValue("token")
-	err := h.store.CreateUploader(r.Context(), store.NewUploader{
-		GameCode: game,
-		Email:    email,
-		HashedCredentials: func(gameID int64) []byte {
-			return credential.Hash(h.pepper, email, gameID, token)
-		},
-	})
-	switch {
-	case errors.Is(err, store.ErrUnknownGame):
-		http.Error(w, "unknown game", http.StatusNotFound)
-	case errors.Is(err, store.ErrUploaderExists):
-		http.Error(w, "upload account already exists or token is in use", http.StatusConflict)
-	case err != nil:
-		h.logger.Error("create-account", "game", game, "email", email, "err", err)
-		http.Error(w, "could not create the upload account", http.StatusInternalServerError)
-	default:
-		h.logger.Info("create-account", "game", game, "email", email)
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		w.WriteHeader(http.StatusCreated)
-		fmt.Fprintf(w, "created upload account %s in %s\n", email, game)
-	}
 }

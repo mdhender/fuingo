@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Michael D Henderson.
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-// Command fuingod is the turn-file upload server.
+// Command fuingod is the Fuingo server.
 //
 //	fuingod [--env ENV] [--addr HOST:PORT] [--trusted-proxies LIST] --db PATH
 //
@@ -14,14 +14,10 @@
 //	--trusted-proxies  FUINGO_TRUSTED_PROXIES  comma-separated proxy addresses and
 //	        CIDR prefixes whose X-Forwarded-For is trusted (default loopback)
 //
-// FUINGO_PEPPER keys the upload credential hashes. It has no flag: set it in
-// the process environment or an ignored .local environment file.
-//
 // fuingod serves plain HTTP behind a TLS-terminating reverse proxy. It opens an
 // existing database and never creates or migrates one; use fuingodb for that.
-// Uploaded files are stored in the database. Failed upload authorizations
-// are limited per client address, which comes from X-Forwarded-For when the
-// connection is from a trusted proxy.
+// Failed logins are limited per client address, which comes from
+// X-Forwarded-For when the connection is from a trusted proxy.
 // With --db :memory:, it runs against a fresh private in-memory database seeded
 // with the default accounts, discarded when the server stops.
 //
@@ -94,10 +90,9 @@ func main() {
 }
 
 type config struct {
-	env    string
-	addr   string
-	db     string
-	pepper string
+	env  string
+	addr string
+	db   string
 
 	trustedProxies string
 	proxies        []netip.Prefix
@@ -114,7 +109,7 @@ func loadConfig(args []string, stderr io.Writer) (config, error) {
 	cmd := &ff.Command{
 		Name:     "fuingod",
 		Usage:    "fuingod [--env ENV] [--addr HOST:PORT] [--trusted-proxies LIST] --db PATH",
-		LongHelp: "fuingod " + fuingo.Version().String() + "\n\nFUINGO_PEPPER must be set in the environment.",
+		LongHelp: "fuingod " + fuingo.Version().String(),
 		Flags:    fs,
 	}
 	if err := cli.Parse(cmd, args, &cfg.env); err != nil {
@@ -141,9 +136,6 @@ func loadConfig(args []string, stderr io.Writer) (config, error) {
 		if !devdata.Allowed(cfg.env) {
 			return cfg, ErrMemoryDatabase
 		}
-	}
-	if cfg.pepper, err = cli.Pepper(); err != nil {
-		return cfg, err
 	}
 	return cfg, nil
 }
@@ -177,7 +169,6 @@ func run(ctx context.Context, args []string, stderr io.Writer, ready func(net.Ad
 	handler, err := server.New(server.Config{
 		Env:    cfg.env,
 		Store:  s,
-		Pepper: cfg.pepper,
 		Logger: logger,
 
 		TrustedProxies: cfg.proxies,
@@ -247,7 +238,7 @@ func openStore(ctx context.Context, cfg config) (*store.Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := devdata.Seed(ctx, s, cfg.env, cfg.pepper); err != nil {
+	if err := devdata.Seed(ctx, s, cfg.env); err != nil {
 		s.Close()
 		return nil, err
 	}

@@ -15,61 +15,56 @@ available only in `development` and `agent`; `test`, `production`, and every
 other environment must never provide it. Do not enable any of it based on
 request headers, hostname, or a query parameter.
 
-## Accounts and credentials
+## Accounts
 
-Every email has one row in the `accounts` table, whether it uploads, manages
-games, or both. It can hold two kinds of credential, and neither can act as
-the other:
+Every email has one row in the `accounts` table, whether it plays, manages
+games, or both.
 
-- **Upload credentials** are rows in the `game_uploaders` table: an account,
-  a game, and a token. They authorize uploads through the web form and never
-  authenticate to `/api/`. An account made for an uploader has no password.
-- **API passwords** are the account's `hashed_secret`. Only an account with
-  one can authenticate to `/api/`, with the `Authorization` header; the
-  password never authorizes an upload. `game_managers` lists the games each
-  account manages.
+- **Players** are rows in the `game_players` table: an account and a game.
+  A player's ID is the player's number. An account made for a player has no
+  password until it is given one.
+- **GMs** are rows in the `game_managers` table: an account and a game.
+- **Passwords** are the account's `hashed_secret`. Only an account with one
+  can log in to `/api/`, with `POST /api/login`, which returns a bearer token
+  for the `Authorization` header.
 
-`fuingo account create`, `fuingo account set-password`, and
-`fuingo game add --manager` add to the tables. An account logs in to the
-`/api/` routes described in [AGENTS.md](AGENTS.md) with `POST /api/login`,
-which returns a bearer token.
+`fuingo account create`, `fuingo account set-password`, `fuingo game add
+--manager`, and `fuingo game add --player` add to the tables.
 
 ## Default accounts
 
-Every new database (any in-memory database or any persistent database made by `fuingodb create` in `development` or `agent`) starts with a set of default games and accounts.
+Every new database (any in-memory database or any persistent database made by `fuingodb create` in `development` or `agent`) starts with a default system, games, players, and accounts.
 
-- These tokens and passwords are fixed, public test values, not secrets.
+- These passwords are fixed, public test values, not secrets.
   They are the only credentials allowed in source control; see [AGENTS.md](AGENTS.md).
   They are defined in `internal/devdata`; keep these tables in sync with it.
 - Never create them in any other environment.
 - Never re-seed an existing database.
   Changed or deleted default accounts stay that way; recreate the database to restore them.
-- Upload tokens are stored as credential hashes keyed with `FUINGO_PEPPER`, like
-  any other upload account, so seeding requires the pepper. A database seeded
-  with one pepper does not accept the default tokens under another.
-- API passwords are hashed with `bcrypt.MinCost`, like any other API account.
+- Passwords are hashed with `bcrypt.MinCost`, like any other account's.
 
-### Default games
+### Default system and games
 
-Both are active. The tables below refer to games by code; their IDs are
-whatever the database assigns.
+The system is `system01`. Both games are in it, and both are active. The
+tables below refer to games by code; their IDs are whatever the database
+assigns.
 
-| Code |
-| --- |
-| `game01` |
-| `game02` |
+| System | Code |
+| --- | --- |
+| `system01` | `game01` |
+| `system01` | `game02` |
 
-### Default upload accounts
+### Default players
 
-All are active.
+All are active. Their accounts have no password.
 
-| Game | Email | Token |
-| --- | --- | --- |
-| `game01` | `catbird@example.com` | `8eb87beb-0869-4815-8ce8-afeef14da57e` |
-| `game01` | `spoonbill@example.com` | `942a563c-c911-4c84-848b-fe4e96122d8c` |
-| `game02` | `caracara@example.com` | `12fc952a-2b17-49e5-ba31-329a3ba474e4` |
+| Game | Email |
+| --- | --- |
+| `game01` | `catbird@example.com` |
+| `game01` | `spoonbill@example.com` |
+| `game02` | `caracara@example.com` |
 
-### Default API accounts
+### Default accounts with passwords
 
 All are active. The Games column lists the games each account manages.
 
@@ -105,28 +100,9 @@ or authorization tokens. Keep normal CSRF protection enabled; these helpers are
 not CSRF bypasses.
 
 These helpers and the default accounts are the explicit development/agent-only
-exceptions to account creation. Otherwise, accounts and credentials are
-created only by the `cmd/fuingo` operators' CLI: `fuingo game add --uploader`
-and `fuingo account create`.
-
-### Create an upload account
-
-```text
-POST /__development/create-account/<game>/<email>/<token>
-POST /__agent/create-account/<game>/<email>/<token>
-```
-
-- `<game>` is a game code, lowercased like the email. Encode the game, email,
-  and token as URL path segments.
-- Require an existing game; return an error rather than creating one.
-- Insert an active row in `game_uploaders` for that game and the account with
-  the lowercased email, creating the account without a password if needed,
-  with the `hashed_credentials` described in [AGENTS.md](AGENTS.md). Never log
-  the token.
-- Return an error if the game and email already have a row, or if the
-  `hashed_credentials` are already in use. Because the hash includes the game's ID,
-  the same email and token may be created in another game.
-  Never modify an existing row, including when creation requests race.
+exceptions to account creation. Otherwise, accounts are created only by the
+`cmd/fuingo` administrator's CLI (`fuingo account create` and `fuingo game add
+--player`) and by a GM adding a player through `/api/`.
 
 ### Create an API account
 
@@ -165,13 +141,9 @@ in `development` and `agent` and are refused everywhere else.
 
 When changing the HTTP helpers, cover environment and prefix isolation,
 non-POST requests, duplicate account creation without mutation, and CSRF
-rejection through HTTP tests. Test that a helper-created upload account can
-upload through the web form, and that `create-account` refuses an unknown game
-code. Test that
-`log-me-in` refuses missing accounts and accounts without a password, that its token authenticates
-`/api/` requests, and that each kind of account is refused by the other's
-routes. Exercise an upload with a
-helper-created account through the public HTTPS origin in a browser as well.
+rejection through HTTP tests. Test that `log-me-in` refuses missing accounts,
+disabled accounts, and accounts without a password, and that its token
+authenticates `/api/` requests.
 Keep helpers absent in `test`; HTTP tests can explicitly configure `development`
 or `agent` when testing them.
 

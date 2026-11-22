@@ -12,18 +12,14 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mdhender/fuingo/internal/cli"
-	"github.com/mdhender/fuingo/internal/credential"
 	"github.com/mdhender/fuingo/internal/devdata"
 	"github.com/mdhender/fuingo/internal/store"
 )
 
-const pepper = "test-pepper"
-
 // clearEnv keeps the developer's environment out of the test.
 func clearEnv(t *testing.T) {
 	t.Helper()
-	for _, key := range []string{"FUINGO_ENV", "FUINGO_DB", "FUINGO_PEPPER"} {
+	for _, key := range []string{"FUINGO_ENV", "FUINGO_DB"} {
 		t.Setenv(key, "")
 		os.Unsetenv(key)
 	}
@@ -36,9 +32,8 @@ func runCommand(t *testing.T, args ...string) (string, error) {
 	return stdout.String() + stderr.String(), err
 }
 
-// defaultUploaders reports how many default upload accounts the database
-// accepts under pepper.
-func defaultUploaders(t *testing.T, path string) int {
+// defaultPlayers reports how many default players the database holds.
+func defaultPlayers(t *testing.T, path string) int {
 	t.Helper()
 	s, err := store.Open(t.Context(), path)
 	if err != nil {
@@ -46,66 +41,44 @@ func defaultUploaders(t *testing.T, path string) int {
 	}
 	defer s.Close()
 	n := 0
-	for _, u := range devdata.Uploaders {
-		gameID, ok, err := s.GameID(t.Context(), u.Game)
+	for _, code := range devdata.Games {
+		players, err := s.Players(t.Context(), store.GameRef{System: devdata.System, Code: code})
 		if err != nil {
 			t.Fatal(err)
-		} else if !ok {
-			continue
 		}
-		if _, ok, err := s.FindUploader(t.Context(), credential.Hash(pepper, u.Email, gameID, u.Token)); err != nil {
-			t.Fatal(err)
-		} else if ok {
-			n++
-		}
+		n += len(players)
 	}
 	return n
 }
 
 func TestCreateSeedsDefaultsInDevelopmentAndAgent(t *testing.T) {
 	clearEnv(t)
-	t.Setenv("FUINGO_PEPPER", pepper)
 	for _, env := range []string{"development", "agent"} {
 		path := filepath.Join(t.TempDir(), "fuingo.db")
 		if out, err := runCommand(t, "--env", env, "create", "--db", path); err != nil {
 			t.Fatalf("%s: create: %v\n%s", env, err, out)
 		}
-		if n := defaultUploaders(t, path); n != len(devdata.Uploaders) {
-			t.Errorf("%s: %d default uploaders, want %d", env, n, len(devdata.Uploaders))
+		if n := defaultPlayers(t, path); n != len(devdata.Players) {
+			t.Errorf("%s: %d default players, want %d", env, n, len(devdata.Players))
 		}
 	}
 }
 
 func TestCreateDoesNotSeedOtherEnvironments(t *testing.T) {
 	clearEnv(t)
-	t.Setenv("FUINGO_PEPPER", pepper)
 	for _, env := range []string{"test", "production"} {
 		path := filepath.Join(t.TempDir(), "fuingo.db")
 		if out, err := runCommand(t, "--env", env, "create", "--db", path); err != nil {
 			t.Fatalf("%s: create: %v\n%s", env, err, out)
 		}
-		if n := defaultUploaders(t, path); n != 0 {
-			t.Errorf("%s: %d default uploaders, want 0", env, n)
-		}
-	}
-}
-
-func TestCreateRequiresPepper(t *testing.T) {
-	clearEnv(t)
-	for _, env := range []string{"development", "production"} {
-		path := filepath.Join(t.TempDir(), "fuingo.db")
-		if _, err := runCommand(t, "--env", env, "create", "--db", path); !errors.Is(err, cli.ErrMissingPepper) {
-			t.Errorf("%s: create = %v, want ErrMissingPepper", env, err)
-		}
-		if _, err := os.Stat(path); !errors.Is(err, fs.ErrNotExist) {
-			t.Errorf("%s: create made %s without a pepper", env, path)
+		if n := defaultPlayers(t, path); n != 0 {
+			t.Errorf("%s: %d default players, want 0", env, n)
 		}
 	}
 }
 
 func TestCreateRefusesExistingFile(t *testing.T) {
 	clearEnv(t)
-	t.Setenv("FUINGO_PEPPER", pepper)
 	path := filepath.Join(t.TempDir(), "fuingo.db")
 	if _, err := runCommand(t, "--env", "development", "create", "--db", path); err != nil {
 		t.Fatal(err)
@@ -121,7 +94,6 @@ func TestCreateRefusesExistingFile(t *testing.T) {
 
 func TestDatabaseFlagIsRequiredAndNotMemory(t *testing.T) {
 	clearEnv(t)
-	t.Setenv("FUINGO_PEPPER", pepper)
 	for _, sub := range []string{"create", "migrate"} {
 		if _, err := runCommand(t, "--env", "development", sub); !errors.Is(err, ErrMissingDatabase) {
 			t.Errorf("%s without --db = %v, want ErrMissingDatabase", sub, err)
@@ -134,7 +106,6 @@ func TestDatabaseFlagIsRequiredAndNotMemory(t *testing.T) {
 
 func TestEnvironmentIsRequired(t *testing.T) {
 	clearEnv(t)
-	t.Setenv("FUINGO_PEPPER", pepper)
 	path := filepath.Join(t.TempDir(), "fuingo.db")
 	if _, err := runCommand(t, "create", "--db", path); err == nil {
 		t.Errorf("create without an environment succeeded")
@@ -149,7 +120,6 @@ func TestEnvironmentIsRequired(t *testing.T) {
 
 func TestEnvironmentVariablesAndFlagPrecedence(t *testing.T) {
 	clearEnv(t)
-	t.Setenv("FUINGO_PEPPER", pepper)
 	dir := t.TempDir()
 	fromEnv := filepath.Join(dir, "env.db")
 	fromFlag := filepath.Join(dir, "flag.db")
@@ -159,7 +129,7 @@ func TestEnvironmentVariablesAndFlagPrecedence(t *testing.T) {
 	if out, err := runCommand(t, "create"); err != nil {
 		t.Fatalf("create from environment: %v\n%s", err, out)
 	}
-	if n := defaultUploaders(t, fromEnv); n != len(devdata.Uploaders) {
+	if n := defaultPlayers(t, fromEnv); n != len(devdata.Players) {
 		t.Errorf("FUINGO_ENV=development did not seed defaults")
 	}
 
@@ -167,14 +137,13 @@ func TestEnvironmentVariablesAndFlagPrecedence(t *testing.T) {
 	if out, err := runCommand(t, "--env", "production", "create", "--db", fromFlag); err != nil {
 		t.Fatalf("create with flags: %v\n%s", err, out)
 	}
-	if n := defaultUploaders(t, fromFlag); n != 0 {
+	if n := defaultPlayers(t, fromFlag); n != 0 {
 		t.Errorf("--env production was overridden by FUINGO_ENV")
 	}
 }
 
 func TestMigrate(t *testing.T) {
 	clearEnv(t)
-	t.Setenv("FUINGO_PEPPER", pepper)
 	dir := t.TempDir()
 	path := filepath.Join(dir, "fuingo.db")
 	if _, err := runCommand(t, "--env", "development", "create", "--db", path); err != nil {
@@ -183,8 +152,8 @@ func TestMigrate(t *testing.T) {
 	if out, err := runCommand(t, "--env", "development", "migrate", "--db", path); err != nil {
 		t.Fatalf("migrate: %v\n%s", err, out)
 	}
-	if n := defaultUploaders(t, path); n != len(devdata.Uploaders) {
-		t.Errorf("migrate lost the default uploaders")
+	if n := defaultPlayers(t, path); n != len(devdata.Players) {
+		t.Errorf("migrate lost the default players")
 	}
 
 	missing := filepath.Join(dir, "missing.db")
@@ -218,17 +187,13 @@ func TestEnvironmentFiles(t *testing.T) {
 	clearEnv(t)
 	dir := t.TempDir()
 	t.Chdir(dir)
-	// The pepper belongs in an ignored .local file; shared files never hold it.
-	if err := os.WriteFile(".env.development.local", []byte("FUINGO_PEPPER="+pepper+"\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
 	if err := os.WriteFile(".env.development", []byte("FUINGO_DB=from-file.db\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if out, err := runCommand(t, "--env", "development", "create"); err != nil {
 		t.Fatalf("create: %v\n%s", err, out)
 	}
-	if n := defaultUploaders(t, filepath.Join(dir, "from-file.db")); n != len(devdata.Uploaders) {
-		t.Errorf("%d default uploaders, want %d", n, len(devdata.Uploaders))
+	if n := defaultPlayers(t, filepath.Join(dir, "from-file.db")); n != len(devdata.Players) {
+		t.Errorf("%d default players, want %d", n, len(devdata.Players))
 	}
 }

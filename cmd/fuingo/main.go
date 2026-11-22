@@ -1,15 +1,15 @@
 // Copyright (c) 2026 Michael D Henderson.
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-// Command fuingo is the operators' CLI for the application data. Its commands
-// follow the pattern fuingo <noun> <verb>.
+// Command fuingo is the administrator's CLI for the application data. Its
+// commands follow the pattern fuingo <noun> <verb>.
 //
 //	fuingo version
 //	fuingo [--env ENV] [--db PATH] version --schema
-//	fuingo [--env ENV] [--db PATH] game create CODE
-//	fuingo [--env ENV] [--db PATH] game add --manager EMAIL --code CODE
-//	fuingo [--env ENV] [--db PATH] game add --uploader EMAIL --code CODE [--token TOKEN]
-//	fuingo [--env ENV] [--db PATH] game (disable|enable) [--uploader EMAIL | --manager EMAIL] --code CODE
+//	fuingo [--env ENV] [--db PATH] system create CODE
+//	fuingo [--env ENV] [--db PATH] game create --system SYSTEM CODE
+//	fuingo [--env ENV] [--db PATH] game add (--manager EMAIL | --player EMAIL) --system SYSTEM --code CODE
+//	fuingo [--env ENV] [--db PATH] game (disable|enable) [--player EMAIL | --manager EMAIL] --system SYSTEM --code CODE
 //	fuingo [--env ENV] [--db PATH] account create [--generate-password] EMAIL
 //	fuingo [--env ENV] [--db PATH] account set-password [--generate-password] EMAIL
 //	fuingo [--env ENV] [--db PATH] account (disable|enable) EMAIL
@@ -21,9 +21,7 @@
 //	--db    FUINGO_DB    path to the database file (required by commands that use it;
 //	                     :memory: is refused)
 //
-// game add --uploader also requires FUINGO_PEPPER.
-//
-// --schema, --token, --generate-password, --manager, --uploader, and --code
+// --schema, --generate-password, --manager, --player, --system, and --code
 // are honored only on the command line; their FUINGO_ variables are ignored.
 // version reads no environment unless --schema is on the command line.
 //
@@ -31,28 +29,27 @@
 // version this program expects. fuingo never creates a database file or
 // migrates one; fuingodb does.
 //
-// Game codes and emails are lowercased with strings.ToLower, as uploads are.
-// Game codes, emails, and tokens must be valid header words: one or more
-// bytes in 0x21-0x7E. New games and uploaders are active.
+// A system is a game such as Olympia; a game is one instance of it, such as
+// Olympia / G3, whose code is unique only within its system. Codes and
+// emails are lowercased with strings.ToLower. A code is 1 to 32 letters,
+// digits, hyphens, or underscores; an email is one or more printable ASCII
+// bytes with no spaces. New games, players, and managers are active.
 //
-// Each email has one account, for uploading and managing alike.
+// Each email has one account, for playing and managing alike.
 // game add --manager makes an existing account a manager of an existing
-// game. game add --uploader adds an upload credential in it, creating the
-// account without a password if it does not exist, generating a random UUID
-// for the token unless --token is given, and printing a generated token
-// once; only its hash is stored.
+// game. game add --player makes an account a player in it, creating the
+// account without a password if it does not exist.
 //
 // game disable and game enable clear or set is_active on the game, or with
-// --uploader or --manager, on that uploader or manager of the game. Rows are
-// never deleted. An inactive game or uploader refuses uploads. account disable
-// and account enable clear or set is_active on an account; an inactive
-// account manages no games and refuses uploads in every game.
-// account create makes an account with a password, which the API requires,
-// and account set-password sets or replaces the password of an existing
-// account, such as one made by game add --uploader. Each reads the password
-// from the first line of standard input, or, with --generate-password,
-// generates one and prints it once. Passwords are hashed with bcrypt at
-// bcrypt.MinCost and are at most 72 bytes.
+// --player or --manager, on that player or manager of the game. Rows are
+// never deleted. account disable and account enable clear or set is_active
+// on an account; an inactive account manages no games and plays in none.
+// account create makes an account with a password, and account set-password
+// sets or replaces the password of an existing account, such as one made by
+// game add --player. Each reads the password from the first line of standard
+// input, or, with --generate-password, generates one and prints it once.
+// Passwords are hashed with bcrypt at bcrypt.MinCost and are at most 72
+// bytes.
 package main
 
 import (
@@ -65,11 +62,10 @@ import (
 	"os"
 	"strings"
 
-	"github.com/google/uuid"
 	"github.com/mdhender/fuingo"
 	"github.com/mdhender/fuingo/internal/cerrs"
 	"github.com/mdhender/fuingo/internal/cli"
-	"github.com/mdhender/fuingo/internal/credential"
+	"github.com/mdhender/fuingo/internal/names"
 	"github.com/mdhender/fuingo/internal/store"
 	"github.com/peterbourgon/ff/v4"
 	"github.com/peterbourgon/ff/v4/ffhelp"
@@ -77,17 +73,14 @@ import (
 )
 
 const (
-	ErrMissingDatabase    = cerrs.Error("--db (FUINGO_DB) is required")
-	ErrMemoryDatabase     = cerrs.Error("fuingo requires a database file, not :memory:")
-	ErrEmail              = cerrs.Error("email must be one or more printable ASCII bytes with no spaces")
-	ErrGameCode           = cerrs.Error("game code must be one or more printable ASCII bytes with no spaces")
-	ErrMissingCode        = cerrs.Error("--code is required")
-	ErrAddWhat            = cerrs.Error("game add needs exactly one of --manager and --uploader")
-	ErrToggleWhat         = cerrs.Error("give at most one of --manager and --uploader")
-	ErrTokenNeedsUploader = cerrs.Error("--token is allowed only with --uploader")
-	ErrMissingPassword    = cerrs.Error("no password on standard input; pipe one in or use --generate-password")
-	ErrToken              = cerrs.Error("token must be one or more printable ASCII bytes with no spaces")
-	ErrUsage              = cerrs.Error("wrong number of arguments")
+	ErrMissingDatabase = cerrs.Error("--db (FUINGO_DB) is required")
+	ErrMemoryDatabase  = cerrs.Error("fuingo requires a database file, not :memory:")
+	ErrMissingCode     = cerrs.Error("--code is required")
+	ErrMissingSystem   = cerrs.Error("--system is required")
+	ErrAddWhat         = cerrs.Error("game add needs exactly one of --manager and --player")
+	ErrToggleWhat      = cerrs.Error("give at most one of --manager and --player")
+	ErrMissingPassword = cerrs.Error("no password on standard input; pipe one in or use --generate-password")
+	ErrUsage           = cerrs.Error("wrong number of arguments")
 )
 
 func main() {
@@ -129,122 +122,158 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		},
 	}
 
-	gameCreate := &ff.Command{
+	systemCreate := &ff.Command{
 		Name:      "create",
-		Usage:     "fuingo [--db PATH] game create CODE",
-		ShortHelp: "create an active game",
-		Flags:     ff.NewFlagSet("game create").SetParent(rootFlags),
+		Usage:     "fuingo [--db PATH] system create CODE",
+		ShortHelp: "create a system",
+		Flags:     ff.NewFlagSet("system create").SetParent(rootFlags),
 		Exec: func(ctx context.Context, args []string) error {
 			if len(args) != 1 {
-				return fmt.Errorf("game create CODE: %w", ErrUsage)
+				return fmt.Errorf("system create CODE: %w", ErrUsage)
 			}
-			code, err := gameCode(args[0])
+			code, err := code(args[0])
 			if err != nil {
 				return err
 			}
 			return withDatabase(ctx, path, func(s *store.Store) error {
-				id, err := s.CreateGame(ctx, code)
+				id, err := s.CreateSystem(ctx, code)
 				if err != nil {
 					return err
 				}
-				fmt.Fprintf(stdout, "created game %s (id %d)\n", code, id)
+				fmt.Fprintf(stdout, "created system %s (id %d)\n", code, id)
 				return nil
 			})
 		},
 	}
-	var manager, addUploader, addCode, addToken string
+	system := &ff.Command{
+		Name:        "system",
+		Usage:       "fuingo [--db PATH] system <create>",
+		ShortHelp:   "manage systems",
+		Flags:       ff.NewFlagSet("system").SetParent(rootFlags),
+		Subcommands: []*ff.Command{systemCreate},
+		Exec: func(ctx context.Context, args []string) error {
+			return ff.ErrHelp
+		},
+	}
+
+	var createSystem string
+	gameCreateFlags := ff.NewFlagSet("game create").SetParent(rootFlags)
+	gameCreateFlags.StringVar(&createSystem, 0, "system", "", "code of the game's system (command line only)")
+	gameCreate := &ff.Command{
+		Name:      "create",
+		Usage:     "fuingo [--db PATH] game create --system SYSTEM CODE",
+		ShortHelp: "create an active game in a system",
+		Flags:     gameCreateFlags,
+		Exec: func(ctx context.Context, args []string) error {
+			if len(args) != 1 {
+				return fmt.Errorf("game create --system SYSTEM CODE: %w", ErrUsage)
+			}
+			game, err := gameRef(createSystem, args[0])
+			if err != nil {
+				return err
+			}
+			return withDatabase(ctx, path, func(s *store.Store) error {
+				id, err := s.CreateGame(ctx, game)
+				if err != nil {
+					return err
+				}
+				fmt.Fprintf(stdout, "created game %s (id %d)\n", game, id)
+				return nil
+			})
+		},
+	}
+	var manager, addPlayer, addSystem, addCode string
 	gameAddFlags := ff.NewFlagSet("game add").SetParent(rootFlags)
 	gameAddFlags.StringVar(&manager, 0, "manager", "", "email of the account to make a manager (command line only)")
-	gameAddFlags.StringVar(&addUploader, 0, "uploader", "", "email of the uploader to add (command line only)")
+	gameAddFlags.StringVar(&addPlayer, 0, "player", "", "email of the account to make a player (command line only)")
+	gameAddFlags.StringVar(&addSystem, 0, "system", "", "code of the game's system (command line only)")
 	gameAddFlags.StringVar(&addCode, 0, "code", "", "code of the game (command line only)")
-	gameAddFlags.StringVar(&addToken, 0, "token", "", "with --uploader, the upload token; a random UUID if omitted (command line only)")
 	gameAdd := &ff.Command{
 		Name:      "add",
-		Usage:     "fuingo [--db PATH] game add (--manager EMAIL | --uploader EMAIL [--token TOKEN]) --code CODE",
-		ShortHelp: "make an account a manager of a game, or add an uploader to it",
+		Usage:     "fuingo [--db PATH] game add (--manager EMAIL | --player EMAIL) --system SYSTEM --code CODE",
+		ShortHelp: "make an account a manager of a game, or a player in it",
 		Flags:     gameAddFlags,
 		Exec: func(ctx context.Context, args []string) error {
 			if len(args) != 0 {
 				return fmt.Errorf("game add takes no arguments: %w", ErrUsage)
 			}
-			if (manager == "") == (addUploader == "") {
+			if (manager == "") == (addPlayer == "") {
 				return ErrAddWhat
 			}
-			if addToken != "" && addUploader == "" {
-				return ErrTokenNeedsUploader
-			}
-			if addCode == "" {
-				return ErrMissingCode
-			}
-			if addUploader != "" {
-				return createUploader(ctx, stdout, path, addCode, addUploader, addToken)
-			}
-			code, err := gameCode(addCode)
+			game, err := gameRef(addSystem, addCode)
 			if err != nil {
 				return err
 			}
-			email, err := emailAddress(manager)
+			email, err := emailAddress(manager + addPlayer)
 			if err != nil {
 				return err
 			}
+			member := store.Member{Game: game, Email: email}
 			return withDatabase(ctx, path, func(s *store.Store) error {
-				if err := s.AddManager(ctx, store.NewManager{GameCode: code, Email: email}); err != nil {
+				if addPlayer != "" {
+					id, err := s.AddPlayer(ctx, member)
+					if err != nil {
+						return err
+					}
+					fmt.Fprintf(stdout, "added player %s to game %s (id %d)\n", email, game, id)
+					return nil
+				}
+				if err := s.AddManager(ctx, member); err != nil {
 					return err
 				}
-				fmt.Fprintf(stdout, "added manager %s to game %s\n", email, code)
+				fmt.Fprintf(stdout, "added manager %s to game %s\n", email, game)
 				return nil
 			})
 		},
 	}
 	// toggle builds game disable (active false) and game enable (active true).
 	toggle := func(name string, active bool) *ff.Command {
-		var manager, uploader, codeArg string
+		var manager, player, systemArg, codeArg string
 		flags := ff.NewFlagSet("game " + name).SetParent(rootFlags)
-		flags.StringVar(&uploader, 0, "uploader", "", "email of the uploader to "+name+" (command line only)")
+		flags.StringVar(&player, 0, "player", "", "email of the player to "+name+" (command line only)")
 		flags.StringVar(&manager, 0, "manager", "", "email of the manager to "+name+" (command line only)")
+		flags.StringVar(&systemArg, 0, "system", "", "code of the game's system (command line only)")
 		flags.StringVar(&codeArg, 0, "code", "", "code of the game (command line only)")
 		return &ff.Command{
 			Name:      name,
-			Usage:     "fuingo [--db PATH] game " + name + " [--uploader EMAIL | --manager EMAIL] --code CODE",
-			ShortHelp: name + " a game, or an uploader or manager of it",
+			Usage:     "fuingo [--db PATH] game " + name + " [--player EMAIL | --manager EMAIL] --system SYSTEM --code CODE",
+			ShortHelp: name + " a game, or a player or manager of it",
 			Flags:     flags,
 			Exec: func(ctx context.Context, args []string) error {
 				if len(args) != 0 {
 					return fmt.Errorf("game %s takes no arguments: %w", name, ErrUsage)
 				}
-				if manager != "" && uploader != "" {
+				if manager != "" && player != "" {
 					return ErrToggleWhat
 				}
-				if codeArg == "" {
-					return ErrMissingCode
-				}
-				code, err := gameCode(codeArg)
+				game, err := gameRef(systemArg, codeArg)
 				if err != nil {
 					return err
 				}
 				var email string
-				if manager != "" || uploader != "" {
-					if email, err = emailAddress(manager + uploader); err != nil {
+				if manager != "" || player != "" {
+					if email, err = emailAddress(manager + player); err != nil {
 						return err
 					}
 				}
+				member := store.Member{Game: game, Email: email}
 				return withDatabase(ctx, path, func(s *store.Store) error {
 					switch {
-					case uploader != "":
-						if err := s.SetUploaderActive(ctx, code, email, active); err != nil {
+					case player != "":
+						if err := s.SetPlayerActive(ctx, member, active); err != nil {
 							return err
 						}
-						fmt.Fprintf(stdout, "%sd uploader %s in game %s\n", name, email, code)
+						fmt.Fprintf(stdout, "%sd player %s in game %s\n", name, email, game)
 					case manager != "":
-						if err := s.SetManagerActive(ctx, code, email, active); err != nil {
+						if err := s.SetManagerActive(ctx, member, active); err != nil {
 							return err
 						}
-						fmt.Fprintf(stdout, "%sd manager %s of game %s\n", name, email, code)
+						fmt.Fprintf(stdout, "%sd manager %s of game %s\n", name, email, game)
 					default:
-						if err := s.SetGameActive(ctx, code, active); err != nil {
+						if err := s.SetGameActive(ctx, game, active); err != nil {
 							return err
 						}
-						fmt.Fprintf(stdout, "%sd game %s\n", name, code)
+						fmt.Fprintf(stdout, "%sd game %s\n", name, game)
 					}
 					return nil
 				})
@@ -269,7 +298,7 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	accountCreate := &ff.Command{
 		Name:      "create",
 		Usage:     "fuingo [--db PATH] account create [--generate-password] EMAIL",
-		ShortHelp: "create an account with a password for the API",
+		ShortHelp: "create an account with a password",
 		Flags:     accountCreateFlags,
 		Exec: func(ctx context.Context, args []string) error {
 			if len(args) != 1 {
@@ -302,7 +331,7 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	accountSetPassword := &ff.Command{
 		Name:      "set-password",
 		Usage:     "fuingo [--db PATH] account set-password [--generate-password] EMAIL",
-		ShortHelp: "set or replace an account's password for the API",
+		ShortHelp: "set or replace an account's password",
 		Flags:     accountSetPasswordFlags,
 		Exec: func(ctx context.Context, args []string) error {
 			if len(args) != 1 {
@@ -367,10 +396,10 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 
 	root := &ff.Command{
 		Name:        "fuingo",
-		Usage:       "fuingo [--env ENV] [--db PATH] <version|game|account>",
+		Usage:       "fuingo [--env ENV] [--db PATH] <version|system|game|account>",
 		LongHelp:    "fuingo " + fuingo.Version().String(),
 		Flags:       rootFlags,
-		Subcommands: []*ff.Command{version, game, account},
+		Subcommands: []*ff.Command{version, system, game, account},
 		Exec: func(ctx context.Context, args []string) error {
 			return ff.ErrHelp
 		},
@@ -397,7 +426,7 @@ func parse(root *ff.Command, args []string, env *string, needsNoEnvironment func
 	if err := root.Reset(); err != nil {
 		return err
 	}
-	return cli.Parse(root, args, env, "schema", "token", "generate-password", "manager", "uploader", "code")
+	return cli.Parse(root, args, env, "schema", "generate-password", "manager", "player", "system", "code")
 }
 
 // withDatabase opens the database at path, which must already be at the
@@ -417,62 +446,42 @@ func withDatabase(ctx context.Context, path string, fn func(*store.Store) error)
 	return fn(s)
 }
 
-// createUploader adds an active uploader to the game, generating a
-// UUID token if token is empty. It prints a generated token once and never
-// prints a given one.
-func createUploader(ctx context.Context, stdout io.Writer, path, gameArg, emailArg, token string) error {
-	code, err := gameCode(gameArg)
+// code lowercases the code of a system or game and checks it.
+func code(arg string) (string, error) {
+	c, err := names.Code(arg)
 	if err != nil {
-		return err
+		return "", fmt.Errorf("%q: %w", arg, err)
 	}
-	email, err := emailAddress(emailArg)
-	if err != nil {
-		return err
-	}
-	generated := token == ""
-	if generated {
-		token = uuid.NewString()
-	} else if !credential.HeaderWord(token) {
-		return ErrToken // never echo the token
-	}
-	pepper, err := cli.Pepper()
-	if err != nil {
-		return err
-	}
-	return withDatabase(ctx, path, func(s *store.Store) error {
-		if err := s.CreateUploader(ctx, store.NewUploader{
-			GameCode: code,
-			Email:    email,
-			HashedCredentials: func(gameID int64) []byte {
-				return credential.Hash(pepper, email, gameID, token)
-			},
-		}); err != nil {
-			return err
-		}
-		fmt.Fprintf(stdout, "added uploader %s to game %s\n", email, code)
-		if generated {
-			fmt.Fprintf(stdout, "token: %s\n", token)
-		}
-		return nil
-	})
+	return c, nil
 }
 
-// gameCode lowercases code and checks that it can appear in a turn file's
-// header line.
-func gameCode(code string) (string, error) {
-	if !credential.HeaderWord(code) {
-		return "", fmt.Errorf("%q: %w", code, ErrGameCode)
+// gameRef checks and lowercases the codes naming a game: its system's, from
+// --system, and its own.
+func gameRef(systemArg, codeArg string) (store.GameRef, error) {
+	if systemArg == "" {
+		return store.GameRef{}, ErrMissingSystem
 	}
-	return credential.NormalizeGameCode(code), nil
+	if codeArg == "" {
+		return store.GameRef{}, ErrMissingCode
+	}
+	system, err := code(systemArg)
+	if err != nil {
+		return store.GameRef{}, err
+	}
+	game, err := code(codeArg)
+	if err != nil {
+		return store.GameRef{}, err
+	}
+	return store.GameRef{System: system, Code: game}, nil
 }
 
-// emailAddress lowercases email and checks that it can appear in a turn
-// file's header line.
+// emailAddress lowercases email and checks it.
 func emailAddress(email string) (string, error) {
-	if !credential.HeaderWord(email) {
-		return "", fmt.Errorf("%q: %w", email, ErrEmail)
+	e, err := names.Email(email)
+	if err != nil {
+		return "", fmt.Errorf("%q: %w", email, err)
 	}
-	return credential.NormalizeEmail(email), nil
+	return e, nil
 }
 
 // newPassword generates a password, or reads one from stdin, and returns it

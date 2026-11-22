@@ -97,4 +97,96 @@ CREATE TABLE api_sessions (
 CREATE INDEX api_sessions_by_account ON api_sessions (account_id);
 CREATE INDEX api_sessions_by_expiry ON api_sessions (expires_at);
 `,
+	// 3: systems, and the end of the header-line design. A game belongs to a
+	// system and its code is unique only there. Upload credentials become
+	// players, without credential hashes, and the uploads made under the
+	// old design are dropped with their contents. Existing games move into a
+	// system named "legacy". Every rebuilt table keeps its IDs and its
+	// AUTOINCREMENT sequence, so no ID is ever reused.
+	`
+DROP VIEW active_uploaders;
+DROP VIEW active_managers;
+DROP TABLE uploads;
+DROP TABLE upload_blobs;
+
+CREATE TABLE systems (
+	id   INTEGER PRIMARY KEY AUTOINCREMENT,
+	code TEXT    NOT NULL UNIQUE
+);
+
+INSERT INTO systems (code) SELECT 'legacy' WHERE EXISTS (SELECT 1 FROM games);
+
+ALTER TABLE games RENAME TO games_v2;
+
+CREATE TABLE games (
+	id        INTEGER PRIMARY KEY AUTOINCREMENT,
+	system_id INTEGER NOT NULL REFERENCES systems (id) ON DELETE RESTRICT,
+	code      TEXT    NOT NULL,
+	is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
+	UNIQUE (system_id, code)
+);
+
+INSERT INTO games (id, system_id, code, is_active)
+SELECT g.id, s.id, g.code, g.is_active FROM games_v2 g JOIN systems s ON s.code = 'legacy';
+
+DELETE FROM sqlite_sequence WHERE name = 'games';
+INSERT INTO sqlite_sequence (name, seq) SELECT 'games', seq FROM sqlite_sequence WHERE name = 'games_v2';
+
+-- A player is an account that may use one game.
+CREATE TABLE game_players (
+	id         INTEGER PRIMARY KEY AUTOINCREMENT,
+	game_id    INTEGER NOT NULL REFERENCES games (id) ON DELETE RESTRICT,
+	account_id INTEGER NOT NULL REFERENCES accounts (id) ON DELETE RESTRICT,
+	is_active  INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
+	UNIQUE (game_id, account_id)
+);
+
+INSERT INTO game_players (id, game_id, account_id, is_active)
+SELECT id, game_id, account_id, is_active FROM game_uploaders;
+
+DELETE FROM sqlite_sequence WHERE name = 'game_players';
+INSERT INTO sqlite_sequence (name, seq) SELECT 'game_players', seq FROM sqlite_sequence WHERE name = 'game_uploaders';
+
+DROP TABLE game_uploaders;
+
+CREATE INDEX game_players_by_account ON game_players (account_id);
+
+CREATE TABLE game_managers_v3 (
+	id         INTEGER PRIMARY KEY AUTOINCREMENT,
+	game_id    INTEGER NOT NULL REFERENCES games (id) ON DELETE RESTRICT,
+	account_id INTEGER NOT NULL REFERENCES accounts (id) ON DELETE RESTRICT,
+	is_active  INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
+	UNIQUE (game_id, account_id)
+);
+
+INSERT INTO game_managers_v3 (id, game_id, account_id, is_active)
+SELECT id, game_id, account_id, is_active FROM game_managers;
+
+DELETE FROM sqlite_sequence WHERE name = 'game_managers_v3';
+INSERT INTO sqlite_sequence (name, seq) SELECT 'game_managers_v3', seq FROM sqlite_sequence WHERE name = 'game_managers';
+
+DROP TABLE game_managers;
+ALTER TABLE game_managers_v3 RENAME TO game_managers;
+
+CREATE INDEX game_managers_by_account ON game_managers (account_id);
+
+DROP TABLE games_v2;
+
+-- Players allowed into their game: the row, its game, and its account are
+-- active.
+CREATE VIEW active_players AS
+SELECT gp.id, gp.game_id, gp.account_id, a.email
+FROM game_players gp
+JOIN games g ON g.id = gp.game_id
+JOIN accounts a ON a.id = gp.account_id
+WHERE gp.is_active = 1 AND g.is_active = 1 AND a.is_active = 1;
+
+-- Managers allowed to manage their game, active or not: the row and its
+-- account are active.
+CREATE VIEW active_managers AS
+SELECT gm.id, gm.game_id, gm.account_id, a.email
+FROM game_managers gm
+JOIN accounts a ON a.id = gm.account_id
+WHERE gm.is_active = 1 AND a.is_active = 1;
+`,
 }

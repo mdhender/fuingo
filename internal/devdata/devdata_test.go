@@ -8,13 +8,10 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/mdhender/fuingo/internal/credential"
 	"github.com/mdhender/fuingo/internal/devdata"
 	"github.com/mdhender/fuingo/internal/store"
 	"golang.org/x/crypto/bcrypt"
 )
-
-const pepper = "test-pepper"
 
 func TestSeed(t *testing.T) {
 	t.Parallel()
@@ -24,23 +21,25 @@ func TestSeed(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer s.Close()
-		if err := devdata.Seed(t.Context(), s, env, pepper); err != nil {
+		if err := devdata.Seed(t.Context(), s, env); err != nil {
 			t.Fatalf("%s: Seed: %v", env, err)
+		}
+		if systems, err := s.Systems(t.Context()); err != nil || !slices.Equal(systems, []string{devdata.System}) {
+			t.Errorf("%s: systems = %v, %v; want %s", env, systems, err, devdata.System)
 		}
 		games, err := s.Games(t.Context())
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !slices.Equal(games, devdata.Games) {
-			t.Errorf("%s: games = %v, want %v", env, games, devdata.Games)
+		var codes []string
+		for _, g := range games {
+			if g.System != devdata.System {
+				t.Errorf("%s: game %s is not in %s", env, g, devdata.System)
+			}
+			codes = append(codes, g.Code)
 		}
-		for _, u := range devdata.Uploaders {
-			if _, ok, err := s.FindUploader(t.Context(), credential.Hash(pepper, u.Email, gameIDOf(t, s, u.Game), u.Token)); err != nil || !ok {
-				t.Errorf("%s: %s not found: %v", env, u.Email, err)
-			}
-			if _, ok, _ := s.FindUploader(t.Context(), credential.Hash("other", u.Email, gameIDOf(t, s, u.Game), u.Token)); ok {
-				t.Errorf("%s: %s found under another pepper", env, u.Email)
-			}
+		if !slices.Equal(codes, devdata.Games) {
+			t.Errorf("%s: games = %v, want %v", env, codes, devdata.Games)
 		}
 		for _, a := range devdata.Accounts {
 			got, ok, err := s.FindAccount(t.Context(), a.Email)
@@ -55,19 +54,34 @@ func TestSeed(t *testing.T) {
 				t.Errorf("%s: account %s: bcrypt cost %d, %v; want MinCost", env, a.Email, cost, err)
 			}
 		}
-		for _, game := range devdata.Games {
-			var want []string
+		for _, code := range devdata.Games {
+			game := store.GameRef{System: devdata.System, Code: code}
+			var managers, players []string
 			for _, a := range devdata.Accounts {
-				if slices.Contains(a.Games, game) {
-					want = append(want, a.Email)
+				if slices.Contains(a.Games, code) {
+					managers = append(managers, a.Email)
 				}
 			}
-			if got, err := s.Managers(t.Context(), game); err != nil || !slices.Equal(got, want) {
-				t.Errorf("%s: managers of %s = %v, %v; want %v", env, game, got, err, want)
+			for _, p := range devdata.Players {
+				if p.Game == code {
+					players = append(players, p.Email)
+				}
+			}
+			if got, err := s.Managers(t.Context(), game); err != nil || !slices.Equal(got, managers) {
+				t.Errorf("%s: managers of %s = %v, %v; want %v", env, game, got, err, managers)
+			}
+			if got, err := s.Players(t.Context(), game); err != nil || !slices.Equal(got, players) {
+				t.Errorf("%s: players of %s = %v, %v; want %v", env, game, got, err, players)
+			}
+		}
+		// A default player has an account without a password.
+		for _, p := range devdata.Players {
+			if a, ok, err := s.FindAccount(t.Context(), p.Email); err != nil || !ok || a.HashedSecret != nil {
+				t.Errorf("%s: player %s: account %+v, %v, %v; want one without a password", env, p.Email, a, ok, err)
 			}
 		}
 		// Seeding never runs twice.
-		if err := devdata.Seed(t.Context(), s, env, pepper); err == nil {
+		if err := devdata.Seed(t.Context(), s, env); err == nil {
 			t.Errorf("%s: second Seed succeeded", env)
 		}
 	}
@@ -81,33 +95,11 @@ func TestSeedRefusesOtherEnvironments(t *testing.T) {
 	}
 	defer s.Close()
 	for _, env := range []string{"test", "production", "", "Development"} {
-		if err := devdata.Seed(t.Context(), s, env, pepper); !errors.Is(err, devdata.ErrNotAllowed) {
+		if err := devdata.Seed(t.Context(), s, env); !errors.Is(err, devdata.ErrNotAllowed) {
 			t.Errorf("Seed(%q) = %v, want ErrNotAllowed", env, err)
 		}
 	}
-	if games, _ := s.Games(t.Context()); len(games) != 0 {
-		t.Errorf("games = %v, want none", games)
+	if systems, _ := s.Systems(t.Context()); len(systems) != 0 {
+		t.Errorf("systems = %v, want none", systems)
 	}
-}
-
-func TestSeedRequiresPepper(t *testing.T) {
-	t.Parallel()
-	s, err := store.OpenPrivateMemory(t.Context(), t.Name())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s.Close()
-	if err := devdata.Seed(t.Context(), s, "development", ""); !errors.Is(err, devdata.ErrMissingPepper) {
-		t.Errorf("Seed = %v, want ErrMissingPepper", err)
-	}
-}
-
-// gameIDOf returns the ID of the game with the given code.
-func gameIDOf(t *testing.T, s *store.Store, code string) int64 {
-	t.Helper()
-	id, ok, err := s.GameID(t.Context(), code)
-	if err != nil || !ok {
-		t.Fatalf("game %s: %v", code, err)
-	}
-	return id
 }

@@ -35,7 +35,6 @@ The user agreed this design on 2026-11-22, and it is being built in the steps th
   A file is uploaded as the request's body with its name in the `name` query parameter, and afterwards addressed by its upload ID within its game.
   Listings leave out withdrawn files unless asked with `withdrawn=include`; a GM can still read a withdrawn file's record and contents.
   The API's size limit is `--max-api-upload` (`FUINGO_MAX_API_UPLOAD`).
-  Downloads return the stored bytes only: normalization is not built.
 - Mail, built on 2026-11-22: invitations and password resets, sent through Mailgun.
   `fuingo account create`, `fuingo game add --player`, and a GM adding a player through `/api/` mail an invitation to an account they create; `fuingo account reset-password` and the public page `/account/reset` mail an active account a new link.
   A link leads to `/account/password`, works once, and expires after 72 hours; sending an account a new link cancels its earlier ones.
@@ -73,8 +72,8 @@ The user agreed this design on 2026-11-22, and it is being built in the steps th
   A withdrawn system-level file is shown to nobody on the web, GMs included; `file list` shows it.
   No size limit applies to `file add`.
   They are in `internal/store/systemfiles.go`, and are reached only by their system: every query for a game's files names the game, so none returns them.
-- Not built: normalized downloads.
-  The user settled their design on 2026-11-22; see [the `/api/` routes](#the-api-routes).
+- Normalized downloads, built on 2026-11-22, in `internal/api/normalize.go`: `strip-bom` and `normalize-eol` on the API's download route, as described under [the `/api/` routes](#the-api-routes).
+  The web pages' downloads are never normalized.
 - Migration 3 moved the games of a database made under the previous design into a system named `legacy` and dropped its stored uploads.
 - No deployment holds live data.
   The server called production is a test server, so no step needs a cutover.
@@ -369,8 +368,10 @@ These rules carry over from the routes that exist:
   Unknown fields and anything but white space after the object get `400`.
 - A download gives the contents' hash in `X-Content-SHA256`.
 - A download returns the file exactly as stored unless the client asks for it normalized.
-  There are two normalizations, each a query parameter of the download: `strip-bom=true` removes the BOM, and `normalize-eol=true` makes the line endings uniform.
-  A client may ask for either or both, as in `?strip-bom=true&normalize-eol=true`.
+  There are two normalizations, each a query parameter of the download: `strip-bom=true` removes the BOM, and `normalize-eol=lf` or `normalize-eol=crlf` makes the line endings uniform.
+  A client may ask for either or both, as in `?strip-bom=true&normalize-eol=lf`.
+  With `normalize-eol`, every CRLF, lone CR, and LF becomes the chosen ending, and the last line gets one if it has none.
+  Any other value, including an empty one or a repeated parameter, gets `400`; `strip-bom=false` is accepted and changes nothing.
 - `X-Content-SHA256` is always the hash of the file as stored, never of a normalized response.
   Normalizing changes only that response, never what is stored.
 
@@ -380,7 +381,6 @@ A tool can ask for the uploads that arrived after the last one it saw, so a game
 
 Settle each of these with the user before building what depends on it.
 
-- Which line ending `normalize-eol` produces, and what it does with a lone CR.
 - Renaming a system or game.
 - Naming a turn, as a later feature.
 - Pagination of listings.

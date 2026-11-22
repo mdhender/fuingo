@@ -635,3 +635,92 @@ func TestFileRouteMethods(t *testing.T) {
 		t.Errorf("HEAD contents: %d %v", w.Code, w.Header())
 	}
 }
+
+// A download is normalized only when asked, only in that response, and
+// always with the hash of the file as stored.
+func TestNormalizedDownload(t *testing.T) {
+	t.Parallel()
+	f := newFilesFixture(t, 0)
+	const bom = "\xef\xbb\xbf"
+	// Every kind of line ending, a blank line of each kind, a letter above
+	// 0x7F, and a last line with no ending.
+	const mixed = bom + "one\r\ntwo\rthree\n\r\n\r\n\n\r\rcafé\ttab\r\n\rlast"
+	const mixedLF = "one\ntwo\nthree\n\n\n\n\n\ncafé\ttab\n\nlast\n"
+	mixedCRLF := strings.ReplaceAll(mixedLF, "\n", "\r\n")
+	for _, tc := range []struct {
+		name, stored string
+		want         map[string]string // query to body
+	}{
+		{"mixed", mixed, map[string]string{
+			"":                                  mixed,
+			"strip-bom=false":                   mixed,
+			"strip-bom=true":                    strings.TrimPrefix(mixed, bom),
+			"normalize-eol=lf":                  bom + mixedLF,
+			"normalize-eol=crlf":                bom + mixedCRLF,
+			"strip-bom=true&normalize-eol=lf":   mixedLF,
+			"normalize-eol=crlf&strip-bom=true": mixedCRLF,
+			"strip-bom=false&normalize-eol=lf":  bom + mixedLF,
+			"normalize-eol=lf&other=1":          bom + mixedLF,
+		}},
+		// A last line that has its ending gets no second one.
+		{"ended-lf", "a\nb\n", map[string]string{"normalize-eol=lf": "a\nb\n", "normalize-eol=crlf": "a\r\nb\r\n", "strip-bom=true": "a\nb\n"}},
+		{"ended-crlf", "a\r\nb\r\n", map[string]string{"normalize-eol=lf": "a\nb\n", "normalize-eol=crlf": "a\r\nb\r\n"}},
+		{"ended-cr", "a\rb\r", map[string]string{"normalize-eol=lf": "a\nb\n", "normalize-eol=crlf": "a\r\nb\r\n"}},
+		{"cr-at-end-of-crlf", "a\r\r\n", map[string]string{"normalize-eol=lf": "a\n\n", "normalize-eol=crlf": "a\r\n\r\n"}},
+		{"one-byte", "a", map[string]string{"normalize-eol=lf": "a\n", "normalize-eol=crlf": "a\r\n", "strip-bom=true&normalize-eol=lf": "a\n"}},
+		{"only-eol", "\r", map[string]string{"normalize-eol=lf": "\n", "normalize-eol=crlf": "\r\n"}},
+		// A mark is a mark only at the start of the file.
+		{"bom-inside", "a" + bom + "b\n", map[string]string{"strip-bom=true": "a" + bom + "b\n", "strip-bom=true&normalize-eol=lf": "a" + bom + "b\n"}},
+		{"two-boms", bom + bom + "a", map[string]string{"strip-bom=true": bom + "a", "strip-bom=true&normalize-eol=crlf": bom + "a\r\n"}},
+	} {
+		file := f.put(t, game01Path, f.gm1, tc.name+".txt", tc.stored)
+		path := fmt.Sprintf("%s/uploads/%d/contents", game01Path, file.ID)
+		for query, want := range tc.want {
+			w := f.serve(get(path+"?"+query, f.gm1))
+			h := w.Header()
+			if w.Code != http.StatusOK || w.Body.String() != want {
+				t.Errorf("%s ?%s: %d %q, want %q", tc.name, query, w.Code, w.Body, want)
+			}
+			if h.Get("X-Content-SHA256") != file.SHA256 || h.Get("Content-Length") != strconv.Itoa(len(want)) ||
+				h.Get("Content-Type") != "application/octet-stream" || h.Get("Content-Disposition") != `attachment; filename="`+tc.name+`.txt"` {
+				t.Errorf("%s ?%s: headers %v", tc.name, query, h)
+			}
+		}
+		// The stored file is unchanged by any of it.
+		if w := f.serve(get(path, f.gm1)); w.Body.String() != tc.stored {
+			t.Errorf("%s: stored file changed to %q", tc.name, w.Body)
+		}
+	}
+
+	file := f.put(t, game01Path, f.gm1, "plain.txt", "plain\r\n")
+	path := fmt.Sprintf("%s/uploads/%d/contents", game01Path, file.ID)
+	for _, query := range []string{
+		"strip-bom=", "strip-bom", "strip-bom=1", "strip-bom=yes", "strip-bom=TRUE", "strip-bom=true&strip-bom=true", "strip-bom=true&strip-bom=false",
+		"normalize-eol=", "normalize-eol", "normalize-eol=true", "normalize-eol=cr", "normalize-eol=LF", "normalize-eol=lf%20", "normalize-eol=lf&normalize-eol=crlf",
+		"strip-bom=true&normalize-eol=unix",
+	} {
+		w := f.serve(get(path+"?"+query, f.gm1))
+		if w.Code != http.StatusBadRequest || w.Header().Get("Content-Type") != "application/json" || strings.Contains(w.Body.String(), "plain") {
+			t.Errorf("?%s: %d %s", query, w.Code, w.Body)
+		}
+	}
+	// Asking nicely reaches nothing more: another game's GM still gets 404,
+	// whatever the query, and so does a signed-out client 401.
+	for _, query := range []string{"normalize-eol=lf", "normalize-eol=bad"} {
+		if w := f.serve(get(path+"?"+query, f.gm2)); w.Code != http.StatusNotFound {
+			t.Errorf("another GM ?%s: %d", query, w.Code)
+		}
+		if w := f.serve(get(path+"?"+query, "")); w.Code != http.StatusUnauthorized {
+			t.Errorf("no token ?%s: %d", query, w.Code)
+		}
+	}
+	// A withdrawn file is normalized like any other.
+	r := httptest.NewRequest(http.MethodPost, fmt.Sprintf("%s/uploads/%d/withdraw", game01Path, file.ID), nil)
+	r.Header.Set("Authorization", "Bearer "+f.gm1)
+	if w := f.serve(r); w.Code != http.StatusOK {
+		t.Fatalf("withdraw: %d", w.Code)
+	}
+	if w := f.serve(get(path+"?normalize-eol=lf", f.gm1)); w.Code != http.StatusOK || w.Body.String() != "plain\n" {
+		t.Errorf("withdrawn, normalized: %d %q", w.Code, w.Body)
+	}
+}

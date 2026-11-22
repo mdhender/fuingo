@@ -11,8 +11,7 @@ tool uses for the same: to manage a game's players and turns, and to upload,
 list, download, and withdraw its files. Accounts are by invitation: a new
 account is mailed a link to choose its password, and its owner resets a
 forgotten password the same way. The administrator adds a system's own
-files, such as its rules, from the command line. Normalized downloads are
-not built.
+files, such as its rules, from the command line.
 
 ## Commands
 
@@ -242,7 +241,7 @@ responses, status codes, and examples for every route.
 | `GET`, `POST` `/api/systems/{system}/games/{game}/turns/{turn}/players/{id}/files` | The same, for a player's folder in a turn. |
 | `GET /api/systems/{system}/games/{game}/uploads` | Lists the game's uploads at every level; `?after=ID` gives those after one already seen. |
 | `GET /api/systems/{system}/games/{game}/uploads/{upload}` | One upload's record. |
-| `GET /api/systems/{system}/games/{game}/uploads/{upload}/contents` | Downloads the file, exactly as uploaded. |
+| `GET /api/systems/{system}/games/{game}/uploads/{upload}/contents` | Downloads the file, exactly as uploaded, or with `strip-bom=true` and `normalize-eol=lf` or `crlf` in the query, normalized for that response. |
 | `POST /api/systems/{system}/games/{game}/uploads/{upload}/withdraw` | Withdraws a file the account uploaded. |
 
 Log in with an account whose owner has chosen a password through its

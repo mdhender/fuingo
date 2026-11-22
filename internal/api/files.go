@@ -271,6 +271,11 @@ func (h *Handler) downloadUpload(w http.ResponseWriter, r *http.Request, account
 	if !ok {
 		return
 	}
+	normalize, problem := parseNormalization(r.URL.Query())
+	if problem != "" {
+		writeError(w, http.StatusBadRequest, problem)
+		return
+	}
 	u, contents, found, err := h.db.GameUploadContents(r.Context(), gameID, id)
 	if err != nil {
 		h.logger.Error("api: download", "email", account.Email, "game", game.String(), "upload_id", id, "err", err)
@@ -280,6 +285,9 @@ func (h *Handler) downloadUpload(w http.ResponseWriter, r *http.Request, account
 		writeError(w, http.StatusNotFound, msgNotFound)
 		return
 	}
+	// Normalizing changes this response only, and the hash below stays the
+	// stored file's.
+	contents = normalize.apply(contents)
 	// The file is served as a download, never as a page: it may be HTML and
 	// must not run on this origin. Its name holds only safe ASCII.
 	header := w.Header()

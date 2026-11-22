@@ -497,20 +497,47 @@ Returns one file's object, withdrawn or not.
 
 ### `GET /api/systems/{system}/games/{game}/uploads/{upload}/contents`
 
-Downloads the file: exactly the bytes that were uploaded.
+Downloads the file: exactly the bytes that were uploaded, unless the query
+asks for it [normalized](#normalized-downloads).
 
 ```sh
 curl -s -o report.txt "$FUINGO/api/systems/system01/games/game01/uploads/17/contents" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
-- `X-Content-SHA256` holds the file's lowercase hex SHA-256. Check it.
+- `X-Content-SHA256` holds the lowercase hex SHA-256 of the file as it is
+  stored. Check it against a download that is not normalized.
 - The response is `Content-Type: application/octet-stream` with
   `Content-Disposition: attachment` and the file's name, whatever the file
   holds, so a browser never displays it.
 - A withdrawn file can still be downloaded by its ID.
-- There is no normalization yet: no option removes a byte order mark or
-  changes line endings.
+
+#### Normalized downloads
+
+Fuingo stores every file byte for byte. Two query parameters change what
+one download returns, and nothing else: the stored file stays as it was.
+
+```sh
+curl -s -o orders.txt \
+  "$FUINGO/api/systems/system01/games/game01/uploads/17/contents?strip-bom=true&normalize-eol=lf" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+| Parameter | Values | Does |
+| --- | --- | --- |
+| `strip-bom` | `true`, `false` | `true` removes a UTF-8 byte order mark (`EF BB BF`) from the start of the file. `false`, the default, keeps it. |
+| `normalize-eol` | `lf`, `crlf` | Ends every line with LF (`0A`) or with CRLF (`0D 0A`). Without it, line endings are left alone. |
+
+- With `normalize-eol`, every CRLF, every CR on its own, and every LF
+  becomes the chosen ending, and the last line gets one if it has none.
+  Blank lines are kept. `a\r\rb` is three lines: `a`, an empty one, and `b`.
+- Use either parameter or both, in any order. A byte order mark that is not
+  stripped stays at the start of a file whose line endings are normalized.
+- Any other value, an empty value, or a parameter given twice gets `400`.
+  Values are lowercase.
+- `X-Content-SHA256` is always the hash of the stored file, never of a
+  normalized response, so it does not match a normalized body.
+  `Content-Length` is the length of the body sent.
 
 ### `POST /api/systems/{system}/games/{game}/uploads/{upload}/withdraw`
 

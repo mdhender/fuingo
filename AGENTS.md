@@ -28,7 +28,7 @@ The user agreed this design on 2026-11-22.
 The code does not implement it yet: it implements the design it replaces, in which an unauthenticated form accepted a turn file whose first line named its game, turn, email, and upload token.
 [README.md](README.md), [API.md](API.md), and [TESTING.md](TESTING.md) describe the code as it is, so they still describe that design.
 
-- Do not extend what the new design removes: the header line and its parsing, upload tokens and `game_uploaders.hashed_credentials`, the pepper (`FUINGO_PEPPER`), `internal/credential`'s hashes, the unauthenticated `POST /upload` form, `fuingo game add --token`, the `reset-token` route, and `POST /api/games`.
+- Do not extend what the new design removes: the header line and its parsing, upload tokens and `game_uploaders.hashed_credentials`, the pepper (`FUINGO_PEPPER`), `internal/credential`'s hashes, the unauthenticated `POST /upload` form, `fuingo game add --token`, the `reset-token` route, `POST /api/games`, and setting a password from the command line (`fuingo account create`'s password and `account set-password`).
 - Fix bugs in that code as [WORKFLOW.md](WORKFLOW.md) requires, until it is replaced.
 - No deployment holds live data.
   The server called production is a test server, so the change needs no cutover and no conversion of existing rows.
@@ -115,12 +115,17 @@ Olympia / G3 / 1 / 5    player 5's folder in turn 1
   Uploads are permanent history; do not add a command or route that deletes them.
 - Empty files are refused.
   A player with no orders for a turn withdraws their file rather than uploading a blank one.
-- A player's upload is at most 64 KiB (65,536 bytes), enforced while reading the request (for example, with `http.MaxBytesReader`), not after buffering an unbounded body.
-  It must pass the sanity check: after one optional leading UTF-8 BOM (`EF BB BF`), the next 256 bytes, or all remaining bytes if fewer, must each be printable ASCII (`0x20`–`0x7E`), tab (`0x09`), LF (`0x0A`), or CR (`0x0D`).
-  Bytes beyond that sample are not checked.
+- A player's upload is at most 64 KiB (65,536 bytes).
+  After one optional leading UTF-8 BOM (`EF BB BF`), every byte must be printable ASCII (`0x20`–`0x7E`), tab (`0x09`), LF (`0x0A`), or CR (`0x0D`).
+- A GM's upload is at most 1 MiB (1,048,576 bytes) by default, and the limit is configurable.
+  It may start with one optional UTF-8 BOM and must be valid UTF-8.
+- Check the whole file, never a sample of it.
   A file containing only a BOM is empty.
-- A GM's upload may start with one optional UTF-8 BOM and must be valid UTF-8 throughout.
-  It is not held to the player's ASCII check, and its size limit is larger than a player's; the limit itself is an [open question](#open-questions).
+- Enforce a size limit while reading the request (for example, with `http.MaxBytesReader`), not after buffering an unbounded body.
+  A limit applies to new uploads only: changing it never affects a file already stored.
+- Store every file exactly as uploaded, byte for byte, including a BOM and its line endings.
+  Fuingo does not normalize what it stores; that is each game's responsibility.
+  A tool may ask the API to normalize a file as it is downloaded, as described under the `/api/` routes.
 - A report may be HTML.
   Serve every file so that it cannot run scripts on Fuingo's origin, as a download or sandboxed, because that origin holds sessions.
 - When a GM or a tool lists or downloads files, Fuingo gives the system, game, turn, and player of each, with its name, who uploaded it, and when.
@@ -130,6 +135,12 @@ Olympia / G3 / 1 / 5    player 5's folder in turn 1
 - Accounts are by invitation only.
   Nobody can sign up.
 - The administrator makes the first accounts from the command line.
+  Creating an account sends its invitation; no command sets or reads a password.
+- An invitation and a password reset are each a link mailed to the account's address, which expires after 72 hours.
+- Fuingo does not handle mail that fails.
+  The administrator sees bounces through Mailgun.
+- An account's email cannot be changed, for now.
+  When the user asks for it, look into the best practices before proposing a design.
 - A GM gives an account access to a game, which makes it a player there.
   If the email has no account, that creates one and sends the invitation.
   This is all a GM may do to an account: a GM never sets, sees, or resets a password, and never changes an account's email.
@@ -137,6 +148,11 @@ Olympia / G3 / 1 / 5    player 5's folder in turn 1
   The administrator may start a reset for an account, and never chooses its password.
 - An account has one password, used for the web and for `/api/`.
   There are no per-game credentials and no upload tokens.
+- A browser stays signed in with a session: a random token in a cookie, stored in the database only as its hash, so the server can end it.
+  A web session lasts 30 days and is renewed each time it is used.
+  Signing out ends that session.
+  Resetting a password ends every other session of the account, on the web and in `/api/`.
+  Follow [PROXIES.md](PROXIES.md) for the cookie.
 - Fuingo sends its mail through Mailgun.
   The Mailgun credentials are secrets: they come from the environment and have no flags.
 - The administrator creates each system, creates each game in it, and assigns the game's GMs.
@@ -303,6 +319,8 @@ These rules carry over from the routes that exist:
 - A request body that is JSON must be exactly one JSON object with only the documented fields, read with `decodeOnly`.
   Unknown fields and anything but white space after the object get `400`.
 - A download gives the contents' hash in `X-Content-SHA256`.
+- A download returns the file exactly as stored unless the client asks for it normalized, such as without its BOM or with its line endings made uniform.
+  Normalizing changes only that response, never what is stored.
 
 A tool can ask for the uploads that arrived after the last one it saw, so a game can answer orders with parsing results soon after they arrive.
 
@@ -310,15 +328,11 @@ A tool can ask for the uploads that arrived after the last one it saw, so a game
 
 Settle each of these with the user before building what depends on it.
 
-- The size limit for a GM's upload.
-- Whether a file is stored exactly as uploaded, including a leading BOM.
+- Whether a player's size limit is also configurable.
+- Which normalizations a download offers, how a client asks for them, and which contents `X-Content-SHA256` describes when it does.
 - The limits on a file's name, and on the codes of systems and games, which now appear in URLs.
-- The invitation and reset flows: how long a link lasts, and what a GM or the administrator sees when mail fails.
-- Whether the administrator gives a first account its password or sends it an invitation, and whether `fuingo account create` and `account set-password` remain when owners set their own passwords.
-- Session management for the web: how a browser stays signed in, for how long, how it signs out, and whether a password reset ends the account's other sessions.
-  Follow [PROXIES.md](PROXIES.md) for cookies.
 - Whether a system has GMs or settings of its own.
-- Changing an account's email, and renaming a system or game.
+- Renaming a system or game.
 - Naming a turn, as a later feature.
 - Pagination of listings.
 - Whether `cmd/olympia` and issue #1 continue under this design, and if so how the tool stages orders and pushes reports.
@@ -328,12 +342,14 @@ Settle each of these with the user before building what depends on it.
 - Test observable HTTP and command behavior, not private implementation details.
 - Cover access: that a player reaches only their own folders, that a GM reaches only the games they manage, that an inactive account, player, GM, or game is refused, and that what an account may not reach is indistinguishable from what does not exist.
 - Cover turns: uploads to a turn that does not exist, to an open turn, to a closed one, and to a reopened one; that closing blocks only players; and several open turns.
-- Cover a GM's upload: with and without a BOM, bytes above `0x7F` in valid UTF-8 (accepted), invalid UTF-8 at the start and the end of a file (rejected), and a file over a player's limit.
+- Cover a GM's upload: the size boundary at the default and at a configured limit, with and without a BOM, bytes above `0x7F` in valid UTF-8 (accepted), and invalid UTF-8 at the start, in the middle, and at the end of a file (rejected).
 - Cover the files above a player's folder: that a game's players read its game and turn files, that an account in one of a system's games reads the system's files, and that no other account does.
-- Cover a player's upload: the 64 KiB boundary (65,536 bytes accepted, 65,537 rejected), empty and BOM-only files, a BOM followed by a valid file, every boundary byte of the sanity check, files shorter than the 256-byte sample, and a disallowed byte as the last sampled byte (rejected) and the first byte after the sample (accepted), with and without a BOM.
+- Cover a player's upload: the 64 KiB boundary (65,536 bytes accepted, 65,537 rejected), empty and BOM-only files, a BOM followed by a valid file, every boundary byte of the check, and a disallowed byte as the first and as the last byte of a file at the size limit (rejected), with and without a BOM.
+- Cover storage: that a download returns exactly the bytes uploaded, including a BOM and CRLF line endings, that a normalized download leaves the stored file unchanged, and that lowering a size limit leaves stored files readable.
 - Cover repeated and withdrawn files: that a second upload replaces nothing, that a withdrawn file leaves the listings and its record remains, that a player cannot withdraw after the turn closes or withdraw a GM's file, and that a GM can withdraw their own file in a closed turn.
 - For duplicate content, cover players in the same game and in different games with identical files, concurrent uploads, and that stored contents are not rewritten.
 - Cover failure limiting: the limit and `Retry-After`, recovery over time, that successes do not count, that a valid password is refused while limited, that other clients (including the same email from another address) are unaffected, concurrent failures from one client, IPv6 /64 grouping, the 16 Ki client cap, that `X-Forwarded-For` is ignored from untrusted peers, and that the rightmost untrusted address is used behind trusted proxies.
-- Cover accounts: that a GM adding an unknown email creates an account and sends one invitation, that a GM cannot set or reset a password, and identical sign-in failures for emails with and without an account.
+- Cover accounts: that creating an account, by the administrator or by a GM adding an unknown email, sends one invitation, that a GM cannot set or reset a password, that a link is refused after 72 hours, and identical sign-in failures for emails with and without an account.
+- Cover sessions: that one is renewed by use and refused after 30 days unused, that signing out ends it, that a password reset ends the account's other sessions, and that an inactive account's session is refused.
 - Cover that refused requests change nothing, that no password, token, or link is logged, and that unknown paths, wrong methods, and refused cross-origin requests under `/api/` get JSON errors.
 - Run the checks required by [WORKFLOW.md](WORKFLOW.md) and identify any checks that could not be run.

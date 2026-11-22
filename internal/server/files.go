@@ -62,11 +62,23 @@ func (p *pages) signedIn(next func(http.ResponseWriter, *http.Request, store.Acc
 			if isHTMX(r) {
 				// HTMX would follow a redirect and put the sign-in page
 				// inside the page; this sends the whole browser there.
-				w.Header().Set("HX-Redirect", SignInPath)
+				// The way back is the page the browser shows, not the
+				// fragment's address.
+				next := ""
+				if u, err := url.Parse(r.Header.Get("HX-Current-URL")); err == nil {
+					next = u.RequestURI()
+				}
+				w.Header().Set("HX-Redirect", signInURL(next))
 				w.WriteHeader(http.StatusUnauthorized)
 				return
 			}
-			http.Redirect(w, r, SignInPath, http.StatusSeeOther)
+			// Only a page that was asked for is worth coming back to: a
+			// form's address would answer a GET with nothing.
+			next := ""
+			if r.Method == http.MethodGet {
+				next = r.URL.RequestURI()
+			}
+			http.Redirect(w, r, signInURL(next), http.StatusSeeOther)
 			return
 		}
 		next(w, r, account)

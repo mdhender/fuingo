@@ -4,6 +4,7 @@
 package server_test
 
 import (
+	"html"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -424,5 +425,82 @@ func TestSessionRoutesRefuseCrossOriginPosts(t *testing.T) {
 	big := form(server.SignInPath, "", url.Values{"email": {acct01.Email}, "password": {strings.Repeat("x", 8<<10)}})
 	if w := serve(f.h, big); w.Code != http.StatusBadRequest {
 		t.Errorf("oversized form: %d", w.Code)
+	}
+}
+
+// A signed-out visitor is brought back to the page they asked for.
+func TestSignInReturnsToTheRequestedPage(t *testing.T) {
+	t.Parallel()
+	f := newAccountFixture(t)
+	turn := game01Path + "/turns/0?x=1&y=2"
+	w := f.get(turn, nil)
+	signIn := w.Header().Get("Location")
+	if w.Code != http.StatusSeeOther || signIn != server.SignInPath+"?next="+url.QueryEscape(turn) {
+		t.Fatalf("GET %s signed out: %d, Location %q", turn, w.Code, signIn)
+	}
+	// The sign-in page carries the page in its form.
+	page := f.get(signIn, nil)
+	if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), `<input type="hidden" name="next" value="`+html.EscapeString(turn)+`">`) {
+		t.Fatalf("sign-in page: %d %s", page.Code, page.Body)
+	}
+	post := func(next, password string, cookie *http.Cookie) *httptest.ResponseRecorder {
+		r := form(server.SignInPath, "", url.Values{"email": {acct01.Email}, "password": {password}, "next": {next}})
+		if cookie != nil {
+			r.AddCookie(cookie)
+		}
+		return serve(f.h, r)
+	}
+	// A failed sign-in keeps it for the next try.
+	if w := post(turn, "not the password", nil); w.Code != http.StatusUnauthorized || !strings.Contains(w.Body.String(), `name="next" value="`+html.EscapeString(turn)+`"`) {
+		t.Errorf("failed sign-in: %d %s", w.Code, w.Body)
+	}
+	w = post(turn, acct01.Password, nil)
+	c := sessionCookie(w)
+	if w.Code != http.StatusSeeOther || w.Header().Get("Location") != turn || c == nil {
+		t.Fatalf("sign-in: %d, Location %q", w.Code, w.Header().Get("Location"))
+	}
+	// Someone already signed in goes straight there.
+	if w := f.get(signIn, c); w.Code != http.StatusSeeOther || w.Header().Get("Location") != turn {
+		t.Errorf("sign-in page while signed in: %d, Location %q", w.Code, w.Header().Get("Location"))
+	}
+
+	// Only a path on this origin is followed; anything else leads home.
+	for _, next := range []string{
+		"", "https://example.com/", "//example.com/", "/\\example.com/", "\\\\example.com", "/%5Cexample.com\\x",
+		"example.com", "javascript:alert(1)", "/ /x", "/x\ty", "/x\r\nSet-Cookie: a=b", "/x#frag",
+		server.SignInPath, server.SignInPath + "?next=/x", server.SignOutPath, "/api/games", "/api",
+		"/" + strings.Repeat("x", 512),
+	} {
+		if w := post(next, acct01.Password, nil); w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/" {
+			t.Errorf("sign-in with next %q: %d, Location %q", next, w.Code, w.Header().Get("Location"))
+		}
+		q := server.SignInPath + "?next=" + url.QueryEscape(next)
+		if w := f.get(q, c); w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/" {
+			t.Errorf("GET %s signed in: %d, Location %q", q, w.Code, w.Header().Get("Location"))
+		}
+		if w := f.get(q, nil); w.Code != http.StatusOK || strings.Contains(w.Body.String(), `name="next"`) {
+			t.Errorf("GET %s: %d, or the form carries it", q, w.Code)
+		}
+	}
+
+	// HTMX sends the browser back to the page it shows, not to the
+	// fragment's address; a form's own address is not a page to return to.
+	r := form(game01Path+"/turns", "", url.Values{"turn": {"0"}})
+	if w := serve(f.h, r); w.Code != http.StatusSeeOther || w.Header().Get("Location") != server.SignInPath {
+		t.Errorf("POST signed out: %d, Location %q", w.Code, w.Header().Get("Location"))
+	}
+	for current, want := range map[string]string{
+		publicOrigin + turn:           server.SignInPath + "?next=" + url.QueryEscape(turn),
+		"https://example.com//evil.x": server.SignInPath,
+		"":                            server.SignInPath,
+	} {
+		r := form(game01Path+"/turns", "", url.Values{"turn": {"0"}})
+		r.Header.Set("HX-Request", "true")
+		if current != "" {
+			r.Header.Set("HX-Current-URL", current)
+		}
+		if w := serve(f.h, r); w.Code != http.StatusUnauthorized || w.Header().Get("HX-Redirect") != want {
+			t.Errorf("HTMX POST signed out from %q: %d, HX-Redirect %q", current, w.Code, w.Header().Get("HX-Redirect"))
+		}
 	}
 }

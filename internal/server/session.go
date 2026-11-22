@@ -10,7 +10,9 @@ import (
 	"log/slog"
 	"math"
 	"net/http"
+	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/mdhender/fuingo/internal/clientip"
@@ -67,6 +69,58 @@ type sessionPage struct {
 	SignInPath string
 	ResetPath  string
 	Error      string
+	// Next is the page to show after signing in, or empty for the
+	// account's own.
+	Next string
+}
+
+// nextParam names the page a visitor asked for before signing in, in the
+// sign-in page's query and in its form.
+const nextParam = "next"
+
+// maxNext is the longest path the sign-in page carries.
+const maxNext = 512
+
+// localPath returns raw if it is safe to send a browser to after signing
+// in, and "" otherwise. It must be a path on this origin: a browser reads
+// "//host" and "/\host" as another site, so anything like them is refused,
+// as is whatever a browser might read differently from the server.
+func localPath(raw string) string {
+	if raw == "" || len(raw) > maxNext || raw[0] != '/' || strings.HasPrefix(raw, "//") {
+		return ""
+	}
+	for _, c := range raw {
+		if c <= ' ' || c == 0x7f || c == '\\' {
+			return ""
+		}
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "" || u.Host != "" || u.User != nil || u.Fragment != "" {
+		return ""
+	}
+	// Signing in never leads back to signing in or out, or into the API.
+	if u.Path == SignInPath || u.Path == SignOutPath || u.Path == "/api" || strings.HasPrefix(u.Path, "/api/") {
+		return ""
+	}
+	return raw
+}
+
+// signInURL returns the sign-in page's address, carrying next if it is a
+// page to come back to.
+func signInURL(next string) string {
+	if next = localPath(next); next == "" || next == "/" {
+		return SignInPath
+	}
+	return SignInPath + "?" + url.Values{nextParam: {next}}.Encode()
+}
+
+// afterSignIn is where a signed-in browser goes: the page it asked for, or
+// the account's own.
+func afterSignIn(next string) string {
+	if next = localPath(next); next != "" {
+		return next
+	}
+	return "/"
 }
 
 func (s *sessions) render(w http.ResponseWriter, status int, name string, data sessionPage) {
@@ -143,10 +197,10 @@ func (s *sessions) showSignIn(w http.ResponseWriter, r *http.Request) {
 		return
 	} else if ok {
 		w.Header().Set("Cache-Control", "no-store")
-		http.Redirect(w, r, "/", http.StatusSeeOther)
+		http.Redirect(w, r, afterSignIn(r.URL.Query().Get(nextParam)), http.StatusSeeOther)
 		return
 	}
-	s.render(w, http.StatusOK, "signin.html", sessionPage{State: "form"})
+	s.render(w, http.StatusOK, "signin.html", sessionPage{State: "form", Next: localPath(r.URL.Query().Get(nextParam))})
 }
 
 // signIn checks an email and password and starts a session.
@@ -157,8 +211,9 @@ func (s *sessions) signIn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rawEmail, password := r.PostForm.Get("email"), r.PostForm.Get("password")
+	next := localPath(r.PostForm.Get(nextParam))
 	if rawEmail == "" || password == "" {
-		s.render(w, http.StatusBadRequest, "signin.html", sessionPage{State: "form", Error: "Enter your email address and password."})
+		s.render(w, http.StatusBadRequest, "signin.html", sessionPage{State: "form", Next: next, Error: "Enter your email address and password."})
 		return
 	}
 	// A failure is reserved before the check, so concurrent guesses cannot
@@ -186,7 +241,7 @@ func (s *sessions) signIn(w http.ResponseWriter, r *http.Request) {
 	}
 	if bcrypt.CompareHashAndPassword(hash, []byte(password)) != nil || !usable {
 		s.logger.Info("sign-in failed", "client", client)
-		s.render(w, http.StatusUnauthorized, "signin.html", sessionPage{State: "form", Error: "That email address and password do not match an account."})
+		s.render(w, http.StatusUnauthorized, "signin.html", sessionPage{State: "form", Next: next, Error: "That email address and password do not match an account."})
 		return
 	}
 	s.failures.Return(client)
@@ -207,7 +262,7 @@ func (s *sessions) signIn(w http.ResponseWriter, r *http.Request) {
 	s.logger.Info("sign-in", "client", client, "email", account.Email)
 	setCookie(w, token)
 	w.Header().Set("Cache-Control", "no-store")
-	http.Redirect(w, r, "/", http.StatusSeeOther)
+	http.Redirect(w, r, afterSignIn(next), http.StatusSeeOther)
 }
 
 // signOut ends the request's session, if it has one.

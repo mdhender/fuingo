@@ -62,7 +62,11 @@ The user agreed this design on 2026-11-22, and it is being built in the steps th
   A closed turn refuses a player's upload and withdrawal with `409`, checked inside the transaction that would store them.
   A player is shown "you" or "the GM" as a file's uploader, never the GM's email.
   A signed-out HTMX request gets `401` with `HX-Redirect`; anything unreachable gets `404` with `HX-Refresh`.
-- Not built: system-level files, normalized downloads, and a way back to the page a signed-out visitor asked for.
+- The way back after signing in, built on 2026-11-22: a signed-out `GET` is sent to `/sign-in?next=PATH`, the form carries `next`, and signing in redirects there.
+  An HTMX request's way back is the path of its `HX-Current-URL`; any other `POST` has none.
+  `localPath` in `session.go` decides what is followed: a path on this origin, at most 512 bytes, with no `//` start, backslash, white space, control character, or fragment, and not `/sign-in`, `/sign-out`, or under `/api/`.
+  Anything else leads to `/`; never redirect to a `next` that has not been through it.
+- Not built: system-level files and normalized downloads.
 - Migration 3 moved the games of a database made under the previous design into a system named `legacy` and dropped its stored uploads.
 - No deployment holds live data.
   The server called production is a test server, so no step needs a cutover.

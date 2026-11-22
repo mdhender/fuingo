@@ -197,7 +197,11 @@ func TestPagesNeedASession(t *testing.T) {
 	for _, path := range []string{"/", "/systems/system01", game01Path, game01Path + "/turns/0", folderPath(game01Path, 0, catNo), game01Path + "/players", uploadPath(game01Path, id), "/systems/nope/games/nope"} {
 		for what, cookie := range map[string]*http.Cookie{"no cookie": nil, "a made-up cookie": {Name: server.SessionCookie, Value: "nonsense"}} {
 			w := f.get(path, cookie)
-			if w.Code != http.StatusSeeOther || w.Header().Get("Location") != server.SignInPath || strings.Contains(w.Body.String(), "rules") {
+			want := server.SignInPath
+			if path != "/" {
+				want += "?next=" + url.QueryEscape(path)
+			}
+			if w.Code != http.StatusSeeOther || w.Header().Get("Location") != want || strings.Contains(w.Body.String(), "rules") {
 				t.Errorf("GET %s with %s: %d, Location %q", path, what, w.Code, w.Header().Get("Location"))
 			}
 		}

@@ -73,7 +73,7 @@ chooses one through a link mailed to the account's address.
 | Page | Does |
 | --- | --- |
 | `/` | The signed-in account's games; see [Pages](#pages). Sends anyone else to `/sign-in`. |
-| `/sign-in` | Signs an account in with its email and password. |
+| `/sign-in` | Signs an account in with its email and password. `?next=PATH` names the page to show afterwards; only a path on Fuingo itself is followed. |
 | `/sign-out` | Ends the browser's session. `POST` only. |
 | `/account/password?token=...` | Where a mailed link leads: a form to choose the password. |
 | `/account/reset` | Asks for a link by email address. Open to anyone. |
@@ -120,7 +120,10 @@ secrets: they come only from the environment, and have no flags.
 
 ## Pages
 
-Every page needs a signed-in account, and sends anyone else to `/sign-in`.
+Every page needs a signed-in account, and sends anyone else to `/sign-in`,
+which brings them back to the page they asked for once they have signed in.
+So a link to a turn, posted where the players talk, works for a player who
+is signed out.
 An account sees only what it may reach: anything else gets the same "not
 found" page as something that does not exist.
 

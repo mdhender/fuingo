@@ -50,8 +50,8 @@ func serve(h http.Handler, r *http.Request) *httptest.ResponseRecorder {
 	return w
 }
 
-// The server accepts no files until the new design's uploads are built: the
-// previous design's form is gone, and so is its helper.
+// Files arrive only through /api/, as a signed-in GM: the previous design's
+// unauthenticated form is gone, and so is its helper.
 func TestThereIsNoUploadRoute(t *testing.T) {
 	t.Parallel()
 	for _, env := range []string{"production", "development"} {

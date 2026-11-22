@@ -27,12 +27,18 @@ Nothing in a game depends on mail reaching a player.
 The user agreed this design on 2026-11-22, and it is being built in the steps the user asks for.
 [README.md](README.md), [API.md](API.md), and [TESTING.md](TESTING.md) describe the code as it is, so they describe only what is built.
 
-- Built: systems, games in systems, a game's GMs and players, the administrator's commands for them, turns, and the `/api/` routes for a game's players and turns.
+- Built: systems, games in systems, a game's GMs and players, the administrator's commands for them, turns, file storage, and the `/api/` routes for a game's players, turns, and files.
   A GM creates a turn by naming its number, which must be exactly the game's next (0 first, then no gaps); anything else gets `409`.
 - Removed on 2026-11-22: the previous design's header line, upload tokens, pepper (`FUINGO_PEPPER`), unauthenticated `POST /upload` form, `reset-token` route, and `POST /api/games`.
   Do not bring any of them back.
-- Not built: files and their storage, withdrawal, web sign-in and sessions, the pages, mail (invitations and password resets), and system-level files.
-  Until files are built the server stores none, and the page at `/` is a placeholder.
+- Files through `/api/`, for GMs: upload to a game, a turn, or a player's folder; list a folder; list a game's uploads after a given ID; download; and withdraw the GM's own file.
+  A file is uploaded as the request's body with its name in the `name` query parameter, and afterwards addressed by its upload ID within its game.
+  Listings leave out withdrawn files unless asked with `withdrawn=include`; a GM can still read a withdrawn file's record and contents.
+  The API's size limit is `--max-api-upload` (`FUINGO_MAX_API_UPLOAD`).
+  Downloads return the stored bytes only: normalization is not built.
+- Not built: anything for players (their uploads, withdrawals, and the two web size limits), web sign-in and sessions, the pages, mail (invitations and password resets), and system-level files.
+  The page at `/` is a placeholder.
+  Closing a turn has no effect yet, because only players are stopped by it.
 - `fuingo account create`'s password and `fuingo account set-password` remain only because invitations are not built: nothing else can give an account a password.
   Do not extend them, and remove them in the step that builds invitations.
 - Migration 3 moved the games of a database made under the previous design into a system named `legacy` and dropped its stored uploads.
@@ -208,7 +214,7 @@ Olympia / G3 / 1 / 5    player 5's folder in turn 1
 - `internal/server` assembles the routes (the page at `/`, the vendored HTMX under `/static/`, the `/api/` routes, and the development/agent helpers) behind `http.NewCrossOriginProtection`.
   HTMX 2.0.11 is vendored as `internal/server/static/htmx-2.0.11.min.js`.
 - `internal/api` is the `/api/` handler.
-- `internal/names` checks and lowercases codes and emails.
+- `internal/names` checks and lowercases codes and emails, and checks file names (`names.File`) and file contents (`names.Text`).
   Every command and route that accepts one goes through it.
 - `contrib/systemd/fuingod.service` runs `fuingod` as a systemd service; README.md documents its setup.
   Keep the two in sync, and keep the unit's `TimeoutStopSec` longer than `fuingod`'s shutdown timeout.
@@ -255,8 +261,9 @@ Codes and emails are lowercased with `strings.ToLower`; apply no other normaliza
 
 ## Data model
 
-The schema holds `systems`, `games`, `accounts`, `game_players`, `game_managers`, `turns`, and `api_sessions`.
-The tables for files and web sessions are not yet written; design them with the user when a step needs them.
+The schema holds `systems`, `games`, `accounts`, `game_players`, `game_managers`, `turns`, `file_contents`, `uploads`, and `api_sessions`.
+`uploads` allows a row with no game, for a system-level file, but nothing writes one yet, and its uploader must be an account.
+The tables for web sessions and mail are not yet written; design them with the user when a step needs them.
 These rules hold whatever the tables are:
 
 - Codes and emails can change, so rows are identified by integer IDs, never by those values.

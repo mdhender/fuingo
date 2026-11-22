@@ -376,3 +376,25 @@ func TestShutdownCutsOffStalledRequests(t *testing.T) {
 		t.Errorf("stalled connection: read %d bytes, %v; want it closed", n, err)
 	}
 }
+
+func TestMaxAPIUpload(t *testing.T) {
+	t.Setenv("FUINGO_MAX_API_UPLOAD", "1") // restored when the test ends
+	os.Unsetenv("FUINGO_MAX_API_UPLOAD")
+	base := []string{"--env", "development", "--db", ":memory:"}
+	cfg, err := loadConfig(base, io.Discard)
+	if err != nil || cfg.maxAPIUpload != 1<<20 {
+		t.Errorf("default = %d, %v; want 1 MiB", cfg.maxAPIUpload, err)
+	}
+	if cfg, err = loadConfig(append(base, "--max-api-upload", "4096"), io.Discard); err != nil || cfg.maxAPIUpload != 4096 {
+		t.Errorf("--max-api-upload 4096 = %d, %v", cfg.maxAPIUpload, err)
+	}
+	t.Setenv("FUINGO_MAX_API_UPLOAD", "2048")
+	if cfg, err = loadConfig(base, io.Discard); err != nil || cfg.maxAPIUpload != 2048 {
+		t.Errorf("FUINGO_MAX_API_UPLOAD=2048 = %d, %v", cfg.maxAPIUpload, err)
+	}
+	for _, bad := range []string{"0", "-1"} {
+		if _, err := loadConfig(append(base, "--max-api-upload", bad), io.Discard); !errors.Is(err, ErrInvalidUploadLimit) {
+			t.Errorf("--max-api-upload %s: %v, want ErrInvalidUploadLimit", bad, err)
+		}
+	}
+}

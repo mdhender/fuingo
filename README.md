@@ -5,9 +5,10 @@ upload their orders and download their reports over HTTPS, and game masters
 (GMs) the reverse. [AGENTS.md](AGENTS.md) describes the design.
 
 The design is being built in steps. What exists today is the hierarchy
-without its files (systems, games, a game's GMs and players, and turns) and
-the `/api/` routes that manage a game's players and turns. The server stores
-no files yet.
+(systems, games, a game's GMs and players, and turns) and the `/api/` routes
+a GM's tool uses: to manage a game's players and turns, and to upload, list,
+download, and withdraw its files. Players cannot sign in yet, so only GMs
+exchange files.
 
 ## Commands
 
@@ -70,6 +71,7 @@ override environment variables, which override the defaults.
 | `--db` | `FUINGO_DB` | all | Database file. Required. `fuingod` accepts `:memory:` in `development` and `agent` only; `fuingodb` and `fuingo` never do. `fuingo version` uses it only with `--schema`. |
 | `--addr` | `FUINGO_ADDR` | `fuingod` | Backend listen address, `host:port`. Default `127.0.0.1:18443`. |
 | `--trusted-proxies` | `FUINGO_TRUSTED_PROXIES` | `fuingod` | Comma-separated addresses and CIDR prefixes of the reverse proxies whose `X-Forwarded-For` header is trusted. Default `127.0.0.0/8,::1` (loopback); empty trusts none. |
+| `--max-api-upload` | `FUINGO_MAX_API_UPLOAD` | `fuingod` | Largest file accepted through `/api/`, in bytes. Default `1048576` (1 MiB). Changing it never affects a file already stored. |
 | `--schema` | (none) | `fuingo version` | Print the database's schema version. Command line only. |
 | `--generate-password` | (none) | `fuingo account create`, `set-password` | Generate the password instead of reading it. Command line only. |
 | `--system` | (none) | `fuingo game` commands | The code of the game's system. Required. Command line only. |
@@ -106,6 +108,13 @@ responses, status codes, and examples for every route.
 | `GET /api/systems/{system}/games/{game}/turns` | Lists the game's turns. |
 | `POST /api/systems/{system}/games/{game}/turns` | Creates the game's next turn. |
 | `POST /api/systems/{system}/games/{game}/turns/{turn}/close`, `.../open` | Closes a turn, or reopens it. |
+| `GET`, `POST` `/api/systems/{system}/games/{game}/files` | Lists the files at the game's level, or uploads one there. |
+| `GET`, `POST` `/api/systems/{system}/games/{game}/turns/{turn}/files` | The same, for a turn. |
+| `GET`, `POST` `/api/systems/{system}/games/{game}/turns/{turn}/players/{id}/files` | The same, for a player's folder in a turn. |
+| `GET /api/systems/{system}/games/{game}/uploads` | Lists the game's uploads at every level; `?after=ID` gives those after one already seen. |
+| `GET /api/systems/{system}/games/{game}/uploads/{upload}` | One upload's record. |
+| `GET /api/systems/{system}/games/{game}/uploads/{upload}/contents` | Downloads the file, exactly as uploaded. |
+| `POST /api/systems/{system}/games/{game}/uploads/{upload}/withdraw` | Withdraws a file the account uploaded. |
 
 Log in with an account that has a password (`fuingo account create` or
 `account set-password`). An account reaches only the games it manages.

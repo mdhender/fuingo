@@ -66,6 +66,13 @@ type fixture struct {
 
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
+	return newFixtureWithLimit(t, 0)
+}
+
+// newFixtureWithLimit is newFixture with a configured upload size limit;
+// 0 leaves the default.
+func newFixtureWithLimit(t *testing.T, maxUpload int64) *fixture {
+	t.Helper()
 	s, err := store.OpenPrivateMemory(t.Context(), t.Name())
 	if err != nil {
 		t.Fatal(err)
@@ -81,6 +88,7 @@ func newFixture(t *testing.T) *fixture {
 		Logger:        slog.New(slog.NewTextHandler(&logs, nil)),
 		LoginFailures: ratelimit.New(api.FailureBurst, api.FailureInterval, c.Now),
 		Now:           c.Now,
+		MaxUpload:     maxUpload,
 	})
 	if err != nil {
 		t.Fatal(err)

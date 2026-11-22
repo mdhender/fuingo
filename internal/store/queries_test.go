@@ -524,7 +524,12 @@ INSERT INTO uploads (uploader_id, email, turn_no, content_hash, uploaded_at) VAL
 	}); err != nil {
 		t.Fatal(err)
 	}
-	for _, table := range []string{"uploads", "upload_blobs", "game_uploaders", "games_v2", "game_managers_v3"} {
+	// The previous design's uploads are dropped; a later migration makes the
+	// new, empty uploads table.
+	if n, err := sqlitex.ResultInt(conn.Prep("SELECT count(*) FROM uploads;")); err != nil || n != 0 {
+		t.Errorf("uploads after migrating = %d, %v; want none", n, err)
+	}
+	for _, table := range []string{"upload_blobs", "game_uploaders", "games_v2", "game_managers_v3"} {
 		if n, err := sqlitex.ResultInt(conn.Prep("SELECT count(*) FROM sqlite_schema WHERE name = '" + table + "';")); err != nil || n != 0 {
 			t.Errorf("table %s: count = %d, %v; want it gone", table, n, err)
 		}

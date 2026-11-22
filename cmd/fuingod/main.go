@@ -3,7 +3,7 @@
 
 // Command fuingod is the Fuingo server.
 //
-//	fuingod [--env ENV] [--addr HOST:PORT] [--trusted-proxies LIST] --db PATH
+//	fuingod [--env ENV] [--addr HOST:PORT] [--trusted-proxies LIST] [--max-api-upload BYTES] --db PATH
 //
 // Every flag can also be set with a FUINGO_ environment variable. Explicit
 // flags override the environment, which overrides the defaults:
@@ -13,6 +13,8 @@
 //	--db    FUINGO_DB    existing database file; :memory: in development and agent only
 //	--trusted-proxies  FUINGO_TRUSTED_PROXIES  comma-separated proxy addresses and
 //	        CIDR prefixes whose X-Forwarded-For is trusted (default loopback)
+//	--max-api-upload   FUINGO_MAX_API_UPLOAD   largest file accepted through /api/,
+//	        in bytes (default 1048576)
 //
 // fuingod serves plain HTTP behind a TLS-terminating reverse proxy. It opens an
 // existing database and never creates or migrates one; use fuingodb for that.
@@ -44,6 +46,7 @@ import (
 	"time"
 
 	"github.com/mdhender/fuingo"
+	"github.com/mdhender/fuingo/internal/api"
 	"github.com/mdhender/fuingo/internal/cerrs"
 	"github.com/mdhender/fuingo/internal/cli"
 	"github.com/mdhender/fuingo/internal/clientip"
@@ -55,10 +58,11 @@ import (
 )
 
 const (
-	ErrInvalidAddress  = cerrs.Error("invalid listen address")
-	ErrShutdownTimeout = cerrs.Error("requests still running at the shutdown deadline were cut off")
-	ErrMemoryDatabase  = cerrs.Error(":memory: is allowed only in development and agent")
-	ErrMissingDatabase = cerrs.Error("--db (FUINGO_DB) is required")
+	ErrInvalidAddress     = cerrs.Error("invalid listen address")
+	ErrShutdownTimeout    = cerrs.Error("requests still running at the shutdown deadline were cut off")
+	ErrInvalidUploadLimit = cerrs.Error("--max-api-upload (FUINGO_MAX_API_UPLOAD) must be 1 or more")
+	ErrMemoryDatabase     = cerrs.Error(":memory: is allowed only in development and agent")
+	ErrMissingDatabase    = cerrs.Error("--db (FUINGO_DB) is required")
 )
 
 const (
@@ -96,6 +100,8 @@ type config struct {
 
 	trustedProxies string
 	proxies        []netip.Prefix
+
+	maxAPIUpload int64
 }
 
 // loadConfig resolves and validates the configuration.
@@ -106,9 +112,10 @@ func loadConfig(args []string, stderr io.Writer) (config, error) {
 	fs.StringVar(&cfg.addr, 0, "addr", defaultAddr, "backend listen address, host:port (FUINGO_ADDR)")
 	fs.StringVar(&cfg.db, 0, "db", "", "existing database file, or :memory: in development and agent (FUINGO_DB)")
 	fs.StringVar(&cfg.trustedProxies, 0, "trusted-proxies", defaultTrustedProxies, "comma-separated proxy addresses and CIDR prefixes whose X-Forwarded-For is trusted; empty trusts none (FUINGO_TRUSTED_PROXIES)")
+	fs.Int64Var(&cfg.maxAPIUpload, 0, "max-api-upload", api.DefaultMaxUpload, "largest file accepted through /api/, in bytes (FUINGO_MAX_API_UPLOAD)")
 	cmd := &ff.Command{
 		Name:     "fuingod",
-		Usage:    "fuingod [--env ENV] [--addr HOST:PORT] [--trusted-proxies LIST] --db PATH",
+		Usage:    "fuingod [--env ENV] [--addr HOST:PORT] [--trusted-proxies LIST] [--max-api-upload BYTES] --db PATH",
 		LongHelp: "fuingod " + fuingo.Version().String(),
 		Flags:    fs,
 	}
@@ -128,6 +135,9 @@ func loadConfig(args []string, stderr io.Writer) (config, error) {
 	var err error
 	if cfg.proxies, err = clientip.ParsePrefixes(cfg.trustedProxies); err != nil {
 		return cfg, err
+	}
+	if cfg.maxAPIUpload < 1 {
+		return cfg, fmt.Errorf("%w: %d", ErrInvalidUploadLimit, cfg.maxAPIUpload)
 	}
 	switch cfg.db {
 	case "":
@@ -172,6 +182,7 @@ func run(ctx context.Context, args []string, stderr io.Writer, ready func(net.Ad
 		Logger: logger,
 
 		TrustedProxies: cfg.proxies,
+		MaxAPIUpload:   cfg.maxAPIUpload,
 	})
 	if err != nil {
 		return err

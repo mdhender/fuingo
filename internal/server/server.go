@@ -41,6 +41,9 @@ type Config struct {
 	// LoginFailures limits failed API logins per client. If nil, the api
 	// package's default limit applies.
 	LoginFailures *ratelimit.Limiter
+	// MaxAPIUpload is the most bytes a file uploaded through /api/ may
+	// hold. If zero, the api package's default applies.
+	MaxAPIUpload int64
 }
 
 // HelperPrefix returns the path prefix of the account helpers in env, or ""
@@ -63,6 +66,7 @@ func New(cfg Config) (http.Handler, error) {
 		Logger:        cfg.Logger,
 		Clients:       clients,
 		LoginFailures: cfg.LoginFailures,
+		MaxUpload:     cfg.MaxAPIUpload,
 	})
 	if err != nil {
 		return nil, err

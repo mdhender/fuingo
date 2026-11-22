@@ -5,9 +5,8 @@ Reference for anyone, human or agent, writing a tool that calls `fuingod`'s
 that govern changing the server, see [AGENTS.md](AGENTS.md).
 
 The API is for **game masters (GMs)** and their tools. Today it lists the
-games an account manages, manages each game's players, and creates, closes,
-and reopens its turns. Routes for files are being built; until they exist
-the server stores no files.
+games an account manages, manages each game's players, creates, closes, and
+reopens its turns, and uploads, lists, downloads, and withdraws its files.
 
 ## Quick start
 
@@ -47,7 +46,8 @@ accounts on the server" in [README.md](README.md). The API creates neither.
 
 - **Base URL.** Every route is under `/api/` on the server's public HTTPS
   origin. In development that is `https://htmx-app.localhost:8443`.
-- **Requests.** A request with a body sends a JSON object with
+- **Requests.** Except when uploading a file, which sends the file itself
+  (see [Files](#files)), a request with a body sends a JSON object with
   `Content-Type: application/json` (a `charset` parameter is accepted),
   at most 4 KiB, containing only the documented fields. The object must be
   the whole body: white space around it is allowed, anything else after it
@@ -59,8 +59,8 @@ accounts on the server" in [README.md](README.md). The API creates neither.
   no doubled slashes. A trailing slash gets `404`. A path that needs
   cleaning, such as `/api//games`, gets a redirect to the clean path
   rather than an error; do not rely on following it.
-- **Responses.** JSON with `Content-Type: application/json`. Every error is
-  JSON. Every response has `Cache-Control: no-store`.
+- **Responses.** JSON with `Content-Type: application/json`, except a
+  download, which is the file. Every error is JSON. Every response has `Cache-Control: no-store`.
 - **Codes** of systems and games are case-insensitive: the server
   lowercases them, and returns them lowercased. A code is 1 to 32
   characters: letters and digits in any script, `-`, and `_`. A path with
@@ -77,8 +77,8 @@ accounts on the server" in [README.md](README.md). The API creates neither.
   passes. A request from a page on another origin gets `403`. There is no
   CORS support.
 - **No pagination.** List routes return everything.
-- **Nothing is deleted.** No route deletes a game, a player, or a turn.
-  Revoke access by disabling.
+- **Nothing is deleted.** No route deletes a game, a player, a turn, or a
+  file. Revoke access by disabling; take a file back by withdrawing it.
 
 ## Errors
 
@@ -94,13 +94,14 @@ Treat the message as text for people; branch on the status code.
 
 | Status | Meaning |
 | --- | --- |
-| `400` | The body is not exactly one valid JSON object, has an unknown or badly formed field, or a value breaks a rule above. |
+| `400` | The body is not exactly one valid JSON object, has an unknown or badly formed field, or a value breaks a rule above. For an upload: a bad file name or a file that is not acceptable text. Also a bad query parameter. |
 | `401` | Login failed, or the bearer token is missing, unknown, or expired. On routes other than login, the response has `WWW-Authenticate: Bearer realm="fuingo"`. Log in again. |
-| `403` | Cross-origin request refused. |
+| `403` | Cross-origin request refused, or withdrawing a file another account uploaded. |
 | `404` | The game or item does not exist, or the account does not manage the game. The two cases are deliberately identical, and identical to an unknown path under `/api/`. |
 | `405` | Wrong method for the path. The `Allow` header lists the methods it accepts. |
 | `409` | The account is already a player in the game, or the turn is not the game's next. |
-| `415` | A body was required and `Content-Type` was not `application/json`. |
+| `413` | An uploaded file is larger than the server's limit. |
+| `415` | A body was required and `Content-Type` was not `application/json` (for an upload, not `text/plain` or `application/octet-stream`). |
 | `429` | Too many failed logins from this client address. `Retry-After` gives the seconds to wait. |
 | `500` | Server error. Safe to retry later. |
 
@@ -110,8 +111,8 @@ Checks run in a fixed order, and the first failure decides the status:
 2. `404` for an unknown path, or `405` for a wrong method.
 3. `401` for a missing or invalid token (except on login).
 4. `404` for a game the account does not manage.
-5. `415`, then `400`, for the body.
-6. `404` or `409` for the item itself.
+5. `415`, then `400` (or `413`), for the body and query parameters.
+6. `404`, `403`, or `409` for the item itself.
 
 So the first two do not depend on being logged in. A request with no
 token gets `401`, never `415` or `400`, whatever its body. A bad body sent
@@ -178,8 +179,9 @@ An account acts only on the games it **manages**: the ones the
 administrator made it a GM of, with `fuingo game add --manager`.
 
 - For any other game, every game route returns the same `404` as for a
-  game that does not exist. So does a player ID that belongs to another
-  game, even when requested through a game the account manages.
+  game that does not exist. So does a player ID or an upload ID that
+  belongs to another game, even when requested through a game the account
+  manages.
 - The same code in another system is another game. Managing
   `olympia/g3` gives nothing in `atlantis/g3`.
 - A disabled game is still fully manageable.
@@ -358,6 +360,159 @@ curl -s -X POST "$FUINGO/api/systems/system01/games/game01/turns/1/close" \
 - Write `{turn}` as its digits, such as `0` or `12`. A sign or a leading
   zero gets `404`.
 
+## Files
+
+A game holds files at three levels, each with its own `files` path. In
+these paths `{turn}` is a turn's number and `{id}` a player's number:
+
+| Folder | Path |
+| --- | --- |
+| The game | `/api/systems/{system}/games/{game}/files` |
+| A turn | `/api/systems/{system}/games/{game}/turns/{turn}/files` |
+| A player's folder in a turn | `/api/systems/{system}/games/{game}/turns/{turn}/players/{id}/files` |
+
+- A folder exists when its turn does and its player belongs to the game,
+  active or not. Anything else gets `404`. Create the turn first.
+- A GM may upload whether the turn is open or closed.
+- Every upload is kept and gets its own **upload ID**. A second file with
+  the same name replaces nothing: the folder lists both, in the order they
+  arrived. The tool decides which one counts.
+- A file is afterwards addressed by its upload ID within its game, under
+  `/api/systems/{system}/games/{game}/uploads/{upload}`. Nothing is
+  addressed by its hash.
+
+Every route describes a file with the same object:
+
+```json
+{"id":17,"system":"system01","game":"game01","turn":1,"player":5,
+ "name":"report.txt","size":2048,
+ "sha256":"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+ "uploaded_by":"acct01@example.com","uploaded_at":"2026-11-29T12:00:05.000000000Z",
+ "withdrawn_at":null}
+```
+
+- `turn` is `null` for a file at the game's level. `player` is `null`
+  unless the file is in a player's folder.
+- `size` is in bytes and `sha256` is the lowercase hex SHA-256 of the
+  file, both of exactly the bytes uploaded.
+- `uploaded_by` is the uploader's email as it was at the time.
+- `withdrawn_at` is `null` unless the file was withdrawn.
+
+### `POST .../files?name=NAME`
+
+Uploads one file to the folder. The body is the file itself, not JSON and
+not a form, with `Content-Type: text/plain` or `application/octet-stream`.
+The file's name goes in the `name` query parameter.
+
+```sh
+curl -s "$FUINGO/api/systems/system01/games/game01/turns/1/players/5/files?name=report.txt" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: text/plain' \
+  --data-binary @report.txt
+```
+
+Use `--data-binary`, not `-d`: `-d` strips line endings. The response is
+the file's object, with its new `id`.
+
+| Status | When |
+| --- | --- |
+| `201` | Stored. |
+| `400` | `name` is missing or not allowed, or the file is empty, not valid UTF-8, or holds a forbidden control character. The message says which. |
+| `404` | The folder does not exist. |
+| `413` | The file is larger than the limit. The message gives the limit in bytes. |
+| `415` | `Content-Type` is not `text/plain` or `application/octet-stream`. |
+
+- **Names** are 1 to 48 ASCII characters: letters, digits, `-`, `_`, and
+  `.`, with no `.` at the start or end. No spaces. Case is kept. The server
+  never interprets a name.
+- **Files are text.** A file may start with one UTF-8 byte order mark and
+  must then be valid UTF-8 with at least one byte. The only control
+  characters allowed are tab, line feed, and carriage return. The whole
+  file is checked.
+- **Size.** At most 1 MiB (1,048,576 bytes) unless the server is
+  configured otherwise.
+- **Stored as sent.** The server keeps the exact bytes, including a byte
+  order mark and the line endings.
+- An upload is not safe to retry blindly: a second request stores a second
+  file. After a timeout, list the folder and compare `sha256` first.
+
+### `GET .../files`
+
+Lists the files in exactly that folder, not in the folders under it, in the
+order they arrived.
+
+```sh
+curl -s "$FUINGO/api/systems/system01/games/game01/turns/1/players/5/files" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+```json
+{"system":"system01","game":"game01","turn":1,"player":5,"files":[ ... ]}
+```
+
+- Withdrawn files are left out. Add `?withdrawn=include` to list them too;
+  any other value gets `400`.
+- `files` is `[]`, never `null`, for an empty folder.
+
+### `GET /api/systems/{system}/games/{game}/uploads`
+
+Lists the game's files at every level, in order of upload ID. This is how
+a tool pulls a turn's orders, or polls for new ones.
+
+```sh
+curl -s "$FUINGO/api/systems/system01/games/game01/uploads?after=17" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+```json
+{"system":"system01","game":"game01","uploads":[ ... ]}
+```
+
+- `?after=ID` gives only the uploads with a greater ID. Remember the
+  highest `id` you have handled and send it next time; `0` or no `after`
+  gives everything. IDs increase in the order uploads arrive, so nothing
+  appears later with a lower ID. A value that is not a whole number, 0 or
+  more, gets `400`.
+- `?withdrawn=include` works as for a folder. Without it, a file withdrawn
+  after you saw it simply stops being listed.
+- Filter by `turn` and `player` in the client. Upload IDs are shared by all
+  games, so a game's IDs have gaps.
+
+### `GET /api/systems/{system}/games/{game}/uploads/{upload}`
+
+Returns one file's object, withdrawn or not.
+
+### `GET /api/systems/{system}/games/{game}/uploads/{upload}/contents`
+
+Downloads the file: exactly the bytes that were uploaded.
+
+```sh
+curl -s -o report.txt "$FUINGO/api/systems/system01/games/game01/uploads/17/contents" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+- `X-Content-SHA256` holds the file's lowercase hex SHA-256. Check it.
+- The response is `Content-Type: application/octet-stream` with
+  `Content-Disposition: attachment` and the file's name, whatever the file
+  holds, so a browser never displays it.
+- A withdrawn file can still be downloaded by its ID.
+- There is no normalization yet: no option removes a byte order mark or
+  changes line endings.
+
+### `POST /api/systems/{system}/games/{game}/uploads/{upload}/withdraw`
+
+Withdraws a file the calling account uploaded, for example a report put in
+the wrong folder. Send no body. The response is the file's object.
+
+| Status | When |
+| --- | --- |
+| `200` | Withdrawn. Repeating the call succeeds and keeps the first `withdrawn_at`. |
+| `403` | Another account uploaded the file, even another GM of the game. |
+| `404` | The game has no such upload. |
+
+Withdrawing hides the file from listings. It deletes nothing, and it
+cannot be undone: upload the file again instead.
+
 ## Local development
 
 In the `development` and `agent` environments only, a new database starts
@@ -402,7 +557,7 @@ Helper errors are plain text, not JSON.
   bcrypt check and a new session row.
 - On `429`, wait `Retry-After` seconds. On `500`, back off and retry.
 - Treat `404` on a game as "not mine or not there". Retrying will not help.
-- Send no body on `disable`, `enable`, `close`, and `open`. One sent is
+- Send no body on `disable`, `enable`, `close`, `open`, and `withdraw`. One sent is
   ignored, not validated.
 - After a timeout on `POST .../turns`, send the same request again: `409`
   means the first call created the turn.

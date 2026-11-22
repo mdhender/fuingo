@@ -201,4 +201,40 @@ CREATE TABLE turns (
 	UNIQUE (game_id, turn_no)
 );
 `,
+	// 5: files. file_contents holds each distinct file once, keyed by the
+	// lowercase hex SHA-256 of its bytes. uploads records every upload: where
+	// it was put, who put it there, and when. An upload with no game is at
+	// its system's level, one with no turn at its game's, and one with no
+	// player at its turn's. Rows of both tables are never deleted, and
+	// contents are never rewritten.
+	`
+CREATE TABLE file_contents (
+	sha256     TEXT    NOT NULL PRIMARY KEY CHECK (length(sha256) = 64),
+	size       INTEGER NOT NULL CHECK (size > 0 AND size = length(contents)),
+	contents   BLOB    NOT NULL,
+	created_at TEXT    NOT NULL
+);
+
+CREATE TABLE uploads (
+	id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+	system_id           INTEGER NOT NULL REFERENCES systems (id) ON DELETE RESTRICT,
+	game_id             INTEGER REFERENCES games (id) ON DELETE RESTRICT,
+	turn_id             INTEGER REFERENCES turns (id) ON DELETE RESTRICT,
+	player_id           INTEGER REFERENCES game_players (id) ON DELETE RESTRICT,
+	name                TEXT    NOT NULL,
+	sha256              TEXT    NOT NULL REFERENCES file_contents (sha256) ON DELETE RESTRICT,
+	uploader_account_id INTEGER NOT NULL REFERENCES accounts (id) ON DELETE RESTRICT,
+	-- The uploader's email as it was at the time of the upload.
+	uploader_email      TEXT    NOT NULL,
+	uploaded_at         TEXT    NOT NULL,
+	-- NULL unless the upload was withdrawn.
+	withdrawn_at        TEXT,
+	CHECK (turn_id IS NULL OR game_id IS NOT NULL),
+	CHECK (player_id IS NULL OR turn_id IS NOT NULL)
+);
+
+CREATE INDEX uploads_by_game ON uploads (game_id, id);
+CREATE INDEX uploads_by_turn ON uploads (turn_id, player_id, id);
+CREATE INDEX uploads_by_contents ON uploads (sha256);
+`,
 }

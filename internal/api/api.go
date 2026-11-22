@@ -14,6 +14,10 @@
 //
 // Failed logins are limited per client address.
 //
+// Files are uploaded to a folder of a game (the game, a turn, or a player's
+// folder in a turn) and are afterwards reached by upload ID within their
+// game, never by their hash.
+//
 // Every error is a JSON Error, including a path or method that matches no
 // route. The server uses Forbidden for cross-origin requests it refuses.
 package api
@@ -90,6 +94,9 @@ type Config struct {
 	// LoginFailures limits failed logins per client. If nil, each client may
 	// fail FailureBurst times, then once per FailureInterval.
 	LoginFailures *ratelimit.Limiter
+	// MaxUpload is the most bytes an uploaded file may hold. If zero, it is
+	// DefaultMaxUpload.
+	MaxUpload int64
 	// Now returns the current time. If nil, it is time.Now.
 	Now func() time.Time
 }
@@ -102,6 +109,8 @@ type Handler struct {
 	failures *ratelimit.Limiter
 	now      func() time.Time
 	mux      *http.ServeMux
+	// maxUpload is the most bytes an uploaded file may hold.
+	maxUpload int64
 	// dummyHash is compared against when an account has no usable password,
 	// so a failed login takes the same time whatever the reason.
 	dummyHash []byte
@@ -115,11 +124,14 @@ func New(cfg Config) (*Handler, error) {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
+	if cfg.MaxUpload == 0 {
+		cfg.MaxUpload = DefaultMaxUpload
+	}
 	dummy, err := bcrypt.GenerateFromPassword([]byte(rand.Text()), bcrypt.MinCost)
 	if err != nil {
 		return nil, err
 	}
-	h := &Handler{db: cfg.Store, logger: cfg.Logger, clients: cfg.Clients, failures: cfg.LoginFailures, now: cfg.Now, dummyHash: dummy}
+	h := &Handler{db: cfg.Store, logger: cfg.Logger, clients: cfg.Clients, failures: cfg.LoginFailures, now: cfg.Now, maxUpload: cfg.MaxUpload, dummyHash: dummy}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/login", h.login)
 	mux.HandleFunc("GET /api/games", h.authenticated(h.listGames))
@@ -132,6 +144,14 @@ func New(cfg Config) (*Handler, error) {
 	mux.HandleFunc("POST "+game+"/turns", h.authenticated(h.createTurn))
 	mux.HandleFunc("POST "+game+"/turns/{turn}/close", h.authenticated(h.setTurnClosed(true)))
 	mux.HandleFunc("POST "+game+"/turns/{turn}/open", h.authenticated(h.setTurnClosed(false)))
+	for _, folder := range []string{game, game + "/turns/{turn}", game + "/turns/{turn}/players/{id}"} {
+		mux.HandleFunc("GET "+folder+"/files", h.authenticated(h.listFiles))
+		mux.HandleFunc("POST "+folder+"/files", h.authenticated(h.uploadFile))
+	}
+	mux.HandleFunc("GET "+game+"/uploads", h.authenticated(h.listUploads))
+	mux.HandleFunc("GET "+game+"/uploads/{upload}", h.authenticated(h.getUpload))
+	mux.HandleFunc("GET "+game+"/uploads/{upload}/contents", h.authenticated(h.downloadUpload))
+	mux.HandleFunc("POST "+game+"/uploads/{upload}/withdraw", h.authenticated(h.withdrawUpload))
 	h.mux = mux
 	return h, nil
 }

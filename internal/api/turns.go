@@ -102,11 +102,8 @@ func (h *Handler) setTurnClosed(closed bool) func(http.ResponseWriter, *http.Req
 		if !ok {
 			return
 		}
-		// A turn has one spelling in a path: its digits, with no sign or
-		// leading zeros.
-		raw := r.PathValue("turn")
-		number, err := strconv.ParseInt(raw, 10, 64)
-		if err != nil || number < 0 || strconv.FormatInt(number, 10) != raw {
+		number, ok := pathNumber(r, "turn")
+		if !ok {
 			writeError(w, http.StatusNotFound, msgNotFound)
 			return
 		}

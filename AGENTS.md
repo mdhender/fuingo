@@ -270,10 +270,10 @@ These rules hold whatever its tables are:
 - A game's code is unique within its system.
   Codes and emails are stored lowercased.
   The code of a system or a game is at most 32 UTF-8 characters.
-- Codes and file names appear in URLs and on the page, so they hold only safe characters.
+- Codes and file names appear in URLs, on the page, and in the shell scripts many games use, whose authors do not always quote or escape them, so they hold only safe characters.
   A code holds letters and digits in any script, `-`, and `_`.
-  A file name holds the same, and `.` and single spaces inside it, never at its start or end.
-  Everything else is refused, including control characters, `/`, `\`, the HTML special characters `<`, `>`, `&`, and `;`, and every kind of quote.
+  A file name holds the same, and `.` inside it, never at its start or end.
+  Everything else is refused, including spaces and all other white space, control characters, `/`, `\`, the HTML special characters `<`, `>`, `&`, and `;`, and every kind of quote.
 - A system has no settings of its own.
   Every system shares the server's settings, such as the size limits.
 - `accounts` has one row per email, for players and GMs alike.
@@ -348,7 +348,7 @@ Settle each of these with the user before building what depends on it.
 - Cover access: that a player reaches only their own folders, that a GM reaches only the games they manage, that an inactive account, player, GM, or game is refused, and that what an account may not reach is indistinguishable from what does not exist.
 - Cover turns: uploads to a turn that does not exist, to an open turn, to a closed one, and to a reopened one; that closing blocks only players; and several open turns.
 - Cover uploads: each of the three size limits at its boundary, at its default and at a configured value, and that each is independent of the others; empty and BOM-only files; a BOM followed by a valid file; bytes above `0x7F` in valid UTF-8 (accepted); invalid UTF-8 at the start, in the middle, and at the end of a file (rejected); and NUL and other control characters (rejected) beside tab, LF, and CR (accepted), for a player and for a GM.
-- Cover names: a 32-character code and a 33-character one, counted in characters and not bytes; a 48-byte file name and a 49-byte one; non-ASCII letters (accepted); and each kind of refused character, including `<`, `>`, `&`, `;`, quotes, `/`, `\`, and a leading or trailing `.` or space in a file name.
+- Cover names: a 32-character code and a 33-character one, counted in characters and not bytes; a 48-byte file name and a 49-byte one; non-ASCII letters (accepted); and each kind of refused character, including `<`, `>`, `&`, `;`, quotes, `/`, `\`, a space anywhere in a file name, and a leading or trailing `.` in one.
 - Cover storage: that a download returns exactly the bytes uploaded, including a BOM and CRLF line endings, that a normalized download leaves the stored file unchanged, and that lowering a size limit leaves stored files readable.
 - Cover repeated and withdrawn files: that a second upload replaces nothing, that a withdrawn file leaves the listings and its record remains, that a player cannot withdraw after the turn closes or withdraw a GM's file, and that a GM can withdraw their own file in a closed turn.
 - For duplicate content, cover players in the same game and in different games with identical files, concurrent uploads, and that stored contents are not rewritten.

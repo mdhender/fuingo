@@ -374,7 +374,7 @@ curl -s "$FUINGO/api/games/game01/uploads?turn=7" -H "Authorization: Bearer $TOK
 
 ```json
 {"game":"game01","uploads":[
-  {"id":1,"email":"catbird@example.com","turn":"7",
+  {"id":1,"game":"game01","email":"catbird@example.com","turn":"7",
    "content_hash":"2cb0fbbb2a297e85dec6b2bd00b0057c16dbbc7098ac827b04e8c04c285e712b",
    "size":10,"uploaded_at":"2026-11-21T22:06:29.628072000Z"}
 ]}
@@ -383,6 +383,7 @@ curl -s "$FUINGO/api/games/game01/uploads?turn=7" -H "Authorization: Bearer $TOK
 | Field | Meaning |
 | --- | --- |
 | `id` | The upload's ID, for the body route. |
+| `game` | The game's code, the same as the top-level `game`. |
 | `email` | The uploader's email when the upload arrived. |
 | `turn` | The turn number as the player wrote it in the file. |
 | `content_hash` | Lowercase hex SHA-256 of the body. |

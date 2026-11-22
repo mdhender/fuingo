@@ -83,10 +83,11 @@ type UploadList struct {
 	Uploads []Upload `json:"uploads"`
 }
 
-// Upload describes one upload. Turn is the turn number as written in the
-// file's header line.
+// Upload describes one upload. Game is the code of the game it was made
+// to, and Turn is the turn number as written in the file's header line.
 type Upload struct {
 	ID          int64  `json:"id"`
+	Game        string `json:"game"`
 	Email       string `json:"email"`
 	Turn        string `json:"turn"`
 	ContentHash string `json:"content_hash"`
@@ -337,6 +338,7 @@ func (h *Handler) listUploads(w http.ResponseWriter, r *http.Request, account st
 	for _, u := range uploads {
 		list.Uploads = append(list.Uploads, Upload{
 			ID:          u.ID,
+			Game:        code,
 			Email:       u.Email,
 			Turn:        u.TurnNo,
 			ContentHash: u.ContentHash,

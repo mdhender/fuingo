@@ -340,6 +340,9 @@ func TestListUploads(t *testing.T) {
 	var emails []string
 	for i, u := range list.Uploads {
 		emails = append(emails, u.Email)
+		if u.Game != "game01" {
+			t.Errorf("upload %d game %q", i, u.Game)
+		}
 		if u.Turn != "3" {
 			t.Errorf("upload %d turn %q", i, u.Turn)
 		}

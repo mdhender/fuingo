@@ -27,10 +27,11 @@ Nothing in a game depends on mail reaching a player.
 The user agreed this design on 2026-11-22, and it is being built in the steps the user asks for.
 [README.md](README.md), [API.md](API.md), and [TESTING.md](TESTING.md) describe the code as it is, so they describe only what is built.
 
-- Built: systems, games in systems, a game's GMs and players, the administrator's commands for them, and the `/api/` routes for a game's players.
+- Built: systems, games in systems, a game's GMs and players, the administrator's commands for them, turns, and the `/api/` routes for a game's players and turns.
+  A GM creates a turn by naming its number, which must be exactly the game's next (0 first, then no gaps); anything else gets `409`.
 - Removed on 2026-11-22: the previous design's header line, upload tokens, pepper (`FUINGO_PEPPER`), unauthenticated `POST /upload` form, `reset-token` route, and `POST /api/games`.
   Do not bring any of them back.
-- Not built: turns, files and their storage, withdrawal, web sign-in and sessions, the pages, mail (invitations and password resets), and system-level files.
+- Not built: files and their storage, withdrawal, web sign-in and sessions, the pages, mail (invitations and password resets), and system-level files.
   Until files are built the server stores none, and the page at `/` is a placeholder.
 - `fuingo account create`'s password and `fuingo account set-password` remain only because invitations are not built: nothing else can give an account a password.
   Do not extend them, and remove them in the step that builds invitations.
@@ -254,8 +255,8 @@ Codes and emails are lowercased with `strings.ToLower`; apply no other normaliza
 
 ## Data model
 
-The schema holds `systems`, `games`, `accounts`, `game_players`, `game_managers`, and `api_sessions`.
-The tables for turns, files, and web sessions are not yet written; design them with the user when a step needs them.
+The schema holds `systems`, `games`, `accounts`, `game_players`, `game_managers`, `turns`, and `api_sessions`.
+The tables for files and web sessions are not yet written; design them with the user when a step needs them.
 These rules hold whatever the tables are:
 
 - Codes and emails can change, so rows are identified by integer IDs, never by those values.
@@ -274,7 +275,7 @@ These rules hold whatever the tables are:
   Every system shares the server's settings, such as the size limits.
 - `accounts` has one row per email, for players and GMs alike.
   Whether an account plays or manages a game is recorded only in the rows that join it to that game.
-- A turn is a row that a GM created, with its number and whether it is closed.
+- A turn is a row that a GM created, with its number and when it was closed (`closed_at`, NULL while it is open).
 - Each upload is a row recording where it was put (system, game, turn, or player folder), who uploaded it, its name, when it arrived (UTC), and whether and when it was withdrawn.
   Record the uploader's email as it was then, so the history keeps it if the account's email later changes.
 - Files are stored only in the database, never on the filesystem.

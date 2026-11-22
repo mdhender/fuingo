@@ -4,9 +4,10 @@ A file exchange for play-by-email games, replacing the e-mail: players will
 upload their orders and download their reports over HTTPS, and game masters
 (GMs) the reverse. [AGENTS.md](AGENTS.md) describes the design.
 
-The design is being built in steps. What exists today is the hierarchy's top
-(systems, games, a game's GMs and players) and the `/api/` routes that manage
-a game's players. The server stores no files yet.
+The design is being built in steps. What exists today is the hierarchy
+without its files (systems, games, a game's GMs and players, and turns) and
+the `/api/` routes that manage a game's players and turns. The server stores
+no files yet.
 
 ## Commands
 
@@ -102,6 +103,9 @@ responses, status codes, and examples for every route.
 | `GET /api/systems/{system}/games/{game}/players` | Lists the game's players. |
 | `POST /api/systems/{system}/games/{game}/players` | Adds a player, creating its account if needed. |
 | `POST /api/systems/{system}/games/{game}/players/{id}/disable`, `.../enable` | Clears or sets the player's active flag. |
+| `GET /api/systems/{system}/games/{game}/turns` | Lists the game's turns. |
+| `POST /api/systems/{system}/games/{game}/turns` | Creates the game's next turn. |
+| `POST /api/systems/{system}/games/{game}/turns/{turn}/close`, `.../open` | Closes a turn, or reopens it. |
 
 Log in with an account that has a password (`fuingo account create` or
 `account set-password`). An account reaches only the games it manages.

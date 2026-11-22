@@ -5,8 +5,9 @@ Reference for anyone, human or agent, writing a tool that calls `fuingod`'s
 that govern changing the server, see [AGENTS.md](AGENTS.md).
 
 The API is for **game masters (GMs)** and their tools. Today it lists the
-games an account manages and manages each game's players. Routes for turns
-and files are being built; until they exist the server stores no files.
+games an account manages, manages each game's players, and creates, closes,
+and reopens its turns. Routes for files are being built; until they exist
+the server stores no files.
 
 ## Quick start
 
@@ -76,8 +77,8 @@ accounts on the server" in [README.md](README.md). The API creates neither.
   passes. A request from a page on another origin gets `403`. There is no
   CORS support.
 - **No pagination.** List routes return everything.
-- **Nothing is deleted.** No route deletes a game or a player. Revoke
-  access by disabling.
+- **Nothing is deleted.** No route deletes a game, a player, or a turn.
+  Revoke access by disabling.
 
 ## Errors
 
@@ -98,7 +99,7 @@ Treat the message as text for people; branch on the status code.
 | `403` | Cross-origin request refused. |
 | `404` | The game or item does not exist, or the account does not manage the game. The two cases are deliberately identical, and identical to an unknown path under `/api/`. |
 | `405` | Wrong method for the path. The `Allow` header lists the methods it accepts. |
-| `409` | The account is already a player in the game. |
+| `409` | The account is already a player in the game, or the turn is not the game's next. |
 | `415` | A body was required and `Content-Type` was not `application/json`. |
 | `429` | Too many failed logins from this client address. `Retry-After` gives the seconds to wait. |
 | `500` | Server error. Safe to retry later. |
@@ -279,6 +280,84 @@ curl -s -X POST "$FUINGO/api/systems/system01/games/game01/players/2/disable" \
 Disabling a player changes only this game: the account, and its players in
 other games, are untouched.
 
+## Turns
+
+A turn is a numbered step of a game. Turn 0 is the setup, and the numbers
+go up by one with no gaps. A turn is open when created; closing it will
+stop players uploading to it, and nothing else. Any number of turns may be
+open at once, so a GM can open later turns for a player who will be away.
+
+Only the game's GMs reach these routes. A player's account gets `404`.
+
+### `GET /api/systems/{system}/games/{game}/turns`
+
+Lists the game's turns, in order of number.
+
+```sh
+curl -s "$FUINGO/api/systems/system01/games/game01/turns" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+```json
+{"system":"system01","game":"game01","turns":[
+  {"turn":0,"closed":true,"created_at":"2026-11-22T12:00:00.000000000Z","closed_at":"2026-11-29T12:00:00.000000000Z"},
+  {"turn":1,"closed":false,"created_at":"2026-11-29T12:00:05.000000000Z","closed_at":null}]}
+```
+
+- `closed_at` is when the turn was closed, or `null` while it is open. A
+  tool can use it to decide which orders arrived in time.
+- `turns` is `[]`, never `null`, for a game with no turns.
+
+### `POST /api/systems/{system}/games/{game}/turns`
+
+Creates the game's next turn, open. The body names the number, which must
+be exactly the next one: `0` for a game with no turns, then one more than
+the last.
+
+```sh
+curl -s "$FUINGO/api/systems/system01/games/game01/turns" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"turn":2}'
+```
+
+```json
+{"system":"system01","game":"game01","turn":2,"closed":false,"created_at":"2026-12-06T12:00:00.000000000Z","closed_at":null}
+```
+
+| Status | When |
+| --- | --- |
+| `201` | Created. |
+| `400` | `turn` is missing, negative, or not an integer, or the body has another field. |
+| `409` | `turn` is not the game's next turn: it exists already, or it would leave a gap. The message names the next turn. |
+
+Naming the number makes the call safe to retry: a second request for a
+turn that the first one created gets `409`, never a second turn.
+
+### `POST /api/systems/{system}/games/{game}/turns/{turn}/close`
+### `POST /api/systems/{system}/games/{game}/turns/{turn}/open`
+
+Closes a turn, or reopens a closed one. Send no body.
+
+```sh
+curl -s -X POST "$FUINGO/api/systems/system01/games/game01/turns/1/close" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+```json
+{"system":"system01","game":"game01","turn":1,"closed":true,"created_at":"2026-11-29T12:00:05.000000000Z","closed_at":"2026-12-06T12:00:00.000000000Z"}
+```
+
+| Status | When |
+| --- | --- |
+| `200` | Done. Repeating the call succeeds and changes nothing. |
+| `404` | The game has no such turn. |
+
+- Closing a turn that is already closed keeps the time it first closed.
+  Reopening clears `closed_at`; closing it again records the new time.
+- Write `{turn}` as its digits, such as `0` or `12`. A sign or a leading
+  zero gets `404`.
+
 ## Local development
 
 In the `development` and `agent` environments only, a new database starts
@@ -323,8 +402,10 @@ Helper errors are plain text, not JSON.
   bcrypt check and a new session row.
 - On `429`, wait `Retry-After` seconds. On `500`, back off and retry.
 - Treat `404` on a game as "not mine or not there". Retrying will not help.
-- Send no body on `disable` and `enable`. One sent is ignored, not
-  validated.
+- Send no body on `disable`, `enable`, `close`, and `open`. One sent is
+  ignored, not validated.
+- After a timeout on `POST .../turns`, send the same request again: `409`
+  means the first call created the turn.
 - After a timeout on `POST .../players`, list the players before retrying:
   the first call may have succeeded, and a retry then gets `409`.
 - Ignore JSON fields you do not recognize in responses, so the client

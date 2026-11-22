@@ -189,4 +189,16 @@ FROM game_managers gm
 JOIN accounts a ON a.id = gm.account_id
 WHERE gm.is_active = 1 AND a.is_active = 1;
 `,
+	// 4: turns. A game's turns are numbered from 0 with no gaps. closed_at is
+	// NULL while the turn is open.
+	`
+CREATE TABLE turns (
+	id         INTEGER PRIMARY KEY AUTOINCREMENT,
+	game_id    INTEGER NOT NULL REFERENCES games (id) ON DELETE RESTRICT,
+	turn_no    INTEGER NOT NULL CHECK (turn_no >= 0),
+	created_at TEXT    NOT NULL,
+	closed_at  TEXT,
+	UNIQUE (game_id, turn_no)
+);
+`,
 }

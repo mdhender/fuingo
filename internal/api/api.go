@@ -128,6 +128,10 @@ func New(cfg Config) (*Handler, error) {
 	mux.HandleFunc("POST "+game+"/players", h.authenticated(h.addPlayer))
 	mux.HandleFunc("POST "+game+"/players/{id}/disable", h.authenticated(h.setPlayerActive(false)))
 	mux.HandleFunc("POST "+game+"/players/{id}/enable", h.authenticated(h.setPlayerActive(true)))
+	mux.HandleFunc("GET "+game+"/turns", h.authenticated(h.listTurns))
+	mux.HandleFunc("POST "+game+"/turns", h.authenticated(h.createTurn))
+	mux.HandleFunc("POST "+game+"/turns/{turn}/close", h.authenticated(h.setTurnClosed(true)))
+	mux.HandleFunc("POST "+game+"/turns/{turn}/open", h.authenticated(h.setTurnClosed(false)))
 	h.mux = mux
 	return h, nil
 }

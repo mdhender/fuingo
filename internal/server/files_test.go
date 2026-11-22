@@ -885,3 +885,172 @@ func TestPagesRefuseCrossOriginPosts(t *testing.T) {
 		t.Errorf("same-origin upload by Origin: %d", w.Code)
 	}
 }
+
+// A system's own files are read by every active player and GM of its
+// games, and by nobody else. The pages only read them: the administrator
+// adds and withdraws them from the command line.
+func TestSystemFiles(t *testing.T) {
+	t.Parallel()
+	f := newPagesFixture(t, nil)
+	ctx := t.Context()
+	other := store.GameRef{System: "other", Code: "g1"}
+	if _, err := f.s.CreateSystem(ctx, "other"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.s.CreateGame(ctx, other); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.s.AddPlayer(ctx, store.Member{Game: other, Email: "spoonbill@example.com"}); err != nil {
+		t.Fatal(err)
+	}
+	rules := []byte("\xef\xbb\xbf<script>alert(1)</script>\r\nrules\r\n")
+	add := func(system, name string, contents []byte) int64 {
+		t.Helper()
+		u, err := f.s.CreateSystemUpload(ctx, system, name, contents, f.now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return u.ID
+	}
+	id := add("system01", "rules.html", rules)
+	secret := add("other", "secret.txt", []byte("secret\n"))
+	inGame := f.mustUpload(t, game01Path, "news.txt", []byte("news\n"), f.gm)
+	const system01, otherPath = "/systems/system01", "/systems/other"
+	file := func(system string, id int64) string { return fmt.Sprintf("%s/uploads/%d", system, id) }
+
+	// A GM, a player, and a player of another game of the system.
+	for who, cookie := range map[string]*http.Cookie{"GM": f.gm, "other GM": f.gm2, "player": f.cat, "player of game02": f.cara} {
+		w := f.get(system01, cookie)
+		body := w.Body.String()
+		if w.Code != http.StatusOK || !strings.Contains(body, `id="files-system"`) || !listed(body, "rules.html") ||
+			!strings.Contains(body, `href="`+file(system01, id)+`"`) || !strings.Contains(body, "the administrator") {
+			t.Errorf("%s: system page: %d %s", who, w.Code, body)
+		}
+		// The page only reads: no drop zone, no withdrawing, no other
+		// system's file, and no game's.
+		for _, not := range []string{"<form data-drop", "Withdraw", "secret.txt", "news.txt", "<script>alert"} {
+			if strings.Contains(body, not) {
+				t.Errorf("%s: system page holds %q", who, not)
+			}
+		}
+		w = f.get(file(system01, id), cookie)
+		h := w.Header()
+		if w.Code != http.StatusOK || !bytes.Equal(w.Body.Bytes(), rules) {
+			t.Errorf("%s: download: %d %q", who, w.Code, w.Body)
+		}
+		if h.Get("Content-Type") != "application/octet-stream" || h.Get("Content-Disposition") != `attachment; filename="rules.html"` ||
+			h.Get("X-Content-Type-Options") != "nosniff" || !strings.Contains(h.Get("Content-Security-Policy"), "sandbox") || h.Get("Cache-Control") != "private, no-store" {
+			t.Errorf("%s: download headers: %v", who, h)
+		}
+	}
+
+	// Another system is not there for an account with no game in it, and a
+	// file is reached only through its own system, at its own level.
+	if w := f.get(otherPath, f.spoon); w.Code != http.StatusOK || !listed(w.Body.String(), "secret.txt") || listed(w.Body.String(), "rules.html") {
+		t.Errorf("player of the other system: %d %s", w.Code, w.Body)
+	}
+	if w := f.get(file(otherPath, secret), f.spoon); w.Code != http.StatusOK || w.Body.String() != "secret\n" {
+		t.Errorf("player of the other system: download: %d", w.Code)
+	}
+	for what, tc := range map[string]struct {
+		path   string
+		cookie *http.Cookie
+	}{
+		"another system's page":                {otherPath, f.cat},
+		"another system's file":                {file(otherPath, secret), f.cat},
+		"another system's file, as a GM":       {file(otherPath, secret), f.gm},
+		"another system's file through mine":   {file(system01, secret), f.cat},
+		"my system's file through another":     {file(otherPath, id), f.spoon},
+		"a game's file through its system":     {file(system01, inGame), f.gm},
+		"a system's file through a game":       {uploadPath(game01Path, id), f.gm},
+		"a file that does not exist":           {file(system01, 999), f.gm},
+		"a system that does not exist":         {file("/systems/nope", id), f.gm},
+		"an ID that is not a number":           {system01 + "/uploads/x", f.gm},
+		"file zero":                            {file(system01, 0), f.gm},
+		"the page of a system with no such id": {"/systems/nope", f.gm},
+	} {
+		if w := f.get(tc.path, tc.cookie); w.Code != http.StatusNotFound || strings.Contains(w.Body.String(), "secret") || strings.Contains(w.Body.String(), "rules") {
+			t.Errorf("%s: GET %s = %d %s", what, tc.path, w.Code, w.Body)
+		}
+	}
+	// Nobody signed out reads one.
+	if w := f.get(file(system01, id), nil); w.Code != http.StatusSeeOther || w.Body.Len() > 200 && bytes.Contains(w.Body.Bytes(), rules) {
+		t.Errorf("signed out: %d", w.Code)
+	}
+
+	// No page adds to a system or withdraws from it, even for a GM.
+	if w := f.upload(t, system01, "mine.txt", []byte("mine\n"), f.gm); w.Code != http.StatusNotFound && w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("upload to a system: %d", w.Code)
+	}
+	for _, path := range []string{file(system01, id) + "/withdraw", uploadPath(game01Path, id) + "/withdraw"} {
+		if w := f.post(path, nil, f.gm, true); w.Code != http.StatusNotFound && w.Code != http.StatusMethodNotAllowed {
+			t.Errorf("POST %s: %d", path, w.Code)
+		}
+	}
+	if all, err := f.s.SystemUploads(ctx, "system01", false); err != nil || len(all) != 1 || all[0].ID != id {
+		t.Errorf("the system's files changed: %v, %v", all, err)
+	}
+
+	// Access follows the account's games as they are now.
+	cat := store.Member{Game: store.GameRef{System: "system01", Code: "game01"}, Email: "catbird@example.com"}
+	if err := f.s.SetPlayerActive(ctx, cat, false); err != nil {
+		t.Fatal(err)
+	}
+	if w := f.get(file(system01, id), f.cat); w.Code != http.StatusNotFound {
+		t.Errorf("a disabled player: %d", w.Code)
+	}
+	if err := f.s.SetPlayerActive(ctx, cat, true); err != nil {
+		t.Fatal(err)
+	}
+	// An inactive game has no players, and its GM still manages it.
+	if err := f.s.SetGameActive(ctx, cat.Game, false); err != nil {
+		t.Fatal(err)
+	}
+	if w := f.get(file(system01, id), f.cat); w.Code != http.StatusNotFound {
+		t.Errorf("a player of an inactive game: %d", w.Code)
+	}
+	if w := f.get(system01, f.cat); w.Code != http.StatusNotFound {
+		t.Errorf("a player of an inactive game, the page: %d", w.Code)
+	}
+	if w := f.get(file(system01, id), f.gm); w.Code != http.StatusOK {
+		t.Errorf("the GM of an inactive game: %d", w.Code)
+	}
+	if err := f.s.SetGameActive(ctx, cat.Game, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.s.SetAccountActive(ctx, cat.Email, false); err != nil {
+		t.Fatal(err)
+	}
+	if w := f.get(file(system01, id), f.cat); w.Code != http.StatusSeeOther || w.Body.Len() >= len(rules) && bytes.Contains(w.Body.Bytes(), rules) {
+		t.Errorf("a disabled account: %d", w.Code)
+	}
+
+	// A second file with the same name replaces nothing, and a withdrawn
+	// file is gone for everyone, GMs included.
+	second := add("system01", "rules.html", []byte("new rules\n"))
+	if w := f.get(system01, f.cara); strings.Count(w.Body.String(), ">rules.html</a>") != 2 {
+		t.Errorf("two files of one name: %s", w.Body)
+	}
+	if _, err := f.s.WithdrawSystemUpload(ctx, "system01", id, f.now); err != nil {
+		t.Fatal(err)
+	}
+	for who, cookie := range map[string]*http.Cookie{"GM": f.gm, "player": f.cara} {
+		w := f.get(system01, cookie)
+		if body := w.Body.String(); strings.Contains(body, file(system01, id)+`"`) || !strings.Contains(body, file(system01, second)+`"`) || strings.Contains(body, "withdrawn") {
+			t.Errorf("%s: page after withdrawing: %s", who, body)
+		}
+		if w := f.get(file(system01, id), cookie); w.Code != http.StatusNotFound {
+			t.Errorf("%s: a withdrawn file: %d", who, w.Code)
+		}
+		if w := f.get(file(system01, second), cookie); w.Code != http.StatusOK || w.Body.String() != "new rules\n" {
+			t.Errorf("%s: the file that is left: %d", who, w.Code)
+		}
+	}
+	// A system with no files says so.
+	if _, err := f.s.WithdrawSystemUpload(ctx, "other", secret, f.now); err != nil {
+		t.Fatal(err)
+	}
+	if w := f.get(otherPath, f.spoon); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "data-empty") {
+		t.Errorf("a system with no files: %d %s", w.Code, w.Body)
+	}
+}

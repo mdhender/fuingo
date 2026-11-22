@@ -34,6 +34,8 @@ type homePage struct {
 	chrome
 	Heading string
 	Systems []systemGroup
+	// Files is the system's own files, on a system's page.
+	Files *folderView
 }
 
 func groupGames(games []store.Access) []systemGroup {
@@ -92,10 +94,70 @@ func (p *pages) system(w http.ResponseWriter, r *http.Request, account store.Acc
 		p.notFound(w, r, account)
 		return
 	}
+	files, err := p.systemFolder(r, system)
+	if err != nil {
+		p.serverError(w, r, "list system files", err)
+		return
+	}
 	p.render(w, http.StatusOK, "home.html", homePage{
 		chrome:  newChrome(account, system, crumb{Name: system}),
-		Heading: system, Systems: groupGames(games),
+		Heading: system, Systems: groupGames(games), Files: &files,
 	})
+}
+
+// inSystem reports whether the account may reach the system: it is an
+// active player or GM of one of its games.
+func (p *pages) inSystem(r *http.Request, account store.Account, system string) (bool, error) {
+	games, err := p.db.AccountGames(r.Context(), account.ID)
+	if err != nil {
+		return false, err
+	}
+	return slices.ContainsFunc(games, func(a store.Access) bool { return a.Game.System == system }), nil
+}
+
+// systemFolder builds the view of a system's own files. Only the
+// administrator adds or withdraws them, from the command line, so the page
+// offers neither, and shows no withdrawn file to anyone.
+func (p *pages) systemFolder(r *http.Request, system string) (folderView, error) {
+	v := folderView{ID: "files-system", Title: "System files", Where: system, PageURL: systemURL(system)}
+	uploads, err := p.db.SystemUploads(r.Context(), system, false)
+	if err != nil {
+		return folderView{}, err
+	}
+	for _, u := range uploads {
+		v.Files = append(v.Files, fileView{
+			Name: u.Name, Size: formatBytes(u.Size), At: u.UploadedAt.UTC().Format(pageTimeLayout),
+			By: "the administrator", DownloadURL: systemURL(system) + "/uploads/" + strconv.FormatInt(u.ID, 10),
+		})
+	}
+	return v, nil
+}
+
+// systemDownload serves one of a system's own files to an account that may
+// reach the system. A withdrawn file is not found.
+func (p *pages) systemDownload(w http.ResponseWriter, r *http.Request, account store.Account) {
+	system, err := names.Code(r.PathValue("system"))
+	id, ok := pathNumber(r, "upload")
+	if err != nil || !ok || id == 0 {
+		p.notFound(w, r, account)
+		return
+	}
+	if in, err := p.inSystem(r, account, system); err != nil {
+		p.serverError(w, r, "list games", err)
+		return
+	} else if !in {
+		p.notFound(w, r, account)
+		return
+	}
+	u, contents, found, err := p.db.SystemUploadContents(r.Context(), system, id, false)
+	if err != nil {
+		p.serverError(w, r, "download", err)
+		return
+	} else if !found {
+		p.notFound(w, r, account)
+		return
+	}
+	serveFile(w, u, contents)
 }
 
 func gameCrumbs(g store.GameRef, more ...crumb) []crumb {

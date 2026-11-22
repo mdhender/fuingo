@@ -13,6 +13,9 @@
 //	fuingo [--env ENV] [--db PATH] [--public-url URL] account create EMAIL
 //	fuingo [--env ENV] [--db PATH] [--public-url URL] account reset-password EMAIL
 //	fuingo [--env ENV] [--db PATH] account (disable|enable) EMAIL
+//	fuingo [--env ENV] [--db PATH] file add --system SYSTEM [--name NAME] PATH
+//	fuingo [--env ENV] [--db PATH] file list --system SYSTEM
+//	fuingo [--env ENV] [--db PATH] file withdraw --system SYSTEM ID
 //
 // Every flag can also be set with a FUINGO_ environment variable:
 //
@@ -24,7 +27,7 @@
 //	                     https://fuingo.example.com, for the links in mail (required
 //	                     by commands that send mail, except in development and agent)
 //
-// --schema, --manager, --player, --system, and --code
+// --schema, --manager, --player, --system, --code, and --name
 // are honored only on the command line; their FUINGO_ variables are ignored.
 // version reads no environment unless --schema is on the command line.
 //
@@ -57,6 +60,15 @@
 // FUINGO_MAILGUN_API_KEY, FUINGO_MAILGUN_FROM, and optionally
 // FUINGO_MAILGUN_API_BASE and FUINGO_MAILGUN_SANDBOX_TO_ADDR). A command that
 // would send mail fails, changing nothing, if they are not set.
+//
+// The file commands manage a system's own files, which every active player
+// and manager of the system's games may read, and which only the
+// administrator adds. file add stores the file at PATH under its base name,
+// or under --name, and prints its ID. The file must pass the checks every
+// upload does: a safe name, and text that is not empty. No size limit
+// applies. file list prints the system's files, withdrawn ones included, in
+// the order they arrived. file withdraw hides a file from the pages; its
+// record and contents are kept, and nothing is deleted.
 package main
 
 import (
@@ -65,6 +77,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"strconv"
+	"time"
 
 	"github.com/mdhender/fuingo"
 	"github.com/mdhender/fuingo/internal/cerrs"
@@ -87,6 +102,7 @@ const (
 	ErrInactiveAccount  = cerrs.Error("the account is disabled")
 	ErrMissingPublicURL = cerrs.Error("--public-url (FUINGO_PUBLIC_URL) is required to mail a link")
 	ErrUsage            = cerrs.Error("wrong number of arguments")
+	ErrUploadID         = cerrs.Error("a file's ID is a whole number, 1 or more")
 )
 
 func main() {
@@ -410,12 +426,133 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		},
 	}
 
+	// systemCode checks the --system of a file command.
+	systemCode := func(arg string) (string, error) {
+		if arg == "" {
+			return "", ErrMissingSystem
+		}
+		return code(arg)
+	}
+	var fileAddSystem, fileAddName string
+	fileAddFlags := ff.NewFlagSet("file add").SetParent(rootFlags)
+	fileAddFlags.StringVar(&fileAddSystem, 0, "system", "", "code of the system the file is for (command line only)")
+	fileAddFlags.StringVar(&fileAddName, 0, "name", "", "name to store the file under; the default is PATH's base name (command line only)")
+	fileAdd := &ff.Command{
+		Name:      "add",
+		Usage:     "fuingo [--db PATH] file add --system SYSTEM [--name NAME] PATH",
+		ShortHelp: "add a file at a system's level",
+		Flags:     fileAddFlags,
+		Exec: func(ctx context.Context, args []string) error {
+			if len(args) != 1 {
+				return fmt.Errorf("file add --system SYSTEM [--name NAME] PATH: %w", ErrUsage)
+			}
+			system, err := systemCode(fileAddSystem)
+			if err != nil {
+				return err
+			}
+			name := fileAddName
+			if name == "" {
+				name = filepath.Base(args[0])
+			}
+			if err := names.File(name); err != nil {
+				return fmt.Errorf("%q: %w", name, err)
+			}
+			contents, err := os.ReadFile(args[0])
+			if err != nil {
+				return err
+			}
+			if err := names.Text(contents); err != nil {
+				return fmt.Errorf("%s: %w", args[0], err)
+			}
+			return withDatabase(ctx, path, func(s *store.Store) error {
+				u, err := s.CreateSystemUpload(ctx, system, name, contents, time.Now())
+				if err != nil {
+					return err
+				}
+				fmt.Fprintf(stdout, "added %s to system %s (id %d, %d bytes)\n", u.Name, system, u.ID, u.Size)
+				return nil
+			})
+		},
+	}
+	var fileListSystem string
+	fileListFlags := ff.NewFlagSet("file list").SetParent(rootFlags)
+	fileListFlags.StringVar(&fileListSystem, 0, "system", "", "code of the system (command line only)")
+	fileList := &ff.Command{
+		Name:      "list",
+		Usage:     "fuingo [--db PATH] file list --system SYSTEM",
+		ShortHelp: "list a system's own files, withdrawn ones included",
+		Flags:     fileListFlags,
+		Exec: func(ctx context.Context, args []string) error {
+			if len(args) != 0 {
+				return fmt.Errorf("file list --system SYSTEM: %w", ErrUsage)
+			}
+			system, err := systemCode(fileListSystem)
+			if err != nil {
+				return err
+			}
+			return withDatabase(ctx, path, func(s *store.Store) error {
+				uploads, err := s.SystemUploads(ctx, system, true)
+				if err != nil {
+					return err
+				}
+				for _, u := range uploads {
+					fmt.Fprintf(stdout, "%d\t%s\t%d\t%s", u.ID, u.Name, u.Size, u.UploadedAt.UTC().Format(time.RFC3339))
+					if u.Withdrawn() {
+						fmt.Fprintf(stdout, "\twithdrawn %s", u.WithdrawnAt.UTC().Format(time.RFC3339))
+					}
+					fmt.Fprintln(stdout)
+				}
+				return nil
+			})
+		},
+	}
+	var fileWithdrawSystem string
+	fileWithdrawFlags := ff.NewFlagSet("file withdraw").SetParent(rootFlags)
+	fileWithdrawFlags.StringVar(&fileWithdrawSystem, 0, "system", "", "code of the system (command line only)")
+	fileWithdraw := &ff.Command{
+		Name:      "withdraw",
+		Usage:     "fuingo [--db PATH] file withdraw --system SYSTEM ID",
+		ShortHelp: "withdraw one of a system's own files; nothing is deleted",
+		Flags:     fileWithdrawFlags,
+		Exec: func(ctx context.Context, args []string) error {
+			if len(args) != 1 {
+				return fmt.Errorf("file withdraw --system SYSTEM ID: %w", ErrUsage)
+			}
+			system, err := systemCode(fileWithdrawSystem)
+			if err != nil {
+				return err
+			}
+			id, err := strconv.ParseInt(args[0], 10, 64)
+			if err != nil || id < 1 {
+				return fmt.Errorf("%q: %w", args[0], ErrUploadID)
+			}
+			return withDatabase(ctx, path, func(s *store.Store) error {
+				u, err := s.WithdrawSystemUpload(ctx, system, id, time.Now())
+				if err != nil {
+					return fmt.Errorf("system %s, file %d: %w", system, id, err)
+				}
+				fmt.Fprintf(stdout, "withdrew %s from system %s (id %d)\n", u.Name, system, u.ID)
+				return nil
+			})
+		},
+	}
+	file := &ff.Command{
+		Name:        "file",
+		Usage:       "fuingo [--db PATH] file <add|list|withdraw>",
+		ShortHelp:   "manage a system's own files",
+		Flags:       ff.NewFlagSet("file").SetParent(rootFlags),
+		Subcommands: []*ff.Command{fileAdd, fileList, fileWithdraw},
+		Exec: func(ctx context.Context, args []string) error {
+			return ff.ErrHelp
+		},
+	}
+
 	root := &ff.Command{
 		Name:        "fuingo",
-		Usage:       "fuingo [--env ENV] [--db PATH] <version|system|game|account>",
+		Usage:       "fuingo [--env ENV] [--db PATH] <version|system|game|account|file>",
 		LongHelp:    "fuingo " + fuingo.Version().String(),
 		Flags:       rootFlags,
-		Subcommands: []*ff.Command{version, system, game, account},
+		Subcommands: []*ff.Command{version, system, game, account, file},
 		Exec: func(ctx context.Context, args []string) error {
 			return ff.ErrHelp
 		},
@@ -442,7 +579,7 @@ func parse(root *ff.Command, args []string, env *string, needsNoEnvironment func
 	if err := root.Reset(); err != nil {
 		return err
 	}
-	return cli.Parse(root, args, env, "schema", "manager", "player", "system", "code")
+	return cli.Parse(root, args, env, "schema", "manager", "player", "system", "code", "name")
 }
 
 // withDatabase opens the database at path, which must already be at the

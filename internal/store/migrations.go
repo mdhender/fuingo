@@ -272,4 +272,46 @@ CREATE TABLE web_sessions (
 CREATE INDEX web_sessions_by_account ON web_sessions (account_id);
 CREATE INDEX web_sessions_by_expiry ON web_sessions (expires_at);
 `,
+	// 8: system-level files. The administrator adds them and is not an
+	// account, so an upload with no game has no uploader account and an
+	// empty uploader_email, and every other upload has both. SQLite cannot
+	// drop NOT NULL from a column, so the table is rebuilt; nothing refers
+	// to it. The copy keeps every ID, and the sequence is carried over first
+	// so that no ID is ever reused.
+	`
+CREATE TABLE uploads_new (
+	id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+	system_id           INTEGER NOT NULL REFERENCES systems (id) ON DELETE RESTRICT,
+	game_id             INTEGER REFERENCES games (id) ON DELETE RESTRICT,
+	turn_id             INTEGER REFERENCES turns (id) ON DELETE RESTRICT,
+	player_id           INTEGER REFERENCES game_players (id) ON DELETE RESTRICT,
+	name                TEXT    NOT NULL,
+	sha256              TEXT    NOT NULL REFERENCES file_contents (sha256) ON DELETE RESTRICT,
+	-- NULL for a system-level upload, which the administrator made.
+	uploader_account_id INTEGER REFERENCES accounts (id) ON DELETE RESTRICT,
+	-- The uploader's email as it was at the time of the upload; empty for
+	-- the administrator.
+	uploader_email      TEXT    NOT NULL,
+	uploaded_at         TEXT    NOT NULL,
+	-- NULL unless the upload was withdrawn.
+	withdrawn_at        TEXT,
+	CHECK (turn_id IS NULL OR game_id IS NOT NULL),
+	CHECK (player_id IS NULL OR turn_id IS NOT NULL),
+	CHECK ((game_id IS NULL) = (uploader_account_id IS NULL)),
+	CHECK ((game_id IS NULL) = (uploader_email = ''))
+);
+
+INSERT INTO sqlite_sequence (name, seq) SELECT 'uploads_new', seq FROM sqlite_sequence WHERE name = 'uploads';
+
+INSERT INTO uploads_new (id, system_id, game_id, turn_id, player_id, name, sha256, uploader_account_id, uploader_email, uploaded_at, withdrawn_at)
+SELECT id, system_id, game_id, turn_id, player_id, name, sha256, uploader_account_id, uploader_email, uploaded_at, withdrawn_at FROM uploads;
+
+DROP TABLE uploads;
+ALTER TABLE uploads_new RENAME TO uploads;
+
+CREATE INDEX uploads_by_game ON uploads (game_id, id);
+CREATE INDEX uploads_by_turn ON uploads (turn_id, player_id, id);
+CREATE INDEX uploads_by_contents ON uploads (sha256);
+CREATE INDEX uploads_by_system ON uploads (system_id, id) WHERE game_id IS NULL;
+`,
 }

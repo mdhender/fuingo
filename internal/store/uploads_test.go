@@ -283,3 +283,133 @@ func TestClosedTurnRefusesPlayers(t *testing.T) {
 		t.Error("FindTurn found a turn the game does not have")
 	}
 }
+
+// System-level files belong to their system alone: the administrator adds
+// and withdraws them, no game's functions return them, and a system's
+// functions return no game's files.
+func TestSystemUploads(t *testing.T) {
+	t.Parallel()
+	s, g1, _, account := uploadFixture(t)
+	if _, err := s.CreateSystem(t.Context(), "other"); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 11, 22, 12, 0, 0, 0, time.UTC)
+	rules := []byte("\xef\xbb\xbfrules\r\n")
+	inGame, err := s.CreateUpload(t.Context(), NewUpload{GameID: g1, Name: "rules.txt", Contents: rules, AccountID: account, Email: "gm@example.com", Now: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateSystemUpload(t.Context(), "nope", "rules.txt", rules, now); !errors.Is(err, ErrUnknownSystem) {
+		t.Errorf("unknown system: %v", err)
+	}
+	if _, err := s.SystemUploads(t.Context(), "nope", true); !errors.Is(err, ErrUnknownSystem) {
+		t.Errorf("list unknown system: %v", err)
+	}
+	first, err := s.CreateSystemUpload(t.Context(), "system01", "rules.txt", rules, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := s.CreateSystemUpload(t.Context(), "system01", "rules.txt", []byte("new rules\n"), now.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.UploaderID != 0 || first.UploaderEmail != "" || first.Turn != nil || first.Player != nil || first.Size != int64(len(rules)) || first.SHA256 != inGame.SHA256 {
+		t.Errorf("system upload = %+v", first)
+	}
+	// The same bytes are stored once, at whatever level.
+	if n := count(t, s, "SELECT count(*) FROM file_contents;"); n != 2 {
+		t.Errorf("file_contents has %d rows, want 2", n)
+	}
+	ids := func(us []Upload) (out []int64) {
+		for _, u := range us {
+			out = append(out, u.ID)
+		}
+		return out
+	}
+	list, err := s.SystemUploads(t.Context(), "system01", false)
+	if err != nil || len(list) != 2 || list[0].ID != first.ID || list[1].ID != second.ID || !list[0].UploadedAt.Equal(now) {
+		t.Fatalf("SystemUploads = %v, %v", ids(list), err)
+	}
+	if list, err := s.SystemUploads(t.Context(), "other", true); err != nil || len(list) != 0 {
+		t.Errorf("other system: %v, %v", ids(list), err)
+	}
+	// No game reaches a system's file, and no system a game's.
+	if all, _ := s.GameUploads(t.Context(), g1, 0, true); len(all) != 1 || all[0].ID != inGame.ID {
+		t.Errorf("GameUploads = %v", ids(all))
+	}
+	if list, _ := s.FolderUploads(t.Context(), g1, Folder{}, true); len(list) != 1 {
+		t.Errorf("FolderUploads = %v", ids(list))
+	}
+	if _, found, _ := s.GameUpload(t.Context(), g1, first.ID); found {
+		t.Error("a game reached a system-level file")
+	}
+	if _, _, found, _ := s.GameUploadContents(t.Context(), g1, first.ID); found {
+		t.Error("a game reached a system-level file's contents")
+	}
+	if _, err := s.WithdrawUpload(t.Context(), g1, first.ID, account, now); !errors.Is(err, ErrUnknownUpload) {
+		t.Errorf("withdraw through a game: %v", err)
+	}
+	for _, c := range []struct {
+		system string
+		id     int64
+	}{{"system01", inGame.ID}, {"other", first.ID}, {"nope", first.ID}, {"system01", 999}} {
+		if _, _, found, err := s.SystemUploadContents(t.Context(), c.system, c.id, true); found || err != nil {
+			t.Errorf("SystemUploadContents(%s, %d) found = %v, %v", c.system, c.id, found, err)
+		}
+		if _, err := s.WithdrawSystemUpload(t.Context(), c.system, c.id, now); !errors.Is(err, ErrUnknownUpload) {
+			t.Errorf("WithdrawSystemUpload(%s, %d) = %v", c.system, c.id, err)
+		}
+	}
+	if _, got, found, err := s.SystemUploadContents(t.Context(), "system01", first.ID, false); !found || err != nil || string(got) != string(rules) {
+		t.Errorf("contents = %q, %v, %v", got, found, err)
+	}
+
+	// Withdrawing keeps the record and the first time, and deletes nothing.
+	at := now.Add(2 * time.Hour)
+	if u, err := s.WithdrawSystemUpload(t.Context(), "system01", first.ID, at); err != nil || !u.WithdrawnAt.Equal(at) {
+		t.Fatalf("withdraw = %+v, %v", u, err)
+	}
+	if u, err := s.WithdrawSystemUpload(t.Context(), "system01", first.ID, at.Add(time.Hour)); err != nil || !u.WithdrawnAt.Equal(at) {
+		t.Errorf("second withdraw = %+v, %v", u, err)
+	}
+	if list, _ := s.SystemUploads(t.Context(), "system01", false); len(list) != 1 || list[0].ID != second.ID {
+		t.Errorf("after withdrawing: %v", ids(list))
+	}
+	if list, _ := s.SystemUploads(t.Context(), "system01", true); len(list) != 2 || !list[0].Withdrawn() {
+		t.Errorf("with withdrawn: %v", ids(list))
+	}
+	if _, _, found, _ := s.SystemUploadContents(t.Context(), "system01", first.ID, false); found {
+		t.Error("a withdrawn file was given out")
+	}
+	if _, got, found, _ := s.SystemUploadContents(t.Context(), "system01", first.ID, true); !found || string(got) != string(rules) {
+		t.Error("a withdrawn file's contents are gone")
+	}
+	if n := count(t, s, "SELECT count(*) FROM uploads;"); n != 3 {
+		t.Errorf("uploads has %d rows, want 3", n)
+	}
+}
+
+// The schema ties an upload's level to its uploader: a game's upload has an
+// account, and a system's has none.
+func TestUploadUploaderMatchesLevel(t *testing.T) {
+	t.Parallel()
+	s, _, _, _ := uploadFixture(t)
+	if _, err := s.CreateSystemUpload(t.Context(), "system01", "a.txt", []byte("a"), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	conn, err := s.take(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.pool.Put(conn)
+	for _, q := range []string{
+		"INSERT INTO uploads (system_id, name, sha256, uploader_account_id, uploader_email, uploaded_at) SELECT 1, 'a.txt', sha256, 1, 'gm@example.com', 'x' FROM file_contents;",
+		"INSERT INTO uploads (system_id, name, sha256, uploader_email, uploaded_at) SELECT 1, 'a.txt', sha256, 'gm@example.com', 'x' FROM file_contents;",
+		"INSERT INTO uploads (system_id, game_id, name, sha256, uploader_email, uploaded_at) SELECT 1, 1, 'a.txt', sha256, '', 'x' FROM file_contents;",
+		"INSERT INTO uploads (system_id, game_id, name, sha256, uploader_account_id, uploader_email, uploaded_at) SELECT 1, 1, 'a.txt', sha256, 1, '', 'x' FROM file_contents;",
+	} {
+		if err := sqlitex.ExecuteTransient(conn, q, nil); sqlite.ErrCode(err) != sqlite.ResultConstraintCheck {
+			t.Errorf("%s\n= %v, want a CHECK failure", q, err)
+		}
+	}
+}

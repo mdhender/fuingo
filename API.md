@@ -8,7 +8,9 @@ The API is for **game masters (GMs)** and their tools. Today it lists the
 games an account manages, manages each game's players, creates, closes, and
 reopens its turns, and uploads, lists, downloads, and withdraws its files.
 Players have no routes here: they use the web pages, and what they upload
-there appears in these listings like any other file.
+there appears in these listings like any other file. A system's own files,
+which the administrator adds, are not reached through the API: no listing
+here includes them.
 
 ## Quick start
 

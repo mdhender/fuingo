@@ -18,4 +18,7 @@
       adds you to one.
     </p>
 {{- end}}
+{{- with .Files}}
+{{template "folder" .}}
+{{- end}}
 {{template "foot" .}}

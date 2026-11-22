@@ -6,8 +6,10 @@ package store
 import (
 	"errors"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"zombiezen.com/go/sqlite"
 	"zombiezen.com/go/sqlite/sqlitex"
@@ -568,5 +570,85 @@ func TestMigrateEmptyVersion2(t *testing.T) {
 	defer s.Close()
 	if got, _ := s.Systems(t.Context()); len(got) != 0 {
 		t.Errorf("systems = %v, want none", got)
+	}
+}
+
+// TestMigrateFromVersion7 rebuilds uploads so a system-level file needs no
+// uploader account: every upload keeps its ID and its values, and no ID is
+// reused, even one above the highest that is left.
+func TestMigrateFromVersion7(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "v7.db")
+	old := schema
+	old.Migrations = migrations[:7]
+	db, err := old.Create(t.Context(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, err := db.Pool.Take(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	const hash = "0000000000000000000000000000000000000000000000000000000000000000"
+	err = sqlitex.ExecuteScript(conn, `
+INSERT INTO systems (code) VALUES ('system01');
+INSERT INTO games (system_id, code, is_active) VALUES (1, 'game01', 1);
+INSERT INTO accounts (email) VALUES ('gm@example.com');
+INSERT INTO game_players (game_id, account_id, is_active) VALUES (1, 1, 1);
+INSERT INTO turns (game_id, turn_no, created_at) VALUES (1, 0, 'x');
+INSERT INTO file_contents (sha256, size, contents, created_at) VALUES ('`+hash+`', 6, x'6f7264657273', 'x');
+INSERT INTO uploads (system_id, game_id, turn_id, player_id, name, sha256, uploader_account_id, uploader_email, uploaded_at, withdrawn_at) VALUES
+	(1, 1, NULL, NULL, 'rules.txt', '`+hash+`', 1, 'gm@example.com', 'a', NULL),
+	(1, 1, 1, 1, 'orders.txt', '`+hash+`', 1, 'gm@example.com', 'b', 'c');
+-- An ID that was used and is gone must stay used.
+UPDATE sqlite_sequence SET seq = 9 WHERE name = 'uploads';
+`, nil)
+	db.Pool.Put(conn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Migrate(t.Context(), path); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	s, err := Open(t.Context(), path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+	conn, err = s.take(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rows []string
+	err = sqlitex.ExecuteTransient(conn, `
+SELECT id || '|' || system_id || '|' || game_id || '|' || coalesce(turn_id, '-') || '|' || coalesce(player_id, '-') || '|' || name || '|' ||
+       uploader_account_id || '|' || uploader_email || '|' || uploaded_at || '|' || coalesce(withdrawn_at, '-')
+FROM uploads ORDER BY id;`, &sqlitex.ExecOptions{
+		ResultFunc: func(stmt *sqlite.Stmt) error {
+			rows = append(rows, stmt.ColumnText(0))
+			return nil
+		},
+	})
+	s.pool.Put(conn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"1|1|1|-|-|rules.txt|1|gm@example.com|a|-", "2|1|1|1|1|orders.txt|1|gm@example.com|b|c"}
+	if !slices.Equal(rows, want) {
+		t.Errorf("uploads = %q, want %q", rows, want)
+	}
+	if n := count(t, s, "SELECT count(*) FROM sqlite_master WHERE name = 'uploads_new';"); n != 0 {
+		t.Error("uploads_new was left behind")
+	}
+	if n := count(t, s, "SELECT count(*) FROM sqlite_master WHERE tbl_name = 'uploads' AND type = 'index' AND name LIKE 'uploads_by_%';"); n != 4 {
+		t.Errorf("uploads has %d indexes, want 4", n)
+	}
+	u, err := s.CreateSystemUpload(t.Context(), "system01", "rules.txt", []byte("rules"), time.Now())
+	if err != nil || u.ID != 10 {
+		t.Errorf("next upload = %d, %v; want ID 10", u.ID, err)
 	}
 }

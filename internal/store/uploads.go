@@ -38,8 +38,8 @@ type Upload struct {
 	Name          string
 	Size          int64
 	SHA256        string // lowercase hex
-	UploaderID    int64  // the uploader's account
-	UploaderEmail string // as it was when the file was uploaded
+	UploaderID    int64  // the uploader's account; 0 for the administrator
+	UploaderEmail string // as it was when the file was uploaded; empty for the administrator
 	UploadedAt    time.Time
 	WithdrawnAt   time.Time
 }
@@ -170,14 +170,8 @@ func (s *Store) CreateUpload(ctx context.Context, n NewUpload) (u Upload, err er
 	} else if closed && n.OpenTurnOnly {
 		return Upload{}, ErrTurnClosed
 	}
-	sum := sha256.Sum256(n.Contents)
-	hash := hex.EncodeToString(sum[:])
 	now := n.Now.UTC().Format(timeLayout)
-	err = sqlitex.Execute(conn, `
-INSERT INTO file_contents (sha256, size, contents, created_at) VALUES (?, ?, ?, ?)
-ON CONFLICT (sha256) DO NOTHING;`, &sqlitex.ExecOptions{
-		Args: []any{hash, len(n.Contents), n.Contents, now},
-	})
+	hash, err := storeContents(conn, n.Contents, now)
 	if err != nil {
 		return Upload{}, err
 	}
@@ -290,15 +284,35 @@ func (s *Store) GameUploadContents(ctx context.Context, gameID, id int64) (u Upl
 	if err != nil || !found {
 		return Upload{}, nil, false, err
 	}
+	contents, err = readContents(conn, u.SHA256)
+	return u, contents, true, err
+}
+
+// readContents returns the contents stored under the hash. Its caller has
+// checked access against an upload.
+func readContents(conn *sqlite.Conn, hash string) (contents []byte, err error) {
 	err = sqlitex.Execute(conn, "SELECT contents FROM file_contents WHERE sha256 = ?;", &sqlitex.ExecOptions{
-		Args: []any{u.SHA256},
+		Args: []any{hash},
 		ResultFunc: func(stmt *sqlite.Stmt) error {
 			contents = make([]byte, stmt.ColumnLen(0))
 			stmt.ColumnBytes(0, contents)
 			return nil
 		},
 	})
-	return u, contents, true, err
+	return contents, err
+}
+
+// storeContents keeps the contents once, under their SHA-256, and returns
+// the hash. Contents already stored are not rewritten.
+func storeContents(conn *sqlite.Conn, contents []byte, now string) (string, error) {
+	sum := sha256.Sum256(contents)
+	hash := hex.EncodeToString(sum[:])
+	err := sqlitex.Execute(conn, `
+INSERT INTO file_contents (sha256, size, contents, created_at) VALUES (?, ?, ?, ?)
+ON CONFLICT (sha256) DO NOTHING;`, &sqlitex.ExecOptions{
+		Args: []any{hash, len(contents), contents, now},
+	})
+	return hash, err
 }
 
 // WithdrawUpload withdraws the game's upload with the given ID and returns

@@ -122,6 +122,7 @@ func New(cfg Config) (http.Handler, error) {
 	p := &pages{sessions: web, db: cfg.Store, logger: cfg.Logger, now: cfg.Now, links: cfg.Links, maxPlayer: cfg.MaxPlayerUpload, maxGM: cfg.MaxGMUpload}
 	mux.HandleFunc("GET /{$}", p.signedIn(p.home))
 	mux.HandleFunc("GET /systems/{system}", p.signedIn(p.system))
+	mux.HandleFunc("GET /systems/{system}/uploads/{upload}", p.signedIn(p.systemDownload))
 	const game = "/systems/{system}/games/{game}"
 	mux.HandleFunc("GET "+game, p.signedIn(p.gamePage))
 	mux.HandleFunc("GET "+game+"/turns/{turn}", p.signedIn(p.turnPage))

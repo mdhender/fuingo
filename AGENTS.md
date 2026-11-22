@@ -66,7 +66,15 @@ The user agreed this design on 2026-11-22, and it is being built in the steps th
   An HTMX request's way back is the path of its `HX-Current-URL`; any other `POST` has none.
   `localPath` in `session.go` decides what is followed: a path on this origin, at most 512 bytes, with no `//` start, backslash, white space, control character, or fragment, and not `/sign-in`, `/sign-out`, or under `/api/`.
   Anything else leads to `/`; never redirect to a `next` that has not been through it.
-- Not built: system-level files and normalized downloads.
+- System-level files, built on 2026-11-22: `fuingo file add`, `file list`, and `file withdraw`, each with `--system`; the system's page lists them, and `/systems/{system}/uploads/{id}` downloads one.
+  The administrator is not an account, so a system-level upload has no uploader account and an empty uploader email; migration 8 rebuilt `uploads` to allow that, and its checks tie the two together.
+  The pages show such a file as from "the administrator".
+  Only the commands add or withdraw them: no page and no `/api/` route does, and no `/api/` listing includes them.
+  A withdrawn system-level file is shown to nobody on the web, GMs included; `file list` shows it.
+  No size limit applies to `file add`.
+  They are in `internal/store/systemfiles.go`, and are reached only by their system: every query for a game's files names the game, so none returns them.
+- Not built: normalized downloads.
+  The user settled their design on 2026-11-22; see [the `/api/` routes](#the-api-routes).
 - Migration 3 moved the games of a database made under the previous design into a system named `legacy` and dropped its stored uploads.
 - No deployment holds live data.
   The server called production is a test server, so no step needs a cutover.
@@ -292,7 +300,7 @@ Codes and emails are lowercased with `strings.ToLower`; apply no other normaliza
 
 The schema holds `systems`, `games`, `accounts`, `game_players`, `game_managers`, `turns`, `file_contents`, `uploads`, `api_sessions`, `account_links`, and `web_sessions`.
 `account_links` holds each invitation and reset link by the hash of its token, with when it expires and whether it was used or canceled; its rows are kept.
-`uploads` allows a row with no game, for a system-level file, but nothing writes one yet, and its uploader must be an account.
+An upload with no game is a system-level file; it has no uploader account, because the administrator added it, and every other upload has one.
 These rules hold whatever the tables are:
 
 - Codes and emails can change, so rows are identified by integer IDs, never by those values.
@@ -360,7 +368,10 @@ These rules carry over from the routes that exist:
 - A request body that is JSON must be exactly one JSON object with only the documented fields, read with `decodeOnly`.
   Unknown fields and anything but white space after the object get `400`.
 - A download gives the contents' hash in `X-Content-SHA256`.
-- A download returns the file exactly as stored unless the client asks for it normalized, such as without its BOM or with its line endings made uniform.
+- A download returns the file exactly as stored unless the client asks for it normalized.
+  There are two normalizations, each a query parameter of the download: `strip-bom=true` removes the BOM, and `normalize-eol=true` makes the line endings uniform.
+  A client may ask for either or both, as in `?strip-bom=true&normalize-eol=true`.
+- `X-Content-SHA256` is always the hash of the file as stored, never of a normalized response.
   Normalizing changes only that response, never what is stored.
 
 A tool can ask for the uploads that arrived after the last one it saw, so a game can answer orders with parsing results soon after they arrive.
@@ -369,7 +380,7 @@ A tool can ask for the uploads that arrived after the last one it saw, so a game
 
 Settle each of these with the user before building what depends on it.
 
-- Which normalizations a download offers, how a client asks for them, and which contents `X-Content-SHA256` describes when it does.
+- Which line ending `normalize-eol` produces, and what it does with a lone CR.
 - Renaming a system or game.
 - Naming a turn, as a later feature.
 - Pagination of listings.

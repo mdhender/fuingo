@@ -10,8 +10,9 @@ where players and GMs exchange a game's files, and the `/api/` routes a GM's
 tool uses for the same: to manage a game's players and turns, and to upload,
 list, download, and withdraw its files. Accounts are by invitation: a new
 account is mailed a link to choose its password, and its owner resets a
-forgotten password the same way. Files at a system's level, and normalized
-downloads, are not built.
+forgotten password the same way. The administrator adds a system's own
+files, such as its rules, from the command line. Normalized downloads are
+not built.
 
 ## Commands
 
@@ -52,12 +53,22 @@ name a game with both `--system` and its code.
 | `fuingo game disable --manager EMAIL --system SYSTEM --code CODE` | Stops an account managing a game. `game enable` reverses it. |
 | `fuingo account create EMAIL` | Adds an account and mails its invitation. Fails if the email already has an account, including one made by `game add --player`. |
 | `fuingo account reset-password EMAIL` | Mails an active account a new link to choose a password: a reset, or another invitation if it has not chosen one yet. Its current password keeps working until the owner uses the link. |
+| `fuingo file add --system SYSTEM [--name NAME] PATH` | Adds the file at `PATH` to a system, for every active player and GM of the system's games to read. Prints the file's ID. The file is stored under its base name, or under `--name`. |
+| `fuingo file list --system SYSTEM` | Lists a system's own files, withdrawn ones included: ID, name, size in bytes, and when it was added, separated by tabs. |
+| `fuingo file withdraw --system SYSTEM ID` | Withdraws one of a system's own files: it leaves the system's page and can no longer be downloaded. Its record and contents are kept. |
 | `fuingo account disable EMAIL` | Disables an account: it manages no games, plays in none, and cannot log in. `account enable` reverses it. |
 
 Codes and emails are lowercased. A code is 1 to 32 characters: letters and
 digits in any script, `-`, and `_`. An email is one or more printable ASCII
 bytes with no spaces. Flags come before a command's argument, as in
 `game create --system olympia g3`.
+
+A system's own file passes the checks every upload does: its name is 1 to
+48 ASCII letters, digits, `-`, `_`, and `.`, with no `.` at its start or
+end, and it is text that is not empty. No size limit applies to it. It is
+stored exactly as it is on disk. Adding a second file with the same name
+replaces nothing; withdraw the old one. Only these commands add or withdraw
+a system's files: no page and no `/api/` route does.
 
 No command sets, prints, or reads a password. The commands that send mail
 need `--public-url` and the [Mailgun settings](#mail), and check for them
@@ -130,7 +141,8 @@ found" page as something that does not exist.
 | Page | Shows |
 | --- | --- |
 | `/` | The account's games, by system. An account with one game is sent straight to it. |
-| `/systems/{system}` | The games of one system that the account may reach. |
+| `/systems/{system}` | The games of one system that the account may reach, and the system's own files. |
+| `/systems/{system}/uploads/{id}` | Downloads one of the system's own files. |
 | `/systems/{system}/games/{game}` | The game's files and its turns, newest first. |
 | `.../games/{game}/turns/{turn}` | The turn's files and whether it is open. A player also sees their own folder for the turn; a GM sees every player's folder, with how many files each holds. |
 | `.../turns/{turn}/players/{number}` | One player's folder in the turn, for a GM and for that player. |
@@ -165,6 +177,10 @@ found" page as something that does not exist.
 - **Downloads.** Every file is served as a download
   (`Content-Disposition: attachment`, `application/octet-stream`), never
   displayed, so an HTML report cannot run on Fuingo's origin.
+- **System files.** A system's own files are read by every account that is
+  an active player or GM of any of its games, and by no one else. Only the
+  administrator adds and withdraws them, with `fuingo file`; the page shows
+  them as from "the administrator". A withdrawn one is shown to nobody.
 - A player is shown their own uploads as from "you" and any other file as
   from "the GM". A GM is shown each uploader's email.
 
@@ -185,6 +201,7 @@ override environment variables, which override the defaults.
 | `--schema` | (none) | `fuingo version` | Print the database's schema version. Command line only. |
 | `--public-url` | `FUINGO_PUBLIC_URL` | `fuingod`, `fuingo` | The origin players reach Fuingo at, such as `https://fuingo.example.com`, which mailed links point to: `https`, with no path. Defaults to `https://htmx-app.localhost:8443` in `development` and `agent`; required elsewhere by `fuingod` and by the `fuingo` commands that send mail. |
 | `--system` | (none) | `fuingo game` commands | The code of the game's system. Required. Command line only. |
+| `--name` | (none) | `fuingo file add` | The name to store the file under. Default: the base name of `PATH`. Command line only. |
 | `--manager`, `--player`, `--code` | (none) | `fuingo game add`, `disable`, `enable` | The GM's or player's email, and the game's code. `--code` is required; `game add` needs exactly one of the others, and `disable` and `enable` at most one. Command line only. |
 
 - The environment is read from `--env` or the process's `FUINGO_ENV`. The

@@ -36,7 +36,7 @@ var sent = &mailtest.Recorder{}
 func clearEnv(t *testing.T) {
 	t.Helper()
 	for _, key := range []string{
-		"FUINGO_ENV", "FUINGO_DB", "FUINGO_SCHEMA", "FUINGO_GENERATE_PASSWORD", "FUINGO_MANAGER", "FUINGO_PLAYER", "FUINGO_SYSTEM", "FUINGO_CODE",
+		"FUINGO_ENV", "FUINGO_DB", "FUINGO_SCHEMA", "FUINGO_GENERATE_PASSWORD", "FUINGO_MANAGER", "FUINGO_PLAYER", "FUINGO_SYSTEM", "FUINGO_CODE", "FUINGO_NAME",
 		"FUINGO_PUBLIC_URL", "FUINGO_MAILGUN_DOMAIN", "FUINGO_MAILGUN_API_KEY", "FUINGO_MAILGUN_FROM", "FUINGO_MAILGUN_API_BASE", "FUINGO_MAILGUN_SANDBOX_TO_ADDR",
 	} {
 		t.Setenv(key, "")
@@ -990,5 +990,101 @@ func TestAccountDisableEnableRefusals(t *testing.T) {
 	}
 	if a, _ := account(t, path, "acct01@example.com"); !a.Active {
 		t.Error("a refused command disabled acct01@example.com")
+	}
+}
+
+// The administrator adds, lists, and withdraws a system's own files.
+func TestSystemFiles(t *testing.T) {
+	clearEnv(t)
+	path := createDatabase(t)
+	base := []string{"--env", "test", "--db", path}
+	file := func(args ...string) []string { return append(slices.Clone(base), append([]string{"file"}, args...)...) }
+	mustRun(t, "created system olympia (id 1)\n", append(slices.Clone(base), "system", "create", "olympia")...)
+	mustRun(t, "created system atlantis (id 2)\n", append(slices.Clone(base), "system", "create", "atlantis")...)
+	dir := t.TempDir()
+	write := func(name string, contents []byte) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, contents, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	rules := []byte("\xef\xbb\xbfThe rules\r\n")
+	rulesPath := write("Rules-1.2.txt", rules)
+
+	mustRun(t, "added Rules-1.2.txt to system olympia (id 1, 14 bytes)\n", file("add", "--system", "Olympia", rulesPath)...)
+	mustRun(t, "added faq.txt to system olympia (id 2, 14 bytes)\n", file("add", "--system", "olympia", "--name", "faq.txt", rulesPath)...)
+	// The environment never names the system or the file.
+	t.Setenv("FUINGO_SYSTEM", "atlantis")
+	t.Setenv("FUINGO_NAME", "sneaky.txt")
+	mustRun(t, "added Rules-1.2.txt to system olympia (id 3, 14 bytes)\n", file("add", "--system", "olympia", rulesPath)...)
+	if out, err := runCommand(t, file("list")...); !errors.Is(err, ErrMissingSystem) {
+		t.Errorf("list with FUINGO_SYSTEM only: %v\n%s", err, out)
+	}
+
+	s, err := store.Open(t.Context(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, got, found, err := s.SystemUploadContents(t.Context(), "olympia", 1, false)
+	if err != nil || !found || !bytes.Equal(got, rules) {
+		t.Errorf("stored %q, %v, %v; want the file byte for byte", got, found, err)
+	}
+	s.Close()
+
+	for _, tc := range []struct {
+		args []string
+		want error
+	}{
+		{[]string{"add", rulesPath}, ErrMissingSystem},
+		{[]string{"add", "--system", "nope", rulesPath}, store.ErrUnknownSystem},
+		{[]string{"add", "--system", "bad code", rulesPath}, names.ErrCode},
+		{[]string{"add", "--system", "olympia"}, ErrUsage},
+		{[]string{"add", "--system", "olympia", rulesPath, rulesPath}, ErrUsage},
+		{[]string{"add", "--system", "olympia", filepath.Join(dir, "missing.txt")}, fs.ErrNotExist},
+		{[]string{"add", "--system", "olympia", "--name", "my rules.txt", rulesPath}, names.ErrFile},
+		{[]string{"add", "--system", "olympia", "--name", ".rules", rulesPath}, names.ErrFile},
+		{[]string{"add", "--system", "olympia", "--name", strings.Repeat("x", 49), rulesPath}, names.ErrFile},
+		{[]string{"add", "--system", "olympia", write("my rules.txt", rules)}, names.ErrFile},
+		{[]string{"add", "--system", "olympia", write("empty.txt", nil)}, names.ErrFileEmpty},
+		{[]string{"add", "--system", "olympia", write("bom.txt", []byte("\xef\xbb\xbf"))}, names.ErrFileEmpty},
+		{[]string{"add", "--system", "olympia", write("binary.txt", []byte("a\xffb"))}, names.ErrFileUTF8},
+		{[]string{"add", "--system", "olympia", write("nul.txt", []byte("a\x00b"))}, names.ErrFileControl},
+		{[]string{"list"}, ErrMissingSystem},
+		{[]string{"list", "--system", "nope"}, store.ErrUnknownSystem},
+		{[]string{"list", "--system", "olympia", "extra"}, ErrUsage},
+		{[]string{"withdraw", "1"}, ErrMissingSystem},
+		{[]string{"withdraw", "--system", "olympia"}, ErrUsage},
+		{[]string{"withdraw", "--system", "olympia", "x"}, ErrUploadID},
+		{[]string{"withdraw", "--system", "olympia", "0"}, ErrUploadID},
+		{[]string{"withdraw", "--system", "olympia", "99"}, store.ErrUnknownUpload},
+		{[]string{"withdraw", "--system", "atlantis", "1"}, store.ErrUnknownUpload},
+		{[]string{"withdraw", "--system", "nope", "1"}, store.ErrUnknownUpload},
+	} {
+		if out, err := runCommand(t, file(tc.args...)...); !errors.Is(err, tc.want) {
+			t.Errorf("%q: err = %v, want %v\n%s", tc.args, err, tc.want, out)
+		}
+	}
+	lines := func(system string) []string {
+		t.Helper()
+		out, err := runCommand(t, file("list", "--system", system)...)
+		if err != nil {
+			t.Fatalf("list %s: %v\n%s", system, err, out)
+		}
+		return strings.Split(strings.TrimSuffix(out, "\n"), "\n")
+	}
+	// Nothing that was refused was stored.
+	if got := lines("olympia"); len(got) != 3 || !strings.HasPrefix(got[0], "1\tRules-1.2.txt\t14\t") || !strings.HasPrefix(got[1], "2\tfaq.txt\t14\t") || strings.Contains(strings.Join(got, ""), "withdrawn") {
+		t.Errorf("list = %q", got)
+	}
+	if got := lines("atlantis"); len(got) != 1 || got[0] != "" {
+		t.Errorf("list atlantis = %q", got)
+	}
+
+	mustRun(t, "withdrew faq.txt from system olympia (id 2)\n", file("withdraw", "--system", "olympia", "2")...)
+	mustRun(t, "withdrew faq.txt from system olympia (id 2)\n", file("withdraw", "--system", "olympia", "2")...)
+	after := lines("olympia")
+	if len(after) != 3 || !strings.Contains(after[1], "\twithdrawn ") || strings.Contains(after[0]+after[2], "withdrawn") {
+		t.Errorf("list after withdrawing = %q", after)
 	}
 }

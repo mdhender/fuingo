@@ -581,9 +581,13 @@ func (p *pages) download(w http.ResponseWriter, r *http.Request, account store.A
 		p.notFound(w, r, account)
 		return
 	}
-	// The file is served as a download, never as a page: it may be HTML and
-	// must not run on this origin, which holds sessions. Its name holds
-	// only safe ASCII.
+	serveFile(w, u, contents)
+}
+
+// serveFile sends a file the account may read, exactly as it was uploaded.
+// It is served as a download, never as a page: it may be HTML and must not
+// run on this origin, which holds sessions. Its name holds only safe ASCII.
+func serveFile(w http.ResponseWriter, u store.Upload, contents []byte) {
 	header := w.Header()
 	header.Set("Content-Type", "application/octet-stream")
 	header.Set("Content-Disposition", `attachment; filename="`+u.Name+`"`)

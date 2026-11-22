@@ -101,6 +101,7 @@ Olympia / G3 / 1 / 5    player 5's folder in turn 1
   Orders are the files a player uploads; reports are the files a GM uploads.
   Fuingo records who uploaded a file, and does not otherwise distinguish kinds of file.
 - A file has a name, which Fuingo stores and never interprets.
+  A name is at most 48 bytes.
   Each game has its own naming convention, and that is the game's business.
 - Some games answer a player's orders with the results of parsing them, so the player can fix mistakes before the turn closes.
   That is an ordinary file the game's tool uploads to the player's folder.
@@ -115,10 +116,8 @@ Olympia / G3 / 1 / 5    player 5's folder in turn 1
   Uploads are permanent history; do not add a command or route that deletes them.
 - Empty files are refused.
   A player with no orders for a turn withdraws their file rather than uploading a blank one.
-- A player's upload is at most 64 KiB (65,536 bytes).
-  After one optional leading UTF-8 BOM (`EF BB BF`), every byte must be printable ASCII (`0x20`–`0x7E`), tab (`0x09`), LF (`0x0A`), or CR (`0x0D`).
-- A GM's upload is at most 1 MiB (1,048,576 bytes) by default, and the limit is configurable.
-  It may start with one optional UTF-8 BOM and must be valid UTF-8.
+- Every upload may start with one optional UTF-8 BOM (`EF BB BF`) and must be valid UTF-8, whoever uploads it.
+- There are three size limits, each configurable on its own: a player's upload on the web, 64 KiB (65,536 bytes) by default; a GM's upload on the web, 1 MiB (1,048,576 bytes) by default; and an upload through `/api/`.
 - Check the whole file, never a sample of it.
   A file containing only a BOM is empty.
 - Enforce a size limit while reading the request (for example, with `http.MaxBytesReader`), not after buffering an unbounded body.
@@ -268,6 +267,10 @@ These rules hold whatever its tables are:
 - Every foreign key is `ON DELETE RESTRICT`: deleting a row that others refer to fails instead of removing history.
 - A game's code is unique within its system.
   Codes and emails are stored lowercased.
+  The code of a system or a game is at most 32 UTF-8 characters.
+- Codes and file names appear in URLs and on the page, so they hold no hinky characters; the exact set allowed is an [open question](#open-questions).
+- A system has no settings of its own.
+  Every system shares the server's settings, such as the size limits.
 - `accounts` has one row per email, for players and GMs alike.
   Whether an account plays or manages a game is recorded only in the rows that join it to that game.
 - A turn is a row that a GM created, with its number and whether it is closed.
@@ -328,10 +331,12 @@ A tool can ask for the uploads that arrived after the last one it saw, so a game
 
 Settle each of these with the user before building what depends on it.
 
-- Whether a player's size limit is also configurable.
+- The default for the `/api/` size limit.
+- Which characters a code and a file name may hold.
+  Proposed and not yet confirmed: letters and digits in any script, with `-` and `_` in a code, and `-`, `_`, `.`, and single spaces inside a file name; never a control character, `/`, `\`, or a leading `.`.
+- Whether a file that is valid UTF-8 may hold control characters other than tab, LF, and CR, such as NUL.
 - Which normalizations a download offers, how a client asks for them, and which contents `X-Content-SHA256` describes when it does.
-- The limits on a file's name, and on the codes of systems and games, which now appear in URLs.
-- Whether a system has GMs or settings of its own.
+- Whether a system has GMs of its own.
 - Renaming a system or game.
 - Naming a turn, as a later feature.
 - Pagination of listings.
@@ -342,9 +347,8 @@ Settle each of these with the user before building what depends on it.
 - Test observable HTTP and command behavior, not private implementation details.
 - Cover access: that a player reaches only their own folders, that a GM reaches only the games they manage, that an inactive account, player, GM, or game is refused, and that what an account may not reach is indistinguishable from what does not exist.
 - Cover turns: uploads to a turn that does not exist, to an open turn, to a closed one, and to a reopened one; that closing blocks only players; and several open turns.
-- Cover a GM's upload: the size boundary at the default and at a configured limit, with and without a BOM, bytes above `0x7F` in valid UTF-8 (accepted), and invalid UTF-8 at the start, in the middle, and at the end of a file (rejected).
-- Cover the files above a player's folder: that a game's players read its game and turn files, that an account in one of a system's games reads the system's files, and that no other account does.
-- Cover a player's upload: the 64 KiB boundary (65,536 bytes accepted, 65,537 rejected), empty and BOM-only files, a BOM followed by a valid file, every boundary byte of the check, and a disallowed byte as the first and as the last byte of a file at the size limit (rejected), with and without a BOM.
+- Cover uploads: each of the three size limits at its boundary, at its default and at a configured value, and that each is independent of the others; empty and BOM-only files; a BOM followed by a valid file; bytes above `0x7F` in valid UTF-8 (accepted); and invalid UTF-8 at the start, in the middle, and at the end of a file (rejected), for a player and for a GM.
+- Cover names: a 32-character code and a 33-character one, counted in characters and not bytes; a 48-byte file name and a 49-byte one; and each kind of refused character.
 - Cover storage: that a download returns exactly the bytes uploaded, including a BOM and CRLF line endings, that a normalized download leaves the stored file unchanged, and that lowering a size limit leaves stored files readable.
 - Cover repeated and withdrawn files: that a second upload replaces nothing, that a withdrawn file leaves the listings and its record remains, that a player cannot withdraw after the turn closes or withdraw a GM's file, and that a GM can withdraw their own file in a closed turn.
 - For duplicate content, cover players in the same game and in different games with identical files, concurrent uploads, and that stored contents are not rewritten.

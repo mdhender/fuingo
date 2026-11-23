@@ -44,7 +44,12 @@ The user agreed this design on 2026-11-22, and it is being built in the steps th
   `/account/reset` answers the same for every email and is limited per client address, 5 requests and then one per minute.
   `FUINGO_MAILGUN_SANDBOX_TO_ADDR` redirects every message to one address, for a Mailgun sandbox, and is refused in production.
   `fuingod` does not start in production without the Mailgun settings, and needs `--public-url` (`FUINGO_PUBLIC_URL`) outside development and agent.
-  No command sets or reads a password: `fuingo account set-password` and `account create`'s password were removed.
+  `fuingo account set-password` and `account create`'s password were removed.
+- Test accounts, built on 2026-11-23: `fuingo account create-test`, the only command that sets a password.
+  It takes no arguments: the email is `FUINGO_ACCOUNT_EMAIL` and the password `FUINGO_ACCOUNT_PASSWORD`, read from the environment and never flags.
+  It creates the account, or gives the password to an account that has none and cancels its unused links; it never replaces a password, and refuses an account that has one.
+  It sends no mail, needs no Mailgun settings, works in every environment, and never prints the password.
+  Do not add another way to set a password, or let this one change an existing password.
 - Web sign-in and sessions, built on 2026-11-22: `/sign-in`, `POST /sign-out`, and the page at `/`, which shows only who is signed in and sends anyone else to `/sign-in`.
   The session cookie is `__Host-fuingo_session`: `Secure`, `HttpOnly`, `SameSite=Lax`.
   Every use of a session renews it for 30 days.
@@ -179,7 +184,8 @@ Olympia / G3 / 1 / 5    player 5's folder in turn 1
 - Accounts are by invitation only.
   Nobody can sign up.
 - The administrator makes the first accounts from the command line.
-  Creating an account sends its invitation; no command sets or reads a password.
+  Creating an account sends its invitation.
+  The one exception is a test account, which `fuingo account create-test` makes with a password from the environment and no mail.
 - An invitation and a password reset are each a link mailed to the account's address, which expires after 72 hours.
 - Fuingo does not handle mail that fails.
   The administrator sees bounces through Mailgun.
@@ -189,7 +195,7 @@ Olympia / G3 / 1 / 5    player 5's folder in turn 1
   If the email has no account, that creates one and sends the invitation.
   This is all a GM may do to an account: a GM never sets, sees, or resets a password, and never changes an account's email.
 - An account's owner sets and resets their own password, through mail sent to the account's address.
-  The administrator may start a reset for an account, and never chooses its password.
+  The administrator may start a reset for an account, and never chooses its password, except for a test account's first password with `fuingo account create-test`.
 - An account has one password, used for the web and for `/api/`.
   There are no per-game credentials and no upload tokens.
 - A browser stays signed in with a session: a random token in a cookie, stored in the database only as its hash, so the server can end it.

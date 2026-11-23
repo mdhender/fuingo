@@ -5,6 +5,7 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"zombiezen.com/go/sqlite"
@@ -119,4 +120,45 @@ func (s *Store) UseAccountLink(ctx context.Context, hashedToken, hashedSecret []
 		}
 	}
 	return la, true, nil
+}
+
+// CreateTestAccount gives the account with the given lowercased email the
+// password hash, creating the account, active, if the email has none. It
+// reports whether it created the account. An account that already has a
+// password is refused with ErrHasPassword and nothing changes: this never
+// replaces a password. An existing account keeps its is_active, and its
+// unused links are canceled, so an invitation still in the mail cannot
+// replace the password. All in one transaction.
+func (s *Store) CreateTestAccount(ctx context.Context, email string, hashedSecret []byte, now time.Time) (id int64, created bool, err error) {
+	conn, err := s.take(ctx)
+	if err != nil {
+		return 0, false, err
+	}
+	defer s.pool.Put(conn)
+	end, err := sqlitex.ImmediateTransaction(conn)
+	if err != nil {
+		return 0, false, err
+	}
+	defer end(&err)
+	id, found, err := accountID(conn, email)
+	if err != nil {
+		return 0, false, err
+	}
+	if !found {
+		id, err = createAccount(conn, NewAccount{Email: email, HashedSecret: hashedSecret})
+		return id, err == nil, err
+	}
+	err = sqlitex.Execute(conn, "UPDATE accounts SET hashed_secret = ? WHERE id = ? AND hashed_secret IS NULL;", &sqlitex.ExecOptions{
+		Args: []any{string(hashedSecret), id},
+	})
+	if err != nil {
+		return 0, false, err
+	}
+	if conn.Changes() == 0 {
+		return 0, false, fmt.Errorf("%s: %w", email, ErrHasPassword)
+	}
+	err = sqlitex.Execute(conn, "UPDATE account_links SET canceled_at = ? WHERE account_id = ? AND used_at IS NULL AND canceled_at IS NULL;", &sqlitex.ExecOptions{
+		Args: []any{now.UTC().Format(timeLayout), id},
+	})
+	return id, false, err
 }

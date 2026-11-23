@@ -29,7 +29,10 @@ games, or both.
   for the `Authorization` header.
 
 `fuingo account create`, `fuingo game add --manager`, and `fuingo game add
---player` add to the tables. No command sets a password.
+--player` add to the tables. Only `fuingo account create-test` sets a
+password: it makes an account for testing from `FUINGO_ACCOUNT_EMAIL` and
+`FUINGO_ACCOUNT_PASSWORD`, or gives the password to an account that has
+none, and sends no mail. It works in every environment.
 
 The default accounts with passwords sign in to the web pages too, as the GMs
 of their games. The default players have no password, so a test that needs a

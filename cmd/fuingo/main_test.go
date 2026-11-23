@@ -6,6 +6,7 @@ package main
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -36,7 +37,7 @@ var sent = &mailtest.Recorder{}
 func clearEnv(t *testing.T) {
 	t.Helper()
 	for _, key := range []string{
-		"FUINGO_ENV", "FUINGO_DB", "FUINGO_SCHEMA", "FUINGO_GENERATE_PASSWORD", "FUINGO_MANAGER", "FUINGO_PLAYER", "FUINGO_SYSTEM", "FUINGO_CODE", "FUINGO_NAME",
+		"FUINGO_ENV", "FUINGO_DB", "FUINGO_SCHEMA", "FUINGO_GENERATE_PASSWORD", "FUINGO_ACCOUNT_EMAIL", "FUINGO_ACCOUNT_PASSWORD", "FUINGO_MANAGER", "FUINGO_PLAYER", "FUINGO_SYSTEM", "FUINGO_CODE", "FUINGO_NAME",
 		"FUINGO_PUBLIC_URL", "FUINGO_MAILGUN_DOMAIN", "FUINGO_MAILGUN_API_KEY", "FUINGO_MAILGUN_FROM", "FUINGO_MAILGUN_API_BASE", "FUINGO_MAILGUN_SANDBOX_TO_ADDR",
 	} {
 		t.Setenv(key, "")
@@ -741,6 +742,93 @@ func TestAccountCreateSendsInvitation(t *testing.T) {
 	mustRun(t, "created account acct02@example.com (id 2)\nmailed acct02@example.com an invitation\n", "--env", "test", "--db", path, "account", "create", "acct02@example.com")
 	if got := mailed(t); len(got) != 2 {
 		t.Errorf("mail = %v, want two", got)
+	}
+}
+
+func TestAccountCreateTest(t *testing.T) {
+	clearEnv(t)
+	path := createDatabase(t)
+	base := []string{"--env", "test", "--db", path, "account", "create-test"}
+	matches := func(email, password string) bool {
+		t.Helper()
+		a, ok := account(t, path, email)
+		return ok && a.Active && a.HashedSecret != nil && bcrypt.CompareHashAndPassword(a.HashedSecret, []byte(password)) == nil
+	}
+
+	// A new account, with no mail and no mail settings.
+	newSender = func(string) (mail.Sender, error) { return mail.Unconfigured{}, nil }
+	t.Setenv("FUINGO_ACCOUNT_EMAIL", "ACCT01@Example.com")
+	t.Setenv("FUINGO_ACCOUNT_PASSWORD", "a pass phrase")
+	out, err := runCommand(t, base...)
+	if err != nil {
+		t.Fatalf("account create-test: %v\n%s", err, out)
+	}
+	if out != "created account acct01@example.com (id 1) with a password\n" {
+		t.Errorf("account create-test printed %q", out)
+	}
+	if !matches("acct01@example.com", "a pass phrase") {
+		t.Error("the new account does not have the password")
+	}
+
+	// It never replaces a password.
+	t.Setenv("FUINGO_ACCOUNT_PASSWORD", "another pass phrase")
+	if out, err := runCommand(t, base...); !errors.Is(err, store.ErrHasPassword) {
+		t.Errorf("a second create-test: err = %v, want ErrHasPassword\n%s", err, out)
+	}
+	if !matches("acct01@example.com", "a pass phrase") {
+		t.Error("a refused create-test changed the password")
+	}
+
+	// An account without a password gets one, and its invitation stops working.
+	newSender = func(string) (mail.Sender, error) { return sent, nil }
+	mustRun(t, "created account acct02@example.com (id 2)\nmailed acct02@example.com an invitation\n", "--env", "test", "--db", path, "--public-url", publicURL, "account", "create", "acct02@example.com")
+	t.Setenv("FUINGO_ACCOUNT_EMAIL", "acct02@example.com")
+	mustRun(t, "gave account acct02@example.com (id 2) a password\n", base...)
+	if !matches("acct02@example.com", "another pass phrase") {
+		t.Error("the existing account does not have the password")
+	}
+	if usePassword(t, path, sent.Messages()[0], "a third pass phrase") {
+		t.Error("the invitation's link worked after create-test")
+	}
+	if got := mailed(t); len(got) != 1 {
+		t.Errorf("mail = %v, want only the invitation account create sent", got)
+	}
+}
+
+func TestAccountCreateTestRefusals(t *testing.T) {
+	path := createDatabase(t)
+	for name, tc := range map[string]struct {
+		email, password string
+		args            []string
+		want            error
+	}{
+		"no email":       {"", "a pass phrase", nil, ErrMissingEmail},
+		"no password":    {"acct01@example.com", "", nil, ErrMissingPassword},
+		"bad email":      {"acct 01@example.com", "a pass phrase", nil, names.ErrEmail},
+		"short password": {"acct01@example.com", "7 chars", nil, links.ErrPasswordShort},
+		"long password":  {"acct01@example.com", strings.Repeat("x", 73), nil, links.ErrPasswordLong},
+		"control":        {"acct01@example.com", "a pass\tphrase", nil, links.ErrPasswordText},
+		"argument":       {"acct01@example.com", "a pass phrase", []string{"acct01@example.com"}, ErrUsage},
+	} {
+		t.Run(name, func(t *testing.T) {
+			clearEnv(t)
+			if tc.email != "" {
+				t.Setenv("FUINGO_ACCOUNT_EMAIL", tc.email)
+			}
+			if tc.password != "" {
+				t.Setenv("FUINGO_ACCOUNT_PASSWORD", tc.password)
+			}
+			out, err := runCommand(t, append([]string{"--env", "test", "--db", path, "account", "create-test"}, tc.args...)...)
+			if !errors.Is(err, tc.want) {
+				t.Errorf("err = %v, want %v\n%s", err, tc.want, out)
+			}
+			if tc.password != "" && strings.Contains(out+fmt.Sprint(err), tc.password) {
+				t.Errorf("the password was printed: %q, %v", out, err)
+			}
+			if _, ok := account(t, path, "acct01@example.com"); ok {
+				t.Error("a refused create-test made an account")
+			}
+		})
 	}
 }
 

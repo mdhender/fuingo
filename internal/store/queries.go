@@ -15,6 +15,7 @@ import (
 
 const (
 	ErrAccountExists  = cerrs.Error("account already exists")
+	ErrHasPassword    = cerrs.Error("the account already has a password")
 	ErrCodeCase       = cerrs.Error("code must be lowercase")
 	ErrEmailCase      = cerrs.Error("email must be lowercase")
 	ErrGameExists     = cerrs.Error("game already exists in the system")

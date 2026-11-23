@@ -51,6 +51,7 @@ name a game with both `--system` and its code.
 | `fuingo game disable --player EMAIL --system SYSTEM --code CODE` | Disables a player in a game. `game enable` reverses it. |
 | `fuingo game disable --manager EMAIL --system SYSTEM --code CODE` | Stops an account managing a game. `game enable` reverses it. |
 | `fuingo account create EMAIL` | Adds an account and mails its invitation. Fails if the email already has an account, including one made by `game add --player`. |
+| `fuingo account create-test` | Adds an account for testing, with a password and no mail. Takes no arguments: the email comes from `FUINGO_ACCOUNT_EMAIL` and the password from `FUINGO_ACCOUNT_PASSWORD`. An account that exists without a password is given this one, and its unused links are canceled; an account that has a password is refused. |
 | `fuingo account reset-password EMAIL` | Mails an active account a new link to choose a password: a reset, or another invitation if it has not chosen one yet. Its current password keeps working until the owner uses the link. |
 | `fuingo file add --system SYSTEM [--name NAME] PATH` | Adds the file at `PATH` to a system, for every active player and GM of the system's games to read. Prints the file's ID. The file is stored under its base name, or under `--name`. |
 | `fuingo file list --system SYSTEM` | Lists a system's own files, withdrawn ones included: ID, name, size in bytes, and when it was added, separated by tabs. |
@@ -69,7 +70,19 @@ stored exactly as it is on disk. Adding a second file with the same name
 replaces nothing; withdraw the old one. Only these commands add or withdraw
 a system's files: no page and no `/api/` route does.
 
-No command sets, prints, or reads a password. The commands that send mail
+Only `account create-test` sets a password, and it never replaces one. It
+is for accounts used in testing, whose addresses receive no mail: it needs
+no Mailgun settings, checks the password as the pages do (8 characters to
+72 bytes, no control characters), and never prints it. Set its two
+variables for that one command, so the password is not left in an
+environment file:
+
+```sh
+FUINGO_ACCOUNT_EMAIL=player@example.com FUINGO_ACCOUNT_PASSWORD='a pass phrase' \
+  fuingo --env production --db /var/lib/fuingo/fuingo.db account create-test
+```
+
+No other command sets, prints, or reads a password. The commands that send mail
 need `--public-url` and the [Mailgun settings](#mail), and check for them
 before changing anything. If Mailgun then refuses the message, the account
 (and player) stays, the command fails, and `account reset-password` sends

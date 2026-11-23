@@ -12,6 +12,7 @@
 //	fuingo [--env ENV] [--db PATH] game (disable|enable) [--player EMAIL | --manager EMAIL] --system SYSTEM --code CODE
 //	fuingo [--env ENV] [--db PATH] [--public-url URL] account create EMAIL
 //	fuingo [--env ENV] [--db PATH] [--public-url URL] account reset-password EMAIL
+//	fuingo [--env ENV] [--db PATH] account create-test
 //	fuingo [--env ENV] [--db PATH] account (disable|enable) EMAIL
 //	fuingo [--env ENV] [--db PATH] file add --system SYSTEM [--name NAME] PATH
 //	fuingo [--env ENV] [--db PATH] file list --system SYSTEM
@@ -51,15 +52,24 @@
 // never deleted. account disable and account enable clear or set is_active
 // on an account; an inactive account manages no games and plays in none.
 //
-// No command sets or reads a password. account create makes an account and
-// mails its invitation: a link, valid for 72 hours and usable once, with
-// which the owner chooses a password. account reset-password mails such a
+// account create makes an account and mails its invitation: a link, valid
+// for 72 hours and usable once, with which the owner chooses a password. account reset-password mails such a
 // link to an existing account; the password it has keeps working until the
 // owner chooses a new one. Mail is sent through Mailgun, whose settings are
 // secrets read only from the environment (FUINGO_MAILGUN_DOMAIN,
 // FUINGO_MAILGUN_API_KEY, FUINGO_MAILGUN_FROM, and optionally
 // FUINGO_MAILGUN_API_BASE and FUINGO_MAILGUN_SANDBOX_TO_ADDR). A command that
 // would send mail fails, changing nothing, if they are not set.
+//
+// account create-test makes an account for testing, with a password and no
+// mail. It takes no arguments: the email comes from FUINGO_ACCOUNT_EMAIL and
+// the password from FUINGO_ACCOUNT_PASSWORD, so neither is on the command
+// line. If the email already has an account that has no password yet, such
+// as a player whose invitation went nowhere, it gives that account the
+// password and cancels its unused links. It never replaces a password: an
+// account that has one is refused. The password must pass the checks an
+// owner's does, and is never printed. No other command sets or reads a
+// password.
 //
 // The file commands manage a system's own files, which every active player
 // and manager of the system's games may read, and which only the
@@ -90,6 +100,7 @@ import (
 	"github.com/mdhender/fuingo/internal/store"
 	"github.com/peterbourgon/ff/v4"
 	"github.com/peterbourgon/ff/v4/ffhelp"
+	"golang.org/x/crypto/bcrypt"
 )
 
 const (
@@ -103,6 +114,15 @@ const (
 	ErrMissingPublicURL = cerrs.Error("--public-url (FUINGO_PUBLIC_URL) is required to mail a link")
 	ErrUsage            = cerrs.Error("wrong number of arguments")
 	ErrUploadID         = cerrs.Error("a file's ID is a whole number, 1 or more")
+	ErrMissingEmail     = cerrs.Error("FUINGO_ACCOUNT_EMAIL is required")
+	ErrMissingPassword  = cerrs.Error("FUINGO_ACCOUNT_PASSWORD is required")
+)
+
+// The variables account create-test reads. They are not flags: a password is
+// a secret, and neither belongs on a command line.
+const (
+	accountEmailVar    = "FUINGO_ACCOUNT_EMAIL"
+	accountPasswordVar = "FUINGO_ACCOUNT_PASSWORD"
 )
 
 func main() {
@@ -389,6 +409,47 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 			})
 		},
 	}
+	accountCreateTest := &ff.Command{
+		Name:      "create-test",
+		Usage:     "fuingo [--db PATH] account create-test",
+		ShortHelp: "create an account for testing, with the email in FUINGO_ACCOUNT_EMAIL and the password in FUINGO_ACCOUNT_PASSWORD; sends no mail",
+		Flags:     ff.NewFlagSet("account create-test").SetParent(rootFlags),
+		Exec: func(ctx context.Context, args []string) error {
+			if len(args) != 0 {
+				return fmt.Errorf("account create-test takes no arguments: %w", ErrUsage)
+			}
+			rawEmail, password := os.Getenv(accountEmailVar), os.Getenv(accountPasswordVar)
+			if rawEmail == "" {
+				return ErrMissingEmail
+			}
+			if password == "" {
+				return ErrMissingPassword
+			}
+			email, err := emailAddress(rawEmail)
+			if err != nil {
+				return err
+			}
+			if err := links.CheckPassword(password); err != nil {
+				return err
+			}
+			hashed, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.MinCost)
+			if err != nil {
+				return err
+			}
+			return withDatabase(ctx, path, func(s *store.Store) error {
+				id, created, err := s.CreateTestAccount(ctx, email, hashed, time.Now())
+				if err != nil {
+					return err
+				}
+				if created {
+					fmt.Fprintf(stdout, "created account %s (id %d) with a password\n", email, id)
+				} else {
+					fmt.Fprintf(stdout, "gave account %s (id %d) a password\n", email, id)
+				}
+				return nil
+			})
+		},
+	}
 	// accountToggle builds account disable (active false) and account enable
 	// (active true).
 	accountToggle := func(name string, active bool) *ff.Command {
@@ -417,10 +478,10 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	}
 	account := &ff.Command{
 		Name:        "account",
-		Usage:       "fuingo [--db PATH] account <create|reset-password|disable|enable>",
+		Usage:       "fuingo [--db PATH] account <create|create-test|reset-password|disable|enable>",
 		ShortHelp:   "manage accounts",
 		Flags:       ff.NewFlagSet("account").SetParent(rootFlags),
-		Subcommands: []*ff.Command{accountCreate, accountResetPassword, accountToggle("disable", false), accountToggle("enable", true)},
+		Subcommands: []*ff.Command{accountCreate, accountCreateTest, accountResetPassword, accountToggle("disable", false), accountToggle("enable", true)},
 		Exec: func(ctx context.Context, args []string) error {
 			return ff.ErrHelp
 		},

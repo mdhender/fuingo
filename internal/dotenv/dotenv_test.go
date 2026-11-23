@@ -137,3 +137,52 @@ func TestLoadWorkingDirectory(t *testing.T) {
 		t.Fatalf("value = %q, want working-directory", got)
 	}
 }
+
+// A file that may not be read, or a working directory that may not be
+// searched, is treated as if the files were absent.
+func TestLoadUnreadable(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root can read everything")
+	}
+	const key = "FUINGO_TEST_UNREADABLE"
+	unset := func(t *testing.T) {
+		t.Setenv(key, "")
+		if err := os.Unsetenv(key); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Run("file", func(t *testing.T) {
+		unset(t)
+		t.Chdir(t.TempDir())
+		if err := os.WriteFile(".env.agent.local", []byte(key+"=unreadable\n"), 0o000); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(".env", []byte(key+"=readable\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := dotenv.Load("agent"); err != nil {
+			t.Fatalf("Load = %v, want the unreadable file skipped", err)
+		}
+		if got := os.Getenv(key); got != "readable" {
+			t.Errorf("%s = %q, want the readable file's value", key, got)
+		}
+	})
+	t.Run("directory", func(t *testing.T) {
+		unset(t)
+		dir := t.TempDir()
+		if err := os.WriteFile(dir+"/.env", []byte(key+"=hidden\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		t.Chdir(dir)
+		if err := os.Chmod(dir, 0o000); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { os.Chmod(dir, 0o700) })
+		if err := dotenv.Load("agent"); err != nil {
+			t.Fatalf("Load = %v, want the unsearchable directory skipped", err)
+		}
+		if got, ok := os.LookupEnv(key); ok {
+			t.Errorf("%s = %q, want it unset", key, got)
+		}
+	})
+}

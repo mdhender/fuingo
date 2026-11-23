@@ -219,7 +219,8 @@ override environment variables, which override the defaults.
 - The environment is read from `--env` or the process's `FUINGO_ENV`. The
   commands then load that environment's files from the working directory, in
   this order of precedence: the process environment, `.env.<env>.local`,
-  `.env.local`, `.env.<env>`, `.env`.
+  `.env.local`, `.env.<env>`, `.env`. A file that does not exist, or that
+  the command's user may not read, is skipped.
 - Flags marked "command line only" ignore their `FUINGO_` variables, so an
   environment file cannot change what a command does.
 - The [Mailgun settings](#mail) are the only secrets. They have no flags;
@@ -322,9 +323,7 @@ database from `/var/lib/fuingo/fuingo.db` and listens on `127.0.0.1:18443`.
    ```
 
 3. Create the database as the `fuingo` user, so it owns the file. In
-   production it starts empty: no default games or accounts. The commands
-   look for `.env` files in the current directory and fail if they cannot
-   read it, so run them from `/var/lib/fuingo`.
+   production it starts empty: no default games or accounts.
 
    ```sh
    sudo -u fuingo sh -c 'cd /var/lib/fuingo && exec fuingodb --env production create --db /var/lib/fuingo/fuingo.db'
@@ -367,13 +366,13 @@ database from `/var/lib/fuingo/fuingo.db` and listens on `127.0.0.1:18443`.
 
 ### Creating systems, games, and accounts on the server
 
-Run `fuingo` as the `fuingo` user, never as root, and from
-`/var/lib/fuingo`:
+Run `fuingo` as the `fuingo` user, never as root: as root, SQLite may leave
+the database's `-wal` and `-shm` files owned by root, and the service can
+then no longer write to its database.
 
-- As root, SQLite may leave the database's `-wal` and `-shm` files owned
-  by root, and the service can then no longer write to its database.
-- `fuingo` looks for `.env` files in the current directory and fails if it
-  cannot read it, which the `fuingo` user cannot do in root's home.
+`fuingo` looks for `.env` files in the current directory. It skips a file
+it may not read, so it runs from any directory, including root's home,
+which the `fuingo` user cannot read.
 
 A small wrapper keeps the commands short. It reads the same settings file
 as the service, so the commands can send mail:

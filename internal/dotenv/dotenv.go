@@ -50,6 +50,11 @@ func Load(env string) error {
 // 3rd       .env.{{env}}         No           Never     Shared environment-specific variables
 // Lowest    .env                 No           Never     Shared for all environments
 //
+// A file that does not exist is skipped, and so is one that may not be read,
+// or whose directory may not be searched (fs.ErrPermission): a command run
+// from a directory its user cannot read loads no files rather than failing.
+// Any other error reading a file is returned.
+//
 // Load never overwrites a variable that is already set, even if it is empty.
 // The real process environment always wins over every file, and the first file
 // in the list below that defines a key wins over the later ones.
@@ -72,7 +77,7 @@ func (l *Loader) Load(env string) error {
 	} {
 		// verify path exists and is a regular file
 		sb, err := fs.Stat(l.fsys, path)
-		if errors.Is(err, fs.ErrNotExist) {
+		if absent(err) {
 			continue
 		}
 		if err != nil {
@@ -82,6 +87,9 @@ func (l *Loader) Load(env string) error {
 			continue
 		}
 		data, err := fs.ReadFile(l.fsys, path)
+		if absent(err) {
+			continue
+		}
 		if err != nil {
 			return fmt.Errorf("%s: %w", path, err)
 		}
@@ -97,4 +105,10 @@ func (l *Loader) Load(env string) error {
 	}
 
 	return nil
+}
+
+// absent reports whether err means the file is to be skipped: it does not
+// exist, or it may not be read.
+func absent(err error) bool {
+	return errors.Is(err, fs.ErrNotExist) || errors.Is(err, fs.ErrPermission)
 }
